@@ -1,0 +1,100 @@
+# CrewQuo v2 — Progress & To-Do
+
+Living checklist for the build. Full detail for every item is in **[CREWQUO_V2_PLAN.md](./CREWQUO_V2_PLAN.md)** (section references below). Phases are shipped one at a time — do not batch.
+
+**Legend:** `[x]` done · `[~]` in progress · `[ ]` not started
+
+Last updated: 2026-07-21 · Current phase: **Phase 1 (not started)**
+
+---
+
+## ✅ Phase 0 — Foundations (DONE — commit `78220a3`)
+
+- [x] pnpm + Turborepo monorepo (`apps/*`, `packages/*`, `infra/`)
+- [x] Root config: `package.json`, `pnpm-workspace.yaml`, `turbo.json`, `tsconfig.base.json`, `.gitignore`, `.gitattributes`, `.nvmrc`, `.env.example`
+- [x] `packages/shared`: domain enums + Zod schemas (health, error envelope) + unit tests (vitest)
+- [x] `apps/api`: Express 5 + node-postgres, Zod-validated env, `GET /` and `GET /healthz` (DB ping)
+- [x] `infra/migrations/run.ts`: forward-only SQL migration runner (`schema_migrations`, per-file transactions)
+- [x] `infra/migrations/0001_init.sql`: `users`, `companies`, `memberships`, `refresh_tokens`, `system_settings`
+- [x] `infra/seed/index.ts`: placeholder seed
+- [x] `infra/docker-compose.yml`: local Postgres 16
+- [x] `infra/render.yaml`: Render blueprint (API + Postgres)
+- [x] CI workflow (`.github/workflows/ci.yml`): type-check + test
+- [x] `README.md`
+- [x] **Verified:** `pnpm install`, `pnpm type-check`, `pnpm test` (3 passing), API boots on :4000
+- [x] Initial git commit in a fresh repo (local only — no GitHub remote yet)
+
+**Deferred within Phase 0 (small, non-blocking):**
+- [ ] ESLint config (skipped for now; type-check + test are the CI gates)
+- [ ] Bundled production build for `apps/api` (currently runs via `tsx`)
+- [ ] Push to a GitHub remote (needs the user's account/decision)
+
+---
+
+## Phase 1 — Identity, tenancy & entitlements  (NEXT) — plan §3.1, §4, §5, §5B
+
+- [ ] Migrations: entitlements tables — `features`, `limits`, `plans`, `plan_prices`, `plan_features`, `plan_limits`, `company_subscriptions`, `company_entitlement_overrides`
+- [ ] Auth: `POST /v1/auth/register | login | google | refresh | logout | request-password-reset | reset-password | verify-email` (bcrypt + JWT access/refresh, `refresh_tokens`)
+- [ ] Google sign-in (`google-auth-library` verify-id-token)
+- [ ] Auth-context middleware (`Ctx`) resolving active company from `X-Company-Id` vs `memberships`
+- [ ] `authorization/policies.ts` (company scoping, role gates) + tests
+- [ ] Entitlements engine: `resolveEntitlements`, `hasFeature`, `withinLimit` (+ Redis cache)
+- [ ] Super-admin plan CRUD + seed the default plans (Crew/Starter/Pro/Business/Enterprise)
+- [ ] `GET /v1/me`, `/v1/me/memberships`, `POST /v1/me/companies`
+- [ ] Minimal Expo app: login + company switcher
+- [ ] Tests + CI green
+- [ ] **Milestone:** log in, pick a company, gates read from configurable plans
+
+## Phase 2 — Rate engine + catalog — plan §3.3, §6
+
+- [ ] Port v1 `functions/src/rates.ts` → `packages/shared/rate-engine/` (pure TS) with full vitest coverage
+- [ ] Migrations: `role_catalog`, `rate_card_templates`, `rate_cards` (PAY/BILL), holiday timeframes
+- [ ] `GET /v1/rates/resolve` + rate/margin calculation endpoints
+- [ ] CRUD: `/v1/role-catalog`, `/v1/rate-card-templates`, `/v1/rate-cards` (BILL hidden from provider side)
+- [ ] Web screens to manage rate cards/templates
+- [ ] **Milestone:** rates resolve for a date+shift with correct margins
+
+## Phase 3 — The core loop (mobile-first) — plan §3.2, §3.4
+
+- [ ] Migrations: `engagements`, `projects`, `project_assignments`, `time_logs`, `expenses`, `project_submissions`, `invites`
+- [ ] Providers + members + invite accept flow (public token endpoints)
+- [ ] Work workflow: `DRAFT → SUBMITTED → APPROVED/REJECTED` (provider submits, client approves)
+- [ ] `GET /v1/projects/:id/summary` (server-computed costs/margins)
+- [ ] Mobile: log time → submit; approvals inbox (swipe approve/reject); push notifications
+- [ ] **Milestone:** a subcontractor logs time on a phone and an admin approves it
+
+## Phase 4 — Client portal + exports + audit — plan §3.6
+
+- [ ] Migrations: `line_item_notes`, `audit_logs`, `audit_settings`
+- [ ] Client portal (client-side of engagements; `projects.client_visible`)
+- [ ] Audit logging (append-only) + nightly `expires_at` cleanup job
+- [ ] Server-side PDF/XLSX exports (`jspdf`/`xlsx` in the API)
+- [ ] Placeholder → linked company **merge flow**
+- [ ] **Milestone:** a client logs in, sees only granted projects + visible audit trail, downloads an export
+
+## Phase 5 — Billing, invoicing, notifications, polish — plan §3.5, §5B
+
+- [ ] Migrations: `invoices`, `invoice_items`
+- [ ] Merchant-of-Record billing (Lemon Squeezy / Paddle): checkout, webhooks, trial→paid, entitlement snapshots
+- [ ] Super-admin price editor + subscription management
+- [ ] Push + email notifications (Resend)
+- [ ] Reports; EAS store submission
+- [ ] Public marketing + legal pages (pricing/terms/privacy/refunds)
+
+## Phase 6 — Deferred
+
+- [ ] Offline draft capture (mobile)
+- [ ] Real-time updates
+- [ ] Optional v1 → v2 per-customer data importer (§12)
+
+---
+
+## ⚠️ Decisions still needed from the owner (plan §17)
+
+Ask before building the affected phase — do not guess:
+
+- [ ] **Real per-currency pricing numbers** (USD anchors exist; confirm values + which currencies) — Phase 1/5
+- [ ] **Placeholder→linked merge policy** (auto vs manual; re-pointing engagements) — Phase 4
+- [ ] **Final MoR choice** (Lemon Squeezy vs Paddle) + confirmed PH payout method — Phase 5
+- [ ] **`FRI_SAT_NIGHT` rate-label date logic** — verify against v1 `rates.ts` when porting — Phase 2
+- [ ] **Visual design system** (brand colors/typography for `packages/ui`) — needed once UI work starts, Phase 2+

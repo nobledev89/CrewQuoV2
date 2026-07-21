@@ -2,7 +2,7 @@
 
 Mobile-first contractor / subcontractor management. Postgres + TypeScript API on Render; Expo (mobile) and Next.js (web) clients on the way.
 
-The full specification lives in **`CREWQUO_V2_PLAN.md`** (in the v1 repo). Read it — and, before implementing the rate engine or authorization, read v1's `functions/src/rates.ts` and `firestore.rules`.
+The full specification lives in **[`CREWQUO_V2_PLAN.md`](./CREWQUO_V2_PLAN.md)** and current progress in **[`PROGRESS.md`](./PROGRESS.md)**. Read the plan — and, before implementing the rate engine or authorization, read v1's `functions/src/rates.ts` and `firestore.rules` (from the v1 repo).
 
 ## Status
 
