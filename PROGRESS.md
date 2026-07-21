@@ -4,7 +4,7 @@ Living checklist for the build. Full detail for every item is in **[CREWQUO_V2_P
 
 **Legend:** `[x]` done · `[~]` in progress · `[ ]` not started
 
-Last updated: 2026-07-21 · Current phase: **Phase 1 (not started)**
+Last updated: 2026-07-21 · Current phase: **Phase 2 (not started)** · Phase 1 shipped
 
 ---
 
@@ -31,19 +31,27 @@ Last updated: 2026-07-21 · Current phase: **Phase 1 (not started)**
 
 ---
 
-## Phase 1 — Identity, tenancy & entitlements  (NEXT) — plan §3.1, §4, §5, §5B
+## ✅ Phase 1 — Identity, tenancy & entitlements (DONE) — plan §3.1, §4, §5, §5B
 
-- [ ] Migrations: entitlements tables — `features`, `limits`, `plans`, `plan_prices`, `plan_features`, `plan_limits`, `company_subscriptions`, `company_entitlement_overrides`
-- [ ] Auth: `POST /v1/auth/register | login | google | refresh | logout | request-password-reset | reset-password | verify-email` (bcrypt + JWT access/refresh, `refresh_tokens`)
-- [ ] Google sign-in (`google-auth-library` verify-id-token)
-- [ ] Auth-context middleware (`Ctx`) resolving active company from `X-Company-Id` vs `memberships`
-- [ ] `authorization/policies.ts` (company scoping, role gates) + tests
-- [ ] Entitlements engine: `resolveEntitlements`, `hasFeature`, `withinLimit` (+ Redis cache)
-- [ ] Super-admin plan CRUD + seed the default plans (Crew/Starter/Pro/Business/Enterprise)
-- [ ] `GET /v1/me`, `/v1/me/memberships`, `POST /v1/me/companies`
-- [ ] Minimal Expo app: login + company switcher
-- [ ] Tests + CI green
-- [ ] **Milestone:** log in, pick a company, gates read from configurable plans
+- [x] Migrations: entitlements tables — `features`, `limits`, `plans`, `plan_prices`, `plan_features`, `plan_limits`, `company_subscriptions`, `company_entitlement_overrides` (`0002_entitlements.sql`)
+- [x] Auth: `POST /v1/auth/register | login | google | refresh | logout | request-password-reset | reset-password | verify-email` (bcryptjs cost 12 + JWT access/refresh, hashed+rotating `refresh_tokens`)
+- [x] Google sign-in (`google-auth-library` verify-id-token; 501/validation until `GOOGLE_CLIENT_ID` set)
+- [x] Auth-context middleware (`Ctx`) resolving active company from `X-Company-Id` vs `memberships` (role read from DB per request — no claims)
+- [x] `authorization/policies.ts` (company scoping, role gates, engagement one-hop, PAY/BILL guard, work-workflow invariants) + unit tests
+- [x] Entitlements engine: `resolveEntitlements` (plan ⊕ overrides), `hasFeature`, `withinLimit`, `requireFeature` guard, in-process TTL cache (Redis swap-in Phase 2)
+- [x] Super-admin plan CRUD (`/v1/admin/plans[/:id][/prices]`, `/features`, `/limits`) + seeded default plans (Crew/Starter/Pro/Business/Enterprise, USD anchor prices)
+- [x] `GET /v1/me`, `/v1/me/memberships`, `POST /v1/me/companies`; `GET /v1/entitlements` (resolved + live usage)
+- [x] Minimal Expo app (`apps/mobile`, expo-router): login, register, home (plan/usage), company switcher; secure-store token storage + refresh-on-launch
+- [x] Tests (28 passing) + type-check green across `@crewquo/shared`, `@crewquo/api`, `@crewquo/mobile`
+- [x] **Verified end-to-end** against live Postgres: migrate + seed + full auth/entitlements/admin smoke (register→me→switch→entitlements→refresh-rotation→super-admin CRUD)
+- [x] **Milestone:** log in, pick a company, gates read from configurable plans ✅
+
+**Deferred within Phase 1 (non-blocking):**
+- [ ] Email delivery (Resend) for verify/reset links — currently logged in dev (arrives Phase 5, §5)
+- [ ] `api-client` package extraction (mobile currently uses an inline typed fetch client)
+- [ ] Redis-backed entitlement cache (in-process TTL for now; Phase 2 stack)
+
+> **Local env note:** two native Postgres instances occupy host ports 5432/5433 on this machine, shadowing the docker container (which binds IPv6). Phase 1 was verified with the compose Postgres remapped to `127.0.0.1:15432`. `infra/docker-compose.yml` still targets 5432 — free those ports or remap before `pnpm db:migrate`.
 
 ## Phase 2 — Rate engine + catalog — plan §3.3, §6
 

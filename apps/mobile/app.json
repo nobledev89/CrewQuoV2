@@ -1,0 +1,17 @@
+{
+  "expo": {
+    "name": "CrewQuo",
+    "slug": "crewquo",
+    "scheme": "crewquo",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": { "supportsTablet": true, "bundleIdentifier": "com.crewquo.app" },
+    "android": { "package": "com.crewquo.app" },
+    "plugins": ["expo-router", "expo-secure-store"],
+    "extra": {
+      "apiUrl": "http://localhost:4000"
+    }
+  }
+}
