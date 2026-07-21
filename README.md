@@ -6,7 +6,7 @@ The full specification lives in **[`CREWQUO_V2_PLAN.md`](./CREWQUO_V2_PLAN.md)**
 
 ## Status
 
-**Phase 0 — Foundations (scaffold).** Working monorepo, a running API with `/healthz`, and a Postgres migration runner. Phase 1 (identity, auth, entitlements) is next.
+**Phase 2 — Rate engine + catalog (shipped).** On top of Phase 0 (foundations) and Phase 1 (identity, auth, entitlements): a pure-TS rate engine, PAY/BILL rate cards + role catalog + templates with a resolve endpoint, and a Next.js web console to manage them. Phase 3 (the core work loop) is next. See [`PROGRESS.md`](./PROGRESS.md).
 
 ## Prerequisites
 
@@ -44,14 +44,18 @@ pnpm --filter @crewquo/api dev
 | `pnpm test` | Run unit tests |
 | `pnpm db:migrate` | Apply pending SQL migrations |
 | `pnpm db:seed` | Run the seed script |
+| `pnpm --filter @crewquo/web dev` | Run the web console (http://localhost:3000) |
 
 ## Layout
 
 ```
 apps/
   api/            Express 5 + node-postgres API (Render)
+  web/            Next.js 14 console — rate cards, roles, templates, resolve
+  mobile/         Expo (expo-router) app — login, entitlements, company switcher
 packages/
-  shared/         Zod schemas, domain enums, (soon) the rate engine — pure TS
+  shared/         Zod schemas, domain enums, the rate engine — pure TS
+  ui/             Neutral web design system (tokens + primitives)
 infra/
   migrations/     Forward-only SQL migrations + runner
   seed/           Seed scripts

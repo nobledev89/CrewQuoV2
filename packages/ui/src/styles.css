@@ -1,0 +1,233 @@
+/*
+ * CrewQuo neutral design system (packages/ui).
+ * A restrained placeholder: system font, neutral grays, one accent. Swap the
+ * token values under :root to rebrand — component classes never hard-code color.
+ * Light + dark via prefers-color-scheme. (Owner decision: final brand system, §17.)
+ */
+
+:root {
+  --cq-accent: #2563eb;
+  --cq-accent-hover: #1d4ed8;
+  --cq-accent-fg: #ffffff;
+
+  --cq-bg: #f8fafc;
+  --cq-surface: #ffffff;
+  --cq-surface-2: #f1f5f9;
+  --cq-border: #e2e8f0;
+  --cq-text: #0f172a;
+  --cq-text-muted: #64748b;
+
+  --cq-danger: #dc2626;
+  --cq-success: #16a34a;
+  --cq-warning: #d97706;
+
+  --cq-radius: 10px;
+  --cq-radius-sm: 7px;
+  --cq-gap: 16px;
+  --cq-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --cq-shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --cq-bg: #0b1120;
+    --cq-surface: #111827;
+    --cq-surface-2: #1e293b;
+    --cq-border: #1f2a3c;
+    --cq-text: #e2e8f0;
+    --cq-text-muted: #94a3b8;
+    --cq-shadow: none;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--cq-font);
+  background: var(--cq-bg);
+  color: var(--cq-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--cq-accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+/* Layout ------------------------------------------------------------------- */
+.cq-container {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 24px;
+}
+.cq-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cq-gap);
+}
+.cq-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.cq-row--between {
+  justify-content: space-between;
+}
+.cq-spacer {
+  flex: 1;
+}
+
+/* Typography --------------------------------------------------------------- */
+.cq-h1 {
+  font-size: 26px;
+  font-weight: 700;
+  margin: 0;
+}
+.cq-h2 {
+  font-size: 19px;
+  font-weight: 650;
+  margin: 0;
+}
+.cq-muted {
+  color: var(--cq-text-muted);
+  font-size: 14px;
+}
+
+/* Card --------------------------------------------------------------------- */
+.cq-card {
+  background: var(--cq-surface);
+  border: 1px solid var(--cq-border);
+  border-radius: var(--cq-radius);
+  box-shadow: var(--cq-shadow);
+  padding: 20px;
+}
+
+/* Buttons ------------------------------------------------------------------ */
+.cq-btn {
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: var(--cq-radius-sm);
+  padding: 9px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  background: var(--cq-accent);
+  color: var(--cq-accent-fg);
+  transition: background 0.12s ease, opacity 0.12s ease;
+}
+.cq-btn:hover {
+  background: var(--cq-accent-hover);
+}
+.cq-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.cq-btn--secondary {
+  background: var(--cq-surface);
+  color: var(--cq-text);
+  border-color: var(--cq-border);
+}
+.cq-btn--secondary:hover {
+  background: var(--cq-surface-2);
+}
+.cq-btn--danger {
+  background: transparent;
+  color: var(--cq-danger);
+  border-color: var(--cq-border);
+}
+.cq-btn--danger:hover {
+  background: rgba(220, 38, 38, 0.08);
+}
+.cq-btn--sm {
+  padding: 5px 10px;
+  font-size: 13px;
+}
+
+/* Form controls ------------------------------------------------------------ */
+.cq-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cq-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--cq-text-muted);
+}
+.cq-input,
+.cq-select {
+  width: 100%;
+  border: 1px solid var(--cq-border);
+  border-radius: var(--cq-radius-sm);
+  padding: 9px 12px;
+  font-size: 14px;
+  font-family: inherit;
+  background: var(--cq-surface);
+  color: var(--cq-text);
+}
+.cq-input:focus,
+.cq-select:focus {
+  outline: 2px solid var(--cq-accent);
+  outline-offset: -1px;
+  border-color: var(--cq-accent);
+}
+
+/* Table -------------------------------------------------------------------- */
+.cq-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--cq-border);
+  border-radius: var(--cq-radius);
+}
+.cq-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.cq-table th,
+.cq-table td {
+  text-align: left;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--cq-border);
+  white-space: nowrap;
+}
+.cq-table th {
+  background: var(--cq-surface-2);
+  font-weight: 600;
+  color: var(--cq-text-muted);
+}
+.cq-table tr:last-child td {
+  border-bottom: none;
+}
+
+/* Badge / feedback --------------------------------------------------------- */
+.cq-badge {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--cq-surface-2);
+  color: var(--cq-text-muted);
+}
+.cq-badge--accent {
+  background: rgba(37, 99, 235, 0.12);
+  color: var(--cq-accent);
+}
+.cq-error {
+  color: var(--cq-danger);
+  font-size: 14px;
+}
+.cq-notice {
+  padding: 12px 14px;
+  border-radius: var(--cq-radius-sm);
+  background: var(--cq-surface-2);
+  color: var(--cq-text-muted);
+  font-size: 14px;
+}

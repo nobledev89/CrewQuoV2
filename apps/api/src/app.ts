@@ -8,6 +8,12 @@ import { authRouter } from './modules/auth/routes';
 import { meRouter } from './modules/me/routes';
 import { entitlementsRouter } from './modules/entitlements/routes';
 import { adminRouter } from './modules/admin/routes';
+import {
+  rateCardRouter,
+  rateCardTemplateRouter,
+  ratesRouter,
+  roleCatalogRouter,
+} from './modules/rates/routes';
 
 /** Build the Express app. Kept separate from listen() so tests can import it. */
 export function buildApp(): Express {
@@ -35,6 +41,13 @@ export function buildApp(): Express {
   // Authenticated routes.
   app.use('/v1/me', requireAuth, meRouter);
   app.use('/v1/entitlements', requireAuth, entitlementsRouter);
+
+  // Rate engine & catalog (§6). Company-scoped — active company via X-Company-Id.
+  app.use('/v1/role-catalog', requireAuth, roleCatalogRouter);
+  app.use('/v1/rate-card-templates', requireAuth, rateCardTemplateRouter);
+  app.use('/v1/rate-cards', requireAuth, rateCardRouter);
+  app.use('/v1/rates', requireAuth, ratesRouter);
+
   app.use('/v1/admin', requireAuth, requireSuperAdmin, adminRouter);
 
   app.use(notFoundHandler);

@@ -4,7 +4,7 @@ Living checklist for the build. Full detail for every item is in **[CREWQUO_V2_P
 
 **Legend:** `[x]` done · `[~]` in progress · `[ ]` not started
 
-Last updated: 2026-07-21 · Current phase: **Phase 2 (not started)** · Phase 1 shipped
+Last updated: 2026-07-21 · Current phase: **Phase 3 (not started)** · Phase 2 shipped
 
 ---
 
@@ -53,14 +53,20 @@ Last updated: 2026-07-21 · Current phase: **Phase 2 (not started)** · Phase 1 
 
 > **Local env note:** two native Postgres instances occupy host ports 5432/5433 on this machine, shadowing the docker container (which binds IPv6). Phase 1 was verified with the compose Postgres remapped to `127.0.0.1:15432`. `infra/docker-compose.yml` still targets 5432 — free those ports or remap before `pnpm db:migrate`.
 
-## Phase 2 — Rate engine + catalog — plan §3.3, §6
+## ✅ Phase 2 — Rate engine + catalog (DONE) — plan §3.3, §6
 
-- [ ] Port v1 `functions/src/rates.ts` → `packages/shared/rate-engine/` (pure TS) with full vitest coverage
-- [ ] Migrations: `role_catalog`, `rate_card_templates`, `rate_cards` (PAY/BILL), holiday timeframes
-- [ ] `GET /v1/rates/resolve` + rate/margin calculation endpoints
-- [ ] CRUD: `/v1/role-catalog`, `/v1/rate-card-templates`, `/v1/rate-cards` (BILL hidden from provider side)
-- [ ] Web screens to manage rate cards/templates
-- [ ] **Milestone:** rates resolve for a date+shift with correct margins
+- [x] Rate engine in `packages/shared/src/rate-engine/` (pure TS): `shiftTypeToRateLabel`, `resolveRateLabel` (FRI_SAT_NIGHT date logic), `selectEffectiveCard`, `extractRate`, `resolveRate`, `applyMinHours`, `getHolidayInfo`, `calculateCost`, `calculateMargin` — 37 vitest cases pinning every branch
+- [x] Migration `0003_rates.sql`: `role_catalog`, `rate_card_templates` (holiday/timeframe defs), `rate_cards` (PAY/BILL)
+- [x] `GET /v1/rates/resolve?roleId&shiftType&date&kind&counterpartyId` (counterparty-specific > default; date-driven label)
+- [x] CRUD: `/v1/role-catalog`, `/v1/rate-card-templates`, `/v1/rate-cards` — company-scoped; manager+ to edit, any member reads
+- [x] Shared Zod contracts (`rates.ts`) incl. mode-required-rate + effective-date `superRefine`
+- [x] **Verified end-to-end** vs live Postgres: register→role→PAY/BILL cards→resolve (Fri-night ⇒ FRI_SAT_NIGHT + default OT, weekday BILL, 404 when unmatched, 422 on invalid card). 70 tests green, type-check clean.
+- [x] Web console (`apps/web`, Next.js 14 app-router) to manage roles, rate cards & templates + a resolve tester — auth/company-switcher, typed API client, `packages/ui` neutral design system
+- [x] **Milestone:** rates resolve for a date+shift with correct margins ✅
+
+> **Note on `FRI_SAT_NIGHT` (owner decision #4, §17):** a NIGHT shift on a Friday/Saturday resolves to `FRI_SAT_NIGHT`; all other labels are date-independent. This override was **reconstructed from the plan spec**, not v1 `rates.ts` (unavailable in this workspace). Verify against v1 before relying on it for real billing — it's isolated in `resolveRateLabel` and its tests, so a correction is a one-function change.
+>
+> **BILL-visibility scope:** `/v1/rate-cards` only ever returns the active company's *own* cards (PAY and BILL), so nothing leaks here. The provider-never-reads-client-BILL rule (§4) bites when reading an engagement's *counterparty* cards — that's a Phase 3 (projects/engagements) concern.
 
 ## Phase 3 — The core loop (mobile-first) — plan §3.2, §3.4
 
@@ -105,4 +111,4 @@ Ask before building the affected phase — do not guess:
 - [ ] **Placeholder→linked merge policy** (auto vs manual; re-pointing engagements) — Phase 4
 - [ ] **Final MoR choice** (Lemon Squeezy vs Paddle) + confirmed PH payout method — Phase 5
 - [ ] **`FRI_SAT_NIGHT` rate-label date logic** — verify against v1 `rates.ts` when porting — Phase 2
-- [ ] **Visual design system** (brand colors/typography for `packages/ui`) — needed once UI work starts, Phase 2+
+- [~] **Visual design system** (brand colors/typography for `packages/ui`) — a neutral placeholder ships in `packages/ui` (system font, neutral grays + one accent, light/dark). Swap the `:root` tokens in `packages/ui/src/styles.css` to rebrand. Confirm the real brand before external-facing UI (Phase 4 client portal / Phase 5 marketing).

@@ -4,3 +4,5 @@ export * from './entitlements';
 export * from './auth';
 export * from './me';
 export * from './admin';
+export * from './rates';
+export * from './rate-engine';
