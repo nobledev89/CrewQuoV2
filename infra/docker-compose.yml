@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: crewquo-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: crewquo
+      POSTGRES_PASSWORD: crewquo
+      POSTGRES_DB: crewquo
+    ports:
+      - "5432:5432"
+    volumes:
+      - crewquo_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crewquo -d crewquo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  crewquo_pgdata:

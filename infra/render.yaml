@@ -1,0 +1,25 @@
+# Render blueprint. Import via Render Dashboard → New → Blueprint (needs your Render account).
+# See CREWQUO_V2_PLAN.md §10.
+databases:
+  - name: crewquo-db
+    plan: basic-256mb
+    region: oregon
+    postgresMajorVersion: "16"
+
+services:
+  - type: web
+    name: crewquo-api
+    runtime: node
+    region: oregon
+    plan: starter
+    buildCommand: corepack enable && pnpm install --frozen-lockfile
+    startCommand: pnpm --filter @crewquo/api start
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: crewquo-db
+          property: connectionString
