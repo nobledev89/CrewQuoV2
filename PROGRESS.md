@@ -22,12 +22,12 @@ Last updated: 2026-08-17 · Current phase: **Phase 4 (audit + portal landed; exp
 - [x] CI workflow (`.github/workflows/ci.yml`): type-check + test
 - [x] `README.md`
 - [x] **Verified:** `pnpm install`, `pnpm type-check`, `pnpm test` (3 passing), API boots on :4000
-- [x] Initial git commit in a fresh repo (local only — no GitHub remote yet)
+- [x] Initial git commit in a fresh repo
+- [x] Pushed to GitHub — `origin` = `git@github.com:nobledev89/CrewQuoV2.git`, tracking `main`
 
 **Deferred within Phase 0 (small, non-blocking):**
 - [ ] ESLint config (skipped for now; type-check + test are the CI gates)
 - [ ] Bundled production build for `apps/api` (currently runs via `tsx`)
-- [ ] Push to a GitHub remote (needs the user's account/decision)
 
 ---
 
