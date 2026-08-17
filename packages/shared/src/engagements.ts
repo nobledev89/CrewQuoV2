@@ -4,6 +4,7 @@ import {
   inviteKindSchema,
   inviteStatusSchema,
   membershipRoleSchema,
+  membershipStatusSchema,
 } from './enums';
 
 /**
@@ -115,11 +116,18 @@ export type CreateClientResponse = z.infer<typeof createClientResponseSchema>;
 // ── Members ─────────────────────────────────────────────────────────────────────
 
 export const memberViewSchema = z.object({
+  /**
+   * The membership row, which is what `PATCH`/`DELETE /v1/members/:membershipId`
+   * addresses. A user is not the subject here — the same user may be a MEMBER of
+   * one company and its OWNER in another, and only the membership distinguishes
+   * them. §46's later `/v1/members/:membershipId/capabilities` keys on the same id.
+   */
+  membershipId: z.string().uuid(),
   userId: z.string().uuid(),
   name: z.string(),
   email: z.string(),
   role: membershipRoleSchema,
-  status: z.enum(['ACTIVE', 'INVITED', 'SUSPENDED']),
+  status: membershipStatusSchema,
 });
 export type MemberView = z.infer<typeof memberViewSchema>;
 
@@ -129,6 +137,24 @@ export const inviteMemberSchema = z.object({
   role: membershipRoleSchema.default('MEMBER'),
 });
 export type InviteMember = z.infer<typeof inviteMemberSchema>;
+
+/**
+ * PATCH /v1/members/:membershipId (§7, OWNER/ADMIN) — change someone's role or
+ * suspend them.
+ *
+ * Deleting the row is the separate verb, because the two are not the same act:
+ * suspending keeps the history attached to a person who can be let back in,
+ * while removing severs it. `SUSPENDED` also frees no seat — the row still
+ * exists — so the UI has to say which one the caller wanted.
+ */
+export const updateMemberSchema = z
+  .object({
+    role: membershipRoleSchema,
+    status: membershipStatusSchema,
+  })
+  .partial()
+  .refine((v) => Object.keys(v).length > 0, { message: 'Nothing to update' });
+export type UpdateMember = z.infer<typeof updateMemberSchema>;
 
 // ── Invites (public accept flow) ──────────────────────────────────────────────
 

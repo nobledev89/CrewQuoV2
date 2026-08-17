@@ -16,7 +16,10 @@ import {
   isEngagementParticipant,
   isEngagementProviderSide,
   isOwnerOrAdmin,
+  membershipChangeRefusal,
+  membershipRemovalRefusal,
   type EngagementEdge,
+  type MembershipSubject,
 } from './policies';
 
 const CLIENT = 'client-co';
@@ -227,5 +230,147 @@ describe('placeholder merge decision (owner decision 2026-08-17)', () => {
       const d = decideMerge({ ...base, targetCompanyId });
       expect(d.outcome).not.toBe('MERGED');
     }
+  });
+});
+
+// ── Member management (§3.1, §7) ────────────────────────────────────────────────
+
+describe('membershipChangeRefusal', () => {
+  const owner: MembershipSubject = { userId: 'u-owner', role: 'OWNER', status: 'ACTIVE' };
+  const member: MembershipSubject = { userId: 'u-member', role: 'MEMBER', status: 'ACTIVE' };
+
+  it('lets an owner change an ordinary member', () => {
+    expect(
+      membershipChangeRefusal({
+        actorRole: 'OWNER',
+        target: member,
+        activeOwnerCount: 1,
+        patch: { role: 'MANAGER' },
+      })
+    ).toBeNull();
+  });
+
+  it('lets an admin change an ordinary member', () => {
+    expect(
+      membershipChangeRefusal({
+        actorRole: 'ADMIN',
+        target: member,
+        activeOwnerCount: 1,
+        patch: { role: 'MANAGER' },
+      })
+    ).toBeNull();
+  });
+
+  it('refuses a manager or a member outright', () => {
+    for (const actorRole of ['MANAGER', 'MEMBER'] as const) {
+      expect(
+        membershipChangeRefusal({
+          actorRole,
+          target: member,
+          activeOwnerCount: 2,
+          patch: { role: 'ADMIN' },
+        })
+      ).toMatch(/owner or admin/);
+    }
+  });
+
+  it('stops an admin touching an owner even when another owner remains', () => {
+    expect(
+      membershipChangeRefusal({
+        actorRole: 'ADMIN',
+        target: owner,
+        activeOwnerCount: 3,
+        patch: { role: 'ADMIN' },
+      })
+    ).toMatch(/admin cannot change an owner/);
+  });
+
+  it('stops an admin minting an owner', () => {
+    expect(
+      membershipChangeRefusal({
+        actorRole: 'ADMIN',
+        target: member,
+        activeOwnerCount: 2,
+        patch: { role: 'OWNER' },
+      })
+    ).toMatch(/cannot grant ownership/);
+  });
+
+  it('keeps the last active owner: no demotion, no suspension', () => {
+    for (const patch of [{ role: 'ADMIN' as const }, { status: 'SUSPENDED' as const }]) {
+      expect(
+        membershipChangeRefusal({ actorRole: 'OWNER', target: owner, activeOwnerCount: 1, patch })
+      ).toMatch(/at least one active owner/);
+    }
+  });
+
+  it('allows an owner to step down once a second active owner exists', () => {
+    expect(
+      membershipChangeRefusal({
+        actorRole: 'OWNER',
+        target: owner,
+        activeOwnerCount: 2,
+        patch: { role: 'ADMIN' },
+      })
+    ).toBeNull();
+  });
+
+  it('allows a no-op patch on the last owner — it loses nothing', () => {
+    expect(
+      membershipChangeRefusal({
+        actorRole: 'OWNER',
+        target: owner,
+        activeOwnerCount: 1,
+        patch: { role: 'OWNER', status: 'ACTIVE' },
+      })
+    ).toBeNull();
+  });
+
+  it('does not count a suspended owner as the one being protected', () => {
+    // A suspended owner cannot act, so promoting someone else out of that row is
+    // not what strands the company — the count is what matters, and it is zero here.
+    expect(
+      membershipChangeRefusal({
+        actorRole: 'OWNER',
+        target: { userId: 'u', role: 'OWNER', status: 'SUSPENDED' },
+        activeOwnerCount: 0,
+        patch: { role: 'MEMBER' },
+      })
+    ).toBeNull();
+  });
+});
+
+describe('membershipRemovalRefusal', () => {
+  const owner: MembershipSubject = { userId: 'u-owner', role: 'OWNER', status: 'ACTIVE' };
+  const member: MembershipSubject = { userId: 'u-member', role: 'MEMBER', status: 'ACTIVE' };
+
+  it('removes an ordinary member', () => {
+    expect(
+      membershipRemovalRefusal({ actorRole: 'ADMIN', target: member, activeOwnerCount: 1 })
+    ).toBeNull();
+  });
+
+  it('refuses a manager', () => {
+    expect(
+      membershipRemovalRefusal({ actorRole: 'MANAGER', target: member, activeOwnerCount: 2 })
+    ).toMatch(/owner or admin/);
+  });
+
+  it('stops an admin removing an owner', () => {
+    expect(
+      membershipRemovalRefusal({ actorRole: 'ADMIN', target: owner, activeOwnerCount: 4 })
+    ).toMatch(/cannot remove an owner/);
+  });
+
+  it('never removes the last active owner', () => {
+    expect(
+      membershipRemovalRefusal({ actorRole: 'OWNER', target: owner, activeOwnerCount: 1 })
+    ).toMatch(/at least one active owner/);
+  });
+
+  it('removes an owner once a second one exists', () => {
+    expect(
+      membershipRemovalRefusal({ actorRole: 'OWNER', target: owner, activeOwnerCount: 2 })
+    ).toBeNull();
   });
 });

@@ -1,24 +1,26 @@
-# CrewQuo v2 — Complete Build Specification
+# CrewQuo v2 — Unified Build Specification
 
-> **Status:** Part I (§1–§18) is **built and shipping** — Phases 0–3 done, Phase 4 in progress (see `PROGRESS.md`). Part II (§19–§47) is the **approved v2.1 expansion**: field operations, project evidence, asset & material tracking and sustainability reporting. Not started.
-> **Decision (Part I):** Greenfield rebuild. v2 is a **new, independent product** with **no runtime connection to v1**. v1 (Next.js + Firebase) stays live and frozen. No shared database, no shared auth, no data migration in scope (see §12 for optional later onboarding).
-> **Decision (Part II):** **Extend, do not rebuild.** The v2 codebase in this repo is the base. Every new capability is additive — new migrations, new modules, new routes — reusing the existing auth, tenancy, engagement graph, rate engine and entitlement machinery. Nothing already shipped may regress.
+> **Product decision:** CrewQuo v2 is one new, independent application. Its scope includes the commercial core, field operations, project evidence, asset and material tracking, sustainability, reporting, scheduling, compliance, the client experience, web and mobile. Together they define v2.
+> **Implementation status:** Phases 0–4 have produced reusable backend, shared-domain and prototype client code (see `PROGRESS.md`). That code is implementation progress, not a product or UX constraint. Keep correct, tested domain behavior; replace or reshape APIs, navigation, screens and workflows when the unified product requires it.
+> **Relationship to v1:** v2 has no runtime connection to v1. v1 (Next.js + Firebase) may stay live while v2 is built, but it supplies neither the information architecture nor the acceptance criteria. There is no shared database, shared auth, dual-write, synchronization, parity requirement, or production-data migration in scope.
 
 ---
 
 ## 0. For the implementing agent — read this first
 
-**Part I (§1–§18) is history and reference.** It describes what is already built and why; the DDL and API contract there match the code on `main`. Read it to understand the shape of the system before extending it. The two v1 files it tells you to read (`firestore.rules`, `functions/src/rates.ts`) have already been ported — the rate engine lives in `packages/shared/src/rate-engine/`, the access rules in `apps/api/src/authorization/policies.ts`.
+**This is one plan (§1–§47).** Earlier section numbers describe the platform core and later section numbers describe the wider operational product, but they are one app, one architecture and one release direction. `PROGRESS.md` records what happens to exist today; unchecked work anywhere in this document remains part of the unified v2 build.
 
-**Part II (§19–§47) is the work to do.** Before touching each module, read the existing implementation named in that section and follow its pattern rather than inventing a parallel one. Rules that hold for all of it:
+Before changing a module, inspect the implementation that already exists, then judge it against this specification. Reuse is earned by fit and correctness—not by age. The existing rate engine, authorization policies, tenancy model and export model are valuable tested components, but no existing route, schema or screen is protected merely because it shipped during an earlier phase.
+
+Rules that hold across the whole build:
 
 1. **Build phase-by-phase (§42). Do not batch phases.** Each phase is independently demoable and testable. Ship and verify one before starting the next — that is how Phases 0–4 were built, and it worked.
-2. **Migrations are additive and forward-only.** `infra/migrations/NNNN_name.sql`, numbered from `0006`. No existing column is dropped or retyped; new columns are nullable or defaulted. Existing endpoints keep their response shapes — new fields are added, never renamed.
+2. **Database changes are forward-only.** Use numbered SQL files in `infra/migrations/`. Because this application has not launched, a cleaner unified model may replace an early pre-launch shape when necessary; make the change explicitly, update every caller, and prove it with tests. “Backward compatibility” with prototype data or prototype APIs is not a product goal.
 3. **Treat the DDL and API contracts in this document as canonical.** They are fully specified — do not invent alternative shapes.
 4. **Domain logic goes in `packages/shared` as pure functions** (no DB imports), the way the rate engine does. The API loads rows and passes them in. This is what makes it exhaustively testable, and the sustainability numbers *must* be exhaustively tested.
 5. **The calculation principles in §41 are non-negotiable.** They outrank convenience, UI polish and schedule. Read them before writing a single carbon-related line.
 6. **When a genuine product decision is unspecified, stop and ask the user** rather than guessing. The open items are listed in §17 and §45; everything else is decided.
-7. **What this spec does NOT contain:** final visual design (spacing, colors, copy) and per-screen pixel layout. Screen *inventory, purpose, data, and actions* are specified (§8/§9, §20, §32); §40 sets the design constraints the visuals must satisfy.
+7. **Design the application as one coherent product.** The screen inventory, purpose, data and actions are specified (§8/§9, §20, §32), while §40 sets the experience constraints. Existing web and mobile screens are references only; do not reproduce their navigation or layout by default.
 
 Conventions used in the DDL: every table has `id uuid primary key default gen_random_uuid()`, `created_at timestamptz not null default now()`, and `updated_at timestamptz not null default now()` unless stated otherwise. Enumerated values are `text` columns with `CHECK` constraints (easier to migrate than native enums); allowed values are listed inline. Money is stored as integer minor units (`*_cents`) unless noted. **Physical quantities are `numeric`, never integer minor units** — mass in kilograms, distance in kilometres, energy in kWh, emissions in kgCO₂e (§25.3, §41). All foreign keys are `not null` unless marked `nullable`.
 
@@ -26,26 +28,28 @@ Conventions used in the DDL: every table has `id uuid primary key default gen_ra
 
 ## 1. Why we are doing this
 
-v1 works but is hard to use and hard to evolve. The complexity comes from two sources:
+CrewQuo v2 is the operating system for companies that deliver projects through their own teams, subcontractors, suppliers and clients. It connects commercial control with what happens on site: scope and rates, crew and time, evidence and documents, assets and material outcomes, carbon calculations, client reporting and sign-off.
 
-1. **The data is deeply relational, but Firestore is a document store.** Companies → engagements → projects → rate cards → time logs → invoices is textbook SQL. Firestore forces denormalization, fan-out reads, and duplicated writes.
-2. **Authorization lives in custom claims + security rules.** v1's git history is dominated by claims/access bugs (`refresh-all-claims`, `grant-project-access`, `diagnose-client-access`, "Firestore undefined value error"). The `ownCompany`/`activeCompany`/`subcontractorRoles` context-switching is spread across JWT claims and `firestore.rules` — the main source of fragility.
-
-Moving authorization into an **API layer backed by Postgres** collapses that class of problem: access checks become SQL `WHERE` clauses and middleware — one source of truth, testable in isolation.
+The product is new. It is not a reskin of v1, a screen-for-screen replacement, or a migration utility. The architecture is relational because the domain is relational; authorization lives in the API because company and project boundaries must be explicit and testable. Those are product foundations, not a mandate to preserve an older application's structure.
 
 ### Goals
-- **Web-first build order** *(revised 2026-08-17 — see decision #21)*. Every feature is built and proven complete on the web app before it is built on mobile. Mobile remains the intended day-to-day surface for supervisors and crew in the field, but it is a **port of finished functionality, not a parallel build**.
+- **One product, purpose-built surfaces.** Web is the operational and administrative workspace; mobile is the field workspace. They share the same domain and design language, but each is designed around its context instead of copying the other.
 - **Straight to the point.** Fewer screens, fewer taps, opinionated default flows.
+- **Complete project lifecycle.** A team can win, plan, staff, deliver, evidence, cost, report and close a project without leaving CrewQuo.
+- **Trustworthy records.** Commercial, audit and sustainability outputs are reproducible and traceable to their source records.
 - Own the backend: Postgres + a TypeScript API on Render, deployable and debuggable end to end.
-- Keep what's genuinely good in v1: the **rate/margin engine** and the **PAY vs BILL** model.
+- Preserve only proven domain ideas that still fit, particularly the **rate/margin engine** and **PAY vs BILL** model.
 
-> **Historical note.** Phases 1–3 were built mobile-first under the original goal ("Expo is the primary client; web is secondary"). That produced a working mobile core loop and a web app that stops at the rate-card console — the imbalance §9.1 now closes. The shipped mobile screens stay and keep working; the *order of new work* is what changed.
-
-### Non-goals (v2.0)
-- Migrating v1 production data (v1 stays live).
-- Feature parity on day one — ship the core loop first (§11).
+### Non-goals
+- Reproducing v1's screens, navigation, data model or feature boundaries.
+- Migrating or synchronizing v1 production data.
+- Treating the current prototype clients as the target user experience.
 - Real-time collaboration / live sync.
-- Offline-first mobile (deferred to Phase 6).
+- General-purpose ERP/accounting, payroll, fleet telematics or carbon-accounting certification.
+
+### Definition of v2 complete
+
+The unified build is complete only when Phases 0–13 are complete: a company can onboard and subscribe; plan, staff and commercially control a project; capture time, cost, evidence, diary, assets and material outcomes; calculate traceable sustainability results; manage variations, scheduling and compliance; produce reproducible client reports and sign-off; and run the appropriate workflows through the finished web and mobile experiences. Completing the old core loop or the web shell alone is not “v2 complete.”
 
 ---
 
@@ -56,8 +60,8 @@ Single Turborepo monorepo, pnpm workspaces.
 ```
 crewquo-v2/
 ├─ apps/
-│  ├─ mobile/        Expo + expo-router (field client — ported after web is complete, §42 Phase 13)
-│  ├─ web/           Next.js on Vercel (PRIMARY build surface: full app + client portal + super-admin console)
+│  ├─ mobile/        Expo + expo-router (purpose-built field workspace)
+│  ├─ web/           Next.js on Vercel (operations, commercial, client and admin workspaces)
 │  └─ api/           Express 5 + node-postgres on Render
 ├─ packages/
 │  ├─ shared/        Zod schemas, domain types, the rate engine (pure TS, no I/O)
@@ -426,7 +430,7 @@ There is **no CLIENT/SUBCONTRACTOR role** — those are engagement positions, re
 
 ---
 
-## 5. Auth (replacing Firebase Auth)
+## 5. Authentication
 
 - **Passwords:** bcrypt (cost 12). **Tokens:** short-lived JWT access token (15 min) + rotating refresh token persisted in `refresh_tokens (id, user_id, token_hash, expires_at, revoked_at)`. Mobile stores tokens in `expo-secure-store`; web uses httpOnly, Secure, SameSite=Lax cookies.
 - **Google sign-in:** `google-auth-library` `verifyIdToken` → upsert `users.google_sub`. Offered beside email/password on both clients.
@@ -509,6 +513,8 @@ Adding a *new* key requires a one-line enforcement hook the first time; after th
 ### Super-admin console (`apps/web`, `isSuperAdmin` only)
 Plans CRUD (create/edit/reorder/publish/archive; trial days; `operates_downstream`) · price editor per currency+interval (syncs to MoR) · feature matrix · limit matrix · companies view (live usage vs limits, apply overrides, comp/extend trials, force plan change) — every change written to `audit_logs`.
 
+**Implemented 2026-08-17** across two screens: `/admin/plans` (the catalog everyone resolves against) and `/admin/companies` (one account at a time). Two rules the console follows rather than re-deriving: it reads `resolveEntitlements` and `getAllUsage`, so it can never display an allowance the product would refuse; and platform staff usually own **no company**, so the `/admin/*` area is the one part of the workspace that renders without an active membership. Placeholder companies are hidden from the list by default — every invite creates one (§3.6).
+
 ### Seed plans (editable rows, not constants)
 
 | Plan | Price (USD/mo, billed yearly) | operates_downstream | active_subcontractors | internal_seats | audit_retention_days | features |
@@ -520,6 +526,8 @@ Plans CRUD (create/edit/reorder/publish/archive; trial days; `operates_downstrea
 | **Enterprise** | custom | true | unlimited | unlimited | unlimited | all |
 
 Monthly (no annual commit) ≈ +20%. Trial: 14 days on paid plans, no card. Metering axis = **active subcontractors** only; client portal is a feature gate, not a second meter. "Be a subcontractor" (Crew) is free forever — the growth funnel. Placeholder clients are free/unlimited (only real portal logins count toward `clients`).
+
+> **The placeholder-client exemption is live as of 2026-08-17.** `countClients` excludes engagements whose client side is still `is_placeholder`, which required first clearing that flag when an invitee *claims* a stub (§3.6 CLAIMED path) — until then the flag stayed true for companies that had genuinely joined, and filtering on it would have excluded real customers instead of stubs. `countActiveSubcontractors` deliberately does **not** get the same exemption and still counts `PENDING` edges: the exemption above names clients only, and a free pending subcontractor edge would let the `active_subcontractors` cap be walked past by inviting.
 
 ### Billing — Merchant of Record (required: PH-based seller, no local business permit)
 Stripe-direct (PH unsupported) and local PH gateways (need DTI/SEC) are ruled out. Use an **MoR** — the provider is the legal seller, so no permit is needed and they handle global VAT/GST.
@@ -534,9 +542,9 @@ On purchase/renewal, snapshot effective entitlements into `company_subscriptions
 
 ---
 
-## 6. Rate engine (port `functions/src/rates.ts` verbatim)
+## 6. Rate engine
 
-Move v1's [functions/src/rates.ts](functions/src/rates.ts) into `packages/shared/src/rate-engine/` as **pure functions over plain data** (no DB imports). The API loads rate cards from Postgres and passes them in. Preserve exactly:
+Implement the validated rate behavior in `packages/shared/src/rate-engine/` as **pure functions over plain data** (no DB imports). The API loads rate cards from Postgres and passes them in. v1's `functions/src/rates.ts` may be used as a behavioral test source, but it is not the target architecture. Preserve the approved commercial rules:
 
 - **`shiftTypeToRateLabel`** mapping — and the DB code equivalence:
   `WEEKDAY_DAY→MON_FRI_DAY`, `NIGHT→MON_THU_NIGHT`, `SUNDAY→SUNDAY`, `SHIFT→SHIFT`, `DAILY→DAILY`. (The `FRI_SAT_NIGHT` label exists for rate cards but is selected by date logic, matching v1's display labels.)
@@ -546,7 +554,7 @@ Move v1's [functions/src/rates.ts](functions/src/rates.ts) into `packages/shared
 - **`applyMinHours`**.
 - **`getHolidayInfo`** + holiday multipliers, reading `rate_card_templates.timeframe_definitions` (`type:'holiday'`, `holidayDates:string[]`, `holidayMultiplier`).
 
-Add a Vitest suite pinning **every branch** — this is the highest-value, lowest-risk port and the one place v1 had real bugs (weekend/holiday labels).
+Add a Vitest suite pinning **every branch**. Rates are financially sensitive, so inherited behavior is retained only when a named test proves it is still intended.
 
 ---
 
@@ -563,6 +571,7 @@ POST   /v1/auth/request-password-reset | reset-password | verify-email
 
 # Me / context
 GET    /v1/me                                  -- profile
+PATCH  /v1/me                                   -- own name + avatar (email is not editable here)
 GET    /v1/me/memberships                       -- company switcher source
 POST   /v1/me/companies                          -- create a new company (become OWNER)
 
@@ -578,6 +587,9 @@ GET    /v1/providers                              -- companies I engage (client 
 POST   /v1/providers                              -- create provider (+ placeholder company + engagement + invite)
 GET    /v1/members                                -- memberships in active company
 POST   /v1/members/invite                         (OWNER/ADMIN; MEMBER invite; withinLimit internal_seats)
+PATCH  /v1/members/:membershipId                  (OWNER/ADMIN; role + status. An admin may not change or
+                                                   mint an OWNER; a company keeps >=1 active owner)
+DELETE /v1/members/:membershipId                  (OWNER/ADMIN; frees a seat. Same two invariants)
 
 # Rate engine
 CRUD   /v1/role-catalog
@@ -617,10 +629,19 @@ POST   /v1/billing/checkout                         -- returns MoR hosted-checko
 POST   /v1/billing/webhook                          -- MoR webhook (no auth; signature-verified)
 GET    /v1/entitlements                             -- resolved entitlements + live usage for active company
 
-# Super-admin (isSuperAdmin only)
+# Super-admin (isSuperAdmin only). No X-Company-Id — these operate ON companies, not from inside one.
 CRUD   /v1/admin/plans  /v1/admin/plans/:id/prices  /v1/admin/features  /v1/admin/limits
-GET    /v1/admin/companies  POST /v1/admin/companies/:id/overrides  POST /v1/admin/companies/:id/comp-trial
+GET    /v1/admin/companies            -- ?search (name or member email) &planId &includePlaceholders
+                                         &limit &cursor (keyset on created_at,id). Placeholders excluded
+                                         by default: every invite creates one, so they outnumber real accounts
+GET    /v1/admin/companies/:id        -- resolved entitlements + live usage + every override
+POST   /v1/admin/companies/:id/overrides          -- exactly one of the feature pair or the limit pair
+DELETE /v1/admin/companies/:id/overrides/:overrideId
+POST   /v1/admin/companies/:id/comp-trial         -- { planId, days }; extends a live trial, restarts a lapsed one
+POST   /v1/admin/companies/:id/subscription       -- { planId, status, … }: §5B's "force plan change"
 ```
+
+Every super-admin write that can change what a company may do **invalidates that company's entitlement cache** and is **audited against the subject company**, not the operator's — the trail a customer reads is their own. The `/subscription` route is the one addition to §7's original list; §5B named the capability ("force plan change") without naming a route.
 
 ---
 
@@ -635,12 +656,10 @@ Driver messages never reach the client; the envelope carries a fixed message per
 
 ---
 
-## 8. Mobile app (Expo — field client, ported after web)
+## 8. Mobile app (Expo — field workspace)
 
-> **Status (revised 2026-08-17, decision #21): maintenance only until §42 Phase 13.**
-> What is already shipped — login, register, home, company switcher, log-time, approvals inbox, push-token registration — **stays, keeps working, and is kept green in CI**. It is not deleted and not frozen against bug fixes or API-contract changes.
-> **No new mobile screens are built until the web surface in §9 is functionally complete.** Every Part II feature (evidence, diary, assets, sustainability, variations, scheduling, the supervisor experience) is built on web first, proven, and then ported in Phase 13.
-> The screen inventory below remains the target design for the mobile app; the routes not yet built simply arrive in Phase 13 rather than alongside each feature phase.
+> Mobile is a first-class surface of the unified v2 product. Its target is the supervisor and crew member working on site, often one-handed and under time pressure. The screens currently in `apps/mobile` are an implementation prototype, not the target information architecture.
+> Web-led sequencing may be used to stabilize shared domain behavior, but mobile is not a port or a reduced web app. Phase 13 designs and validates the complete field experience against the jobs in this section and §32.
 
 `expo-router`, file-based, bottom-tab layout, **one primary action per screen**. Dependencies: `@tanstack/react-query`, `react-hook-form` + `zod`, `expo-secure-store`, `expo-notifications`, `@sentry/react-native`, `expo-updates` (OTA). Data layer: react-query against `packages/api-client`; optimistic updates on submit/approve.
 
@@ -655,21 +674,23 @@ Driver messages never reach the client; the envelope carries a fixed message per
 - `(app)/company/providers` → my subcontractors → `/providers` → add provider (gated).
 - `(app)/settings` → profile, plan/usage, sign out → `/me`, `/entitlements`.
 
-Notifications: push on submit / approve / reject. Offline draft capture = Phase 6.
+Notifications: push on submit / approve / reject. Resilient offline draft capture is decided and implemented in Phase 13.
 
 ---
 
-## 9. Web app (Vercel) — the primary build surface
+## 9. Web app (Vercel) — operations and administration workspace
 
-Next.js (App Router). **Every feature ships here first and ships here complete.** Shares `packages/shared` + `packages/api-client` with mobile — **no business logic duplicated.** Auth via httpOnly cookies (SSR-friendly).
+Next.js (App Router). This is the full workspace for project operations, commercial control, clients, reporting and administration. It shares `packages/shared` + `packages/api-client` with mobile—**no business logic duplicated.** Auth via httpOnly cookies (SSR-friendly).
 
-**Areas:** Auth pages · Dashboard · **Rate cards & templates** (the big tables) · Projects + assignments + summaries · Time/expense review at scale · **Client portal** (line items, notes, audit trail, exports) · **Invoices** · Reports · Company & members admin · **Super-admin console** (§5B) · **Public marketing + legal pages** (pricing, terms, privacy, refunds) for MoR verification · plus every Part II section (§20).
+**Areas:** Auth pages · Dashboard · **Rate cards & templates** (the big tables) · Projects + assignments + summaries · Time/expense review at scale · **Client portal** (line items, notes, audit trail, exports) · **Invoices** · Reports · Company & members admin · **Super-admin console** (§5B) · **Public marketing + legal pages** (pricing, terms, privacy, refunds) for MoR verification · every project workspace section in §20.
 
-### 9.1 Web parity backlog (the gap Phases 1–3 left)
+### 9.1 Unified v2 application foundation
 
-Phases 1–3 were built mobile-first, so `apps/web` today is a marketing landing page (`/`), login, an authenticated dashboard home (`/app`), the four rate-card screens and company settings (`/settings` — added 2026-08-17 with the currency decision). Everything below is **shipped, tested API functionality with no web UI at all** — it is the scope of §42's Phase 6W gate, and none of it is new backend work.
+`apps/web` currently contains a small set of prototype screens, while the API already implements several useful capabilities. Neither determines the final app. Phase 5 turns the unified product model into a new navigation system, workspace shell and end-to-end experience. Existing endpoints may accelerate the work, but they may be combined, changed or replaced to support the intended workflows.
 
-| Area | Endpoints already live | Web screens needed |
+The table is a **capability inventory**, not a parity checklist or a prescribed set of screens:
+
+| Product area | Available backend capability | Experience to design |
 |---|---|---|
 | Auth & context | `/v1/auth/*`, `/v1/me/*`, `/v1/companies/:id` | register, forgot/reset password, verify email, company switcher, profile *(company name + currency done: `/settings`)* |
 | Entitlements | `/v1/entitlements` | plan + live usage display, limit-reached states |
@@ -682,7 +703,7 @@ Phases 1–3 were built mobile-first, so `apps/web` today is a marketing landing
 | Audit | `/v1/audit-logs`, `/v1/audit-settings` | trail viewer, per-engagement visibility settings |
 | Super-admin | `/v1/admin/*` | plans/prices/features/limits CRUD, companies + overrides |
 
-**Bulk review at scale is the highest-value item here** and the clearest case for web over mobile: approving 200 time logs across 12 providers is a table with filters and multi-select, not a swipe deck.
+**Bulk review at scale is a defining web workflow:** approving 200 time logs across 12 providers needs filters, grouping, exception handling and multi-select. Its acceptance test is that the job is fast and safe—not that every existing endpoint has acquired a page.
 
 ---
 
@@ -704,30 +725,30 @@ Phases 1–3 were built mobile-first, so `apps/web` today is a marketing landing
 
 **Phase 1 — Identity, tenancy & entitlements.** `users`, `companies`, `memberships`, `refresh_tokens`. Auth (register/login/google/refresh/logout, reset). Auth-context middleware + `authorization/policies.ts` + tests. `/me/*`. **Entitlements engine** (`features`/`limits`/`plans`/…, `resolveEntitlements`, `hasFeature`/`withinLimit`) + super-admin plan CRUD, seeded with §5B defaults. Minimal Expo login + company switcher. *Milestone: log in, pick a company, gates read from configurable plans.*
 
-**Phase 2 — Rate engine + catalog.** Port `rates.ts` into `packages/shared` with full Vitest coverage. `role_catalog`, `rate_card_templates`, `rate_cards` (PAY/BILL, no per-card currency), holiday timeframes, `/v1/rates/resolve`. Web screens to manage them. *Milestone: rates resolve for a date+shift with correct margins.*
+**Phase 2 — Rate engine + catalog.** Implement the validated rate rules in `packages/shared` with full Vitest coverage. `role_catalog`, `rate_card_templates`, `rate_cards` (PAY/BILL, no per-card currency), holiday timeframes, `/v1/rates/resolve`. Web tools to manage them. *Milestone: rates resolve for a date+shift with correct margins.*
 
-**Phase 3 — The core loop (mobile-first).** `engagements`, `providers`, `projects`, `project_assignments`, `invites` (create provider + accept). `time_logs` + `expenses` with `DRAFT→SUBMITTED→APPROVED/REJECTED`. Mobile: log time → submit; approvals inbox. `/projects/:id/summary`. *Milestone: a subcontractor logs time on a phone and an admin approves it — the product's heartbeat.*
+**Phase 3 — Delivery loop domain.** `engagements`, `providers`, `projects`, `project_assignments`, `invites` (create provider + accept). `time_logs` + `expenses` with `DRAFT→SUBMITTED→APPROVED/REJECTED`. Prototype mobile flows prove log time → submit → approve; `/projects/:id/summary` proves the commercial result. *Milestone: the product's central delivery transaction works end to end.*
 
-**Phase 4 — Client portal + exports + audit.** Client-side portal via engagements + `projects.client_visible`; `line_item_notes`, `audit_logs` (+ nightly `expires_at` cleanup job), `audit_settings`. Server-side PDF/XLSX exports. Placeholder→linked company **merge flow**. *Milestone: a client logs in, sees only granted projects + visible audit trail, and an owner downloads an export whose numbers match the summary endpoint.* **Backend complete 2026-08-17** — the web portal screens moved into Phase 6W (which builds every missing web surface at once), and the *client-facing* export moved to Phase 10 so it renders from a report snapshot rather than a live recalculation (owner decision).
+**Phase 4 — Client collaboration, exports + audit domain.** Client-side project access via engagements + `projects.client_visible`; `line_item_notes`, `audit_logs` (+ nightly `expires_at` cleanup job), `audit_settings`. Server-side PDF/XLSX exports. Placeholder→linked company **merge flow**. *Milestone: the client boundary, audit visibility and export calculations work end to end.* **Backend complete 2026-08-17**; the actual client experience is designed with the unified app in Phase 5, and snapshot-based client reports arrive in Phase 10.
 
-**Phase 5 — Billing, invoicing, notifications, polish.** `invoices`/`invoice_items`. **MoR billing** (Lemon Squeezy/Paddle): checkout, webhooks, trial→paid, entitlement snapshots. Super-admin price editor + subscription management. Push + email notifications. Reports. Public marketing + legal pages. *(EAS store submission moved to Phase 13.9 — decision #21.)*
+**Phase 5 — Unified v2 web application.** Design and build the new information architecture, navigation, workspace shell and complete core workflows described in §9.1: onboarding, company context, dashboard, projects, counterparties, members, time and expense review, rate management, client collaboration, audit and administration. Existing screens may be replaced. *Milestone: a user can run the v2 core lifecycle through one coherent web product, with every empty/loading/error/locked/forbidden state designed.*
 
-**Phase 6 (deferred).** Offline draft capture, real-time updates, and the optional v1→v2 per-customer importer (§12).
+**Phase 6 — Commercial readiness.** `invoices`/`invoice_items`; Merchant-of-Record checkout, webhooks, trial→paid and entitlement snapshots; subscription management; push + email notifications; public marketing, pricing and legal pages; production observability and launch operations. *Milestone: a company can discover, subscribe to and operate the product without manual platform intervention.*
 
-> **Phases 6W–13 are specified in §42.** **Phase 6W** closes the web parity backlog (§9.1) — everything the API already does, given a web UI. **Phases 7–12** are the v2.1 expansion, web-only: project evidence, site diary, locations, asset & material tracking, the sustainability/carbon engine, reporting, variations, scheduling and subcontractor compliance. **Phase 13** ports the whole thing to mobile, including the supervisor field experience (decision #21). The **server-side PDF/XLSX export engine** — the shared foundation for §29's reports — **landed 2026-08-17** in `apps/api/src/modules/exports/`, so Phase 6W is now the next gate.
+> **Phases 5–13 are detailed in §42.** They are all v2: the new web application, commercial readiness, evidence, site diary, assets and materials, sustainability, reporting, variations, scheduling, compliance and the complete mobile field experience. Phase boundaries control delivery risk; they do not divide the product into separate scopes.
 
 ---
 
 ## 12. Relationship to v1
 
-v2 is a **new Firebase-free product** with its own DB, auth, and app; v1 runs untouched. **No live coupling** (no shared tokens, dual-writes, or sync). **Optional future importer (Phase 6):** a one-off ETL reading a v1 company's Firestore export into v2 Postgres, run per-customer on request. v2's schema is a clean superset, so it's well-scoped — but it is not part of v2.0 and not a runtime dependency.
+v2 is a **new Firebase-free product** with its own database, auth, information architecture and applications. v1 may run untouched during development. There is **no live coupling**: no shared tokens, dual-writes, synchronization or compatibility layer. Production-data import is not in this plan; if it is ever commissioned, it gets a separate onboarding specification and cannot reshape the v2 product model.
 
 ---
 
 ## 13. Testing strategy
 
 - **`packages/shared` (rate engine):** exhaustive Vitest unit tests — pin every branch before any UI depends on it.
-- **API:** integration tests against a throwaway Postgres (Vitest + testcontainers, or a scratch Render DB). **One test per v1 `firestore.rules` rule** asserting the same allow/deny — this proves authorization parity.
+- **API:** integration tests against a throwaway Postgres (Vitest + testcontainers, or a scratch Render DB). Authorization tests cover every v2 role, capability, company edge and client-visibility boundary. v1 rules may reveal cases worth testing, but parity is not the assertion.
 - **Mobile/web:** component tests for core flows + E2E happy-paths (Playwright web, Maestro mobile) for login → log time → approve.
 - **CI gate:** lint + type-check + unit + API integration on every PR; block merge on failure.
 
@@ -737,9 +758,9 @@ v2 is a **new Firebase-free product** with its own DB, auth, and app; v1 runs un
 
 | Risk | Mitigation |
 |---|---|
-| Scope balloons into v1 parity chase | Ship Phase-3 core loop first; everything else additive; non-goals firm. |
-| Rate-engine regressions | Port pure logic verbatim + pin every branch before building on it. |
-| Authorization gaps vs v1 | One policy module; one test per `firestore.rules` rule. |
+| Existing code quietly dictates the new product | Review every workflow against this unified specification; treat prototypes as replaceable and accept work by user outcome. |
+| Rate-engine regressions | Keep the engine pure and pin every approved branch before building on it. |
+| Authorization gaps | One policy module; explicit allow/deny tests for every role, capability, company edge and client boundary. |
 | One-hop leak (a company sees past its edge) | Central engagement-scope check; explicit deny tests at depth ≥ 2. |
 | `activeCompany` context bugs (v1's pain) | `memberships` rows + per-request context; nothing to go stale. |
 | MoR payout/verification friction | Confirm PH payout method up front; keep Paddle as fallback to Lemon Squeezy. |
@@ -747,9 +768,9 @@ v2 is a **new Firebase-free product** with its own DB, auth, and app; v1 runs un
 
 ---
 
-## 15. Reconciliation notes (what changed from the earlier draft)
+## 15. Domain-model decisions
 
-This spec resolves contradictions that existed while the plan evolved: (a) the old v1 client model (`client_organizations`/`client_users`/`contractor_client_relationships`/`client_project_access`) is **removed** — clients are `companies` reached via `engagements`; (b) `time_logs`/`expenses`/`invoices` now carry `engagement_id` and company-graph FKs instead of v1's `subcontractor_id`/`client_id`; (c) `currency` removed from `rate_cards` (inherited from company); (d) `plan_tier`/`PREMIUM`/`CLIENT` role references replaced by entitlements + `operates_downstream` and the OWNER/ADMIN/MANAGER/MEMBER role set; (e) all external-context references removed so this file is self-contained.
+The unified model makes these choices: (a) clients, contractors and subcontractors are `companies` connected by `engagements`, not separate party systems; (b) `time_logs`/`expenses`/`invoices` carry `engagement_id` and company-graph foreign keys; (c) rate cards inherit company currency; (d) subscription entitlements and `operates_downstream` are separate from OWNER/ADMIN/MANAGER/MEMBER permissions; (e) this file is self-contained and does not require v1 context to implement the product.
 
 ---
 
@@ -767,9 +788,9 @@ This spec resolves contradictions that existed while the plan evolved: (a) the o
 10. **Billing via Merchant-of-Record** (Gumroad, decided 2026-08-17; Lemon Squeezy/Paddle were the earlier candidates); hard-cap tiers.
 11. **Membership roles:** OWNER/ADMIN/MANAGER/MEMBER; positions (client/provider) come from engagements.
 
-### Locked for Part II (the v2.1 expansion)
+### Whole-product decisions
 
-12. **Extend, don't fork.** No parallel project model, no second auth system, no duplicate storage layer. New modules sit beside the existing ones in `apps/api/src/modules/` and reuse `policies.ts`, `resolveEntitlements`, `recordAudit` and the engagement graph.
+12. **One coherent system.** No parallel project model, second auth system, duplicate storage layer, alternate calculator or separate “sustainability app.” All capabilities share the project, company graph, authorization, entitlement, audit and file foundations defined here.
 13. **Job functions are a capability layer over the existing four roles, not new roles** (§37). Project Manager / Supervisor / Worker / Finance / Sustainability are *bundles of capability keys* granted per membership. `memberships.role` keeps its current meaning and current behaviour. **Client stays an engagement position**, never a user role — decision #7 is unchanged.
 14. **Physical units:** mass in **kilograms** (`numeric(14,3)`), distance in **kilometres** (`numeric(12,3)`), energy in **kWh**, emissions in **kgCO₂e** (`numeric(18,6)`). Stored at full precision, rounded only for display. Whatever unit the user typed is stored alongside the converted value.
 15. **The carbon engine is to sustainability what the rate engine is to costing** — versioned reference data in the database, pure resolution/calculation functions in `packages/shared/src/carbon-engine/`, a frozen snapshot written at the moment of calculation. Same architecture, same testing bar (§26, §27).
@@ -778,19 +799,16 @@ This spec resolves contradictions that existed while the plan evolved: (a) the o
 18. **Storage is not an outcome.** An asset in storage stays `PENDING` and is excluded from reuse/recycling/diversion numerators *and* denominators until a final destination is recorded (§25.4).
 19. **Every generated report stores a reproducible snapshot** of its numbers, factor-set versions and source record ids, plus the rendered file. Re-rendering reads the snapshot; it never recalculates (§29.4).
 20. **Waste-hierarchy and destination semantics are configurable data, not code** — the `destination_types` table carries the tier and the counts-as flags, so an org can see and adjust its own assumptions (§25.4, §39).
-21. **Web-first build order** *(owner decision, 2026-08-17 — reverses the original "mobile-first" goal in §1).* Every feature is built complete on web before any mobile work. Phases 6W–12 are web-only; **all** mobile work is consolidated into Phase 13, after the web app is functionally complete. Shipped mobile screens are maintained, never deleted. Rationale: proving the domain once, on the faster surface, beats debugging product decisions across two clients simultaneously — and the API is client-agnostic (§46), so the later port is UI work, not rework. Cost accepted: the supervisor field experience (§32), which is the most naturally mobile part of the product, demos on desktop until Phase 13.
+21. **Web-led delivery order.** Shared domain capabilities are proven through the web workspace before the complete mobile field experience is built in Phase 13. This is sequencing, not product hierarchy: mobile is first-class, receives its own interaction design, and is accepted against field jobs rather than against web screens. Existing prototype screens may be replaced.
 
 ---
 
 ## 17. Open items (ask the user before building the affected phase)
 
-**Part I:**
-- **Exact seed pricing per currency** — §5B has USD anchors; confirm real numbers + which currencies to localize (affects `plan_prices` seed, Phase 1/5).
-- **MoR payout method** — confirm the PH payout route and Gumroad's subscription-webhook coverage before building against it (Phase 5).
+- **Exact seed pricing per currency** — §5B has USD anchors; confirm real numbers + which currencies to localize (affects `plan_prices`, Phase 6).
+- **MoR payout method** — confirm the PH payout route and Gumroad's subscription-webhook coverage before building against it (Phase 6).
 - **Per-rate-card currency** — company-level currency can't express "pay crew in PHP, bill a US client in USD"; mixing currencies inside one company makes `calculateMargin` subtract different units. Decide before multi-currency clients are real.
-- **Where is the Codex frontend?** Not in this repo — `apps/web` contains only the Phase 2 console.
-
-**Part II open items are listed in §45.**
+- The domain-specific open items for evidence, carbon, offline capture and reports are listed in §45.
 
 ---
 
@@ -798,34 +816,29 @@ This spec resolves contradictions that existed while the plan evolved: (a) the o
 
 `PROGRESS.md` is the living checklist; this is the one-paragraph version.
 
-**Shipped:** the monorepo and migration runner (Phase 0); users/companies/memberships, JWT + Google auth, the authorization policy module, and the super-admin-configurable entitlements engine (Phase 1); the rate engine in `packages/shared` with 37 pinned branches, the rate-card catalog and `/v1/rates/resolve` plus a web console (Phase 2); engagements, providers/clients/invites with placeholder auto-merge, projects and assignments, the `DRAFT→SUBMITTED→APPROVED/REJECTED` work loop with a frozen PAY snapshot, project summaries with BILL/margin, and Expo push (Phase 3); the append-only audit trail with retention, per-engagement portal settings, the client portal read surface and line-item notes (Phase 4, partial).
+**Implemented:** the monorepo and database-change runner (Phase 0); users/companies/memberships, JWT + Google auth, the authorization policy module, and the super-admin-configurable entitlements engine (Phase 1); the rate engine in `packages/shared` with 37 pinned branches, the rate-card catalog and `/v1/rates/resolve` plus prototype web tools (Phase 2); engagements, providers/clients/invites with placeholder auto-merge, projects and assignments, the `DRAFT→SUBMITTED→APPROVED/REJECTED` work loop with a frozen PAY snapshot, project summaries with BILL/margin, and Expo push (Phase 3); the append-only audit trail with retention, per-engagement portal settings, client project reads, line-item notes and owner exports (Phase 4 domain/backend).
 
-**Open on the existing roadmap:** the web portal screens (folded into Phase 6W); Phase 5 billing/invoicing/notifications. **Closed 2026-08-17:** Phase 4's server-side PDF/XLSX **export engine**; the `FRI_SAT_NIGHT` label rule moved out of code into per-company `rate_card_templates` data (migration 0007, with a behaviour-preserving backfill); the `USD` currency default plus a settings endpoint to change it (migration 0006).
+**Completed implementation work:** Phase 4's server-side PDF/XLSX **export engine**; the `FRI_SAT_NIGHT` label rule moved out of code into per-company `rate_card_templates` data (database change 0007, with a behaviour-preserving backfill); the `USD` currency default plus a settings endpoint to change it (database change 0006).
 
-**The web/mobile imbalance:** `apps/web` has a marketing landing page, login, a dashboard home and the four rate-card screens. `apps/mobile` has the working core loop. Everything from Phases 1, 3 and 4 — projects, approvals, providers, members, invites, portal, audit, super-admin — has **no web UI**. That is the §9.1 backlog and the reason Phase 6W exists.
+**The web workspace is built (Phase 5, 2026-08-17):** two route groups behind one auth provider, and every workflow reachable — auth and profile, plan and usage, engagements, providers and clients, members (invite, re-role, suspend, remove), projects with server-computed margin, work entry and bulk approval at scale, the client portal, the audit viewer, and the super-admin console over both plans and individual companies. `apps/mobile` remains a prototype proving parts of the core loop; Phase 13 designs the field product.
 
-**Next: Phase 6W — web parity** (§42), then Phase 7. All mobile work is now Phase 13 (decision #21).
+**Next: Phase 6 — commercial readiness** (§42), then the remaining operational capabilities. Phase 13 completes the purpose-built mobile field experience.
 
-**Verification.** `pnpm --filter @crewquo/api verify:e2e` runs 93 live-Postgres checks over currency, label rules, the Phase 3/4 core-loop numbers (PAY 40000 / BILL 65550 / margin 24000 / 36.61%), the export engine (including the XLSX's own cells against `/summary`), malformed-identifier handling, both migration backfills and the portal's PAY-exclusion. Re-run it green at the end of every phase.
-
----
----
-
-# PART II — v2.1: Field Operations, Evidence & Sustainability Platform
+**Verification.** `pnpm --filter @crewquo/api verify:e2e` runs 163 live-Postgres checks over currency, label rules, the Phase 3/4 core-loop numbers (PAY 40000 / BILL 65550 / margin 24000 / 36.61%), the export engine (including the XLSX's own cells against `/summary`), malformed-identifier handling, both migration backfills, the portal's PAY-exclusion, the placeholder/meter rules, the super-admin console and member management. `pnpm --filter @crewquo/web test:e2e` runs 17 browser tests over the same loop through the real UI. Re-run both green at the end of every phase.
 
 ---
 
-## 19. What v2.1 is, and what it does not change
+## 19. Complete product definition
 
-### 19.1 The shift
+### 19.1 The whole project lifecycle
 
-v2.0 is a crew-costing product: who worked, at what rate, what did it cost, what is the margin. v2.1 keeps all of that and makes CrewQuo follow a job through its whole life:
+CrewQuo v2 follows a job through its whole life. Crew costing is the commercial spine, while field delivery, evidence, assets, material outcomes, sustainability and client reporting are part of the same product:
 
 ```
 Plan → Crew → Work → Evidence → Assets → Waste/Reuse → Costs → Sustainability → Client Report
 ```
 
-The commercial engine stays the spine. Evidence and sustainability hang off the same projects, the same engagements and the same approval workflow — they are not a second product bolted on the side.
+Every stage uses the same projects, engagements, people, permissions and audit history. Evidence and sustainability are not a second product bolted onto a costing app.
 
 ### 19.2 Who it is for
 
@@ -833,9 +846,9 @@ Businesses running crews, subcontractors, assets and materials across commercial
 
 What they share: the client increasingly wants proof — photographic evidence of the work, a defensible record of where every item went, and a carbon and diversion-from-landfill report they can put in their own ESG return. Today that is assembled by hand from phone photos, weighbridge tickets and spreadsheets. CrewQuo generates it from the data the crew already captured.
 
-### 19.3 What is already there and gets extended (not replaced)
+### 19.3 Shared foundations
 
-| Existing | How v2.1 uses it |
+| Foundation | How the complete product uses it |
 |---|---|
 | `companies` + `engagements` (§3.1–3.2) | Destination organisations, subcontractor compliance and client-level reporting all ride the same company graph. Reuse recipients that are also CrewQuo customers are just companies. |
 | `projects` (§3.4) | Gains locations, evidence, diary, assets, activities, variations, budgets, sign-off. The table itself gains only a small number of nullable columns. |
@@ -847,12 +860,12 @@ What they share: the client increasingly wants proof — photographic evidence o
 | Entitlements engine (§5B) | New feature and limit keys gate the new modules (§43). No new gating mechanism. |
 | Invites, portal, notes (§3.6) | Client sign-off and client-visible evidence reuse the portal surface and its `client_visible` discipline. |
 
-### 19.4 Non-goals for v2.1
+### 19.4 Product-boundary non-goals
 
 - **Not a certified carbon accounting platform.** CrewQuo calculates and discloses; it does not verify. §27.5 and §41 govern what may and may not be claimed.
 - **No bundled emission factor dataset** until redistribution terms are confirmed (§45).
 - **No item-level tracking requirement.** Bulk lines are the default; item-level is opt-in per line (§25.2).
-- **No offline capture** — still Phase 6, and it matters more now that supervisors work in basements and loading bays. Flagged in §45.
+- **Offline capture is a deliberate Phase 13 decision**, not an assumption hidden inside early web work. It matters because supervisors work in basements and loading bays (§45).
 - **Not a replacement for a client's own ESG reporting system.** CrewQuo produces a project/client report and the underlying data; integration/export to third-party ESG platforms is later.
 
 ---
@@ -1887,7 +1900,7 @@ create index on schedule_assignments (project_id, starts_at);
 
 ## 32. Supervisor mobile experience
 
-> **Built in Phase 13, not alongside the feature phases** (decision #21). The web equivalents of everything below ship first; this screen is the field port of proven functionality.
+> **Built in Phase 13, after the shared domain is proven** (decision #21). This is a purpose-designed field experience, not a copy of the web workspace.
 
 A separate, simplified project screen for supervisors — **not** the desktop admin UI shrunk down. New expo-router group `apps/mobile/app/(app)/site/`.
 
@@ -1908,7 +1921,7 @@ TODAY
 - **Add Photo** is reachable in one tap from the site screen and defaults to camera capture.
 - **Complete Day** closes the diary (§23) and prompts for anything obviously missing: no photos today, assets with no destination, unsubmitted time.
 - Everything posts to the **same endpoints** the web app uses. No mobile-only write path, no divergent validation.
-- Offline capture is Phase 6 and is a real gap for basements and lifts — flagged in §45.
+- Offline capture is a Phase 13 decision and is a real gap for basements and lifts—flagged in §45.
 
 ---
 
@@ -2072,7 +2085,7 @@ create table membership_capability_overrides (
 | **Finance** | `commercial.read/manage`, `invoice.manage`, `expense.review`, `time.review`, `variation.approve`, reports |
 | **Sustainability / Compliance** | assets, destinations, weights, `sustainability.*`, `document.manage`, `compliance.manage`, `report.generate` |
 
-**Backward compatibility (essential).** `bundle_key` is null on every existing membership, and a null bundle derives from the role: `OWNER`/`ADMIN` → Admin, `MANAGER` → Project Manager, `MEMBER` → Worker. Nothing changes for a company that never opens the screen.
+**Safe default resolution.** A null `bundle_key` derives capabilities from the membership role: `OWNER`/`ADMIN` → Admin, `MANAGER` → Project Manager, `MEMBER` → Worker. This keeps prototype and seeded memberships valid while the unified capability model is introduced.
 
 **Resolution** mirrors `resolveEntitlements`: `resolveCapabilities(membershipId)` = bundle ⊕ overrides, cached with the same TTL and invalidated on the same events. A route requires **both** `hasFeature(companyId, …)` (does the plan sell it?) **and** `hasCapability(ctx, …)` (may this person do it?), and both live in `policies.ts`/`guards.ts` beside the existing checks. **A capability never widens company scope or the one-hop rule** — those are checked first and independently.
 
@@ -2084,7 +2097,7 @@ create table membership_capability_overrides (
 
 ### 38.1 Organisation dashboard
 
-The existing commercial dashboard stays. Sustainability metrics are added alongside, not in place of it: total tonnes handled · reused · refurbished · donated · recycled · landfill · diversion from landfill % · retained-in-use % · project emissions tCO₂e · **separately** reported avoided emissions tCO₂e.
+The organisation dashboard is designed as one operational view of commercial and sustainability performance: total tonnes handled · reused · refurbished · donated · recycled · landfill · diversion from landfill % · retained-in-use % · project emissions tCO₂e · **separately** reported avoided emissions tCO₂e. Existing prototype widgets do not constrain its layout.
 
 Filters: date range · client · project · project manager · site · destination · asset category.
 
@@ -2182,37 +2195,47 @@ When a product decision and one of these principles conflict, the principle wins
 
 ---
 
-## 42. Delivery roadmap — Phases 7–12
+## 42. Delivery roadmap — Phases 5–13
 
-Same discipline as Phases 0–4: one phase at a time, each independently demoable, each verified end-to-end against live Postgres before the next begins. The phase numbering continues the existing roadmap (§11); the mapping to the brief's own numbering is given for reference.
+This is one v2 roadmap. Each phase is independently demoable and verified end to end before the next begins. The sequence manages implementation risk; every phase below belongs to the new application.
 
-**Sequencing against the existing roadmap.** Phase 4's **export engine** is done (2026-08-17) — §29 builds on `apps/api/src/modules/exports/model.ts`, which is the single place a figure is formatted. **Phase 6W is the next gate.** Phase 5 (billing/invoicing) is independent of everything here and can land whenever revenue requires it, with one dependency: §30.1 links variations to `invoices`, so that FK arrives with Phase 5 or is added when it does.
+**Current position.** Phase 4's domain and **export engine** are complete (2026-08-17); §29 builds on `apps/api/src/modules/exports/model.ts`, the single place a figure is formatted. **Phase 5 is built and verified** (2026-08-17) — every workflow, plus the endpoints the phase itself found missing (super-admin companies console, member management, `PATCH /v1/me`); its closing milestone is an owner judgement on information architecture and visual design. **Phase 6 is next**, and makes the product commercially operable; note that two of its inputs are still open owner decisions (real per-currency pricing, and the Gumroad payout/webhook confirmation — §17). Phases 7–12 then complete the operational scope.
 
-### The web-first gate (decision #21)
+### Web-led sequencing (decision #21)
 
-> **Phases 6W through 12 are web-only. No new mobile screen is built until Phase 13.**
+> Phases 5–12 establish the complete web workspace and shared domain. Phase 13 delivers the complete mobile field workspace.
 >
-> Existing mobile screens (§8) are maintained, not extended: they keep working, stay green in CI, and get updated when an API contract they use changes. Nothing is deleted.
+> This does not make mobile a port. Existing mobile code may be reused or replaced, and the field experience is designed for field jobs, device capabilities, intermittent connectivity and one-handed use.
 >
-> A phase is **not done** until its web surface is complete — every screen, every state (empty, loading, error, limit-reached, permission-denied), not a happy path with the rest deferred. "Complete on web" is the gate for starting the next phase, and the whole point of the reorder is that it is enforced per phase rather than checked at the end.
+> A phase is **not done** until its relevant web experience is complete—every state (empty, loading, error, limit-reached and permission-denied), not only a happy path. Phase 13 is not done until the same standard is met for every in-scope field workflow.
 
-### Phase 6W — Web parity *(new gate, before Phase 7)*
+### Phase 5 — Unified v2 web application
 
-Closes the §9.1 backlog. **No new backend work** — every endpoint listed there already exists, is tested and is verified end-to-end against live Postgres. This is UI only.
+Create the new product experience described in §9 and §20. The existing API capability inventory is useful, but this is not a parity exercise and not necessarily UI-only: reshape contracts or backend orchestration where the workflow needs it.
 
-- [ ] Auth completion: register, forgot/reset password, verify email, profile, company switcher
-- [ ] Entitlements: plan + live usage, limit-reached and feature-locked states
-- [ ] Engagements, providers, clients: list/create/pause/end, invite flows, **public invite-accept page**
-- [ ] Members + invites
-- [ ] Projects: list, detail, create/edit, provider assignment, summary with cost/bill/margin
-- [ ] Time & expenses: entry plus **bulk review/approve at scale** — filters, multi-select, reject-with-reason
-- [ ] Client portal: client-side project list + detail, line items, notes thread
-- [ ] Audit trail viewer + per-engagement visibility settings
-- [ ] Super-admin console: plans/prices/features/limits, companies + overrides
-- [ ] Playwright E2E over the full loop: register → company → provider invite → project → log time → approve → portal → audit
-- *Milestone: everything CrewQuo can already do, doable on the web app — no phone required for any workflow.*
+- [x] Auth completion: register, forgot/reset password, verify email, profile (incl. `PATCH /v1/me`), company switcher
+- [x] Entitlements: plan + live usage, limit-reached and feature-locked states
+- [x] Engagements, providers, clients: list/create/pause/end, invite flows, **public invite-accept page**
+- [x] Members + invites, plus role change, suspend/restore and removal
+- [x] Projects: list, detail, create/edit, provider assignment, summary with cost/bill/margin
+- [x] Time & expenses: entry plus **bulk review/approve at scale** — filters, multi-select, reject-with-reason
+- [x] Client portal: client-side project list + detail, line items, notes thread
+- [x] Audit trail viewer + per-engagement visibility settings
+- [x] Super-admin console: plans/prices/features/limits, companies + overrides + comped trials + forced plan changes
+- [x] Playwright E2E over the full loop: register → company → provider invite → project → log time → approve → portal → audit (17 tests)
+- *Milestone: the core lifecycle feels like one intentionally designed product from onboarding through client collaboration—not a collection of endpoint screens.* **Every workflow is built, reachable and verified; whether it reads as one designed product is the owner judgement still open — see `PROGRESS.md`.**
 
-### Phase 7 — Evidence foundations *(brief Phase 1)*
+### Phase 6 — Commercial readiness
+
+- [ ] `invoices` and `invoice_items`, with totals derived from the same approved work and variation calculations.
+- [ ] Merchant-of-Record checkout, webhooks, trial-to-paid state and entitlement snapshots.
+- [ ] Super-admin price and subscription management.
+- [ ] Push and email notifications with user preferences and retry-safe delivery.
+- [ ] Public marketing, pricing, terms, privacy and refund pages.
+- [ ] Production observability, support tooling, backup/restore rehearsal and launch runbook.
+- *Milestone: a company can discover, subscribe to and operate CrewQuo without manual database or platform intervention.*
+
+### Phase 7 — Evidence foundations
 - **7.0 Storage service** (§22.1): `stored_files`, R2 presign/complete, `sharp` derivatives, download authorization, `storage_gb` metering. Retro-fit expense receipt upload, which Phase 3 deferred.
 - **7.1 Capability layer** (§37): `capabilities`, bundles, overrides, `resolveCapabilities`, `hasCapability`, role-derived defaults. Ship before the modules that need Supervisor ≠ Manager.
 - **7.2 Project locations** (§21).
@@ -2222,7 +2245,7 @@ Closes the §9.1 backlog. **No new backend work** — every endpoint listed ther
 - **7.6 Web UI:** the project section shell (§20) with these five sections — evidence gallery/timeline/filters with drag-and-drop batch upload, document manager, diary editor with Close Day. Desktop upload and batch metadata editing carry this phase; camera capture arrives in Phase 13.
 - *Milestone: a full day's evidence — photos, documents and a closed diary entry — captured and organised on the project from a desktop, attributed, dated and located.*
 
-### Phase 8 — Assets & materials *(brief Phase 2)*
+### Phase 8 — Assets & materials
 - `asset_types` (seeded, no invented weights), `project_assets` with bulk lines and weight provenance (§25.2, §25.3).
 - `destination_types` (seeded per §25.4), `destination_organisations`, `asset_movements` with partial splits and derived `outcome_state`.
 - Mass roll-ups and the pending/allocated split (§28.2, mass only — no carbon yet).
@@ -2230,7 +2253,7 @@ Closes the §9.1 backlog. **No new backend work** — every endpoint listed ther
 - Web: asset table with inline editing, bulk entry/paste-import, movement recording and destination assignment.
 - *Milestone: 42 chairs in, 30 donated and 12 recycled out, with weights, evidence and a destination organisation on each — and the project reports the tonnage split correctly.*
 
-### Phase 9 — Sustainability engine *(brief Phase 3)*
+### Phase 9 — Sustainability engine
 - `emission_factor_sets` / `emission_factors` + the importer and admin UI (§26.1, §26.2).
 - `product_carbon_factors` + the preferred-source resolver (§26.3).
 - `packages/shared/src/carbon-engine/` with exhaustive tests (§27.1).
@@ -2240,7 +2263,7 @@ Closes the §9.1 backlog. **No new backend work** — every endpoint listed ther
 - `sustainability_settings` (§39).
 - *Milestone: a project shows 3.84 tCO₂e emissions and 27.42 tCO₂e avoided, side by side, every number traceable to a factor and a factor-set version.*
 
-### Phase 10 — Reporting & sign-off *(brief Phase 4)*
+### Phase 10 — Reporting & sign-off
 - Sustainability & Completion report (§29.1) with snapshots and reproducible re-render (§29.4).
 - Evidence pack with section selection (§29.2).
 - Disclaimer configuration and claim guards (§29.3).
@@ -2248,24 +2271,24 @@ Closes the §9.1 backlog. **No new backend work** — every endpoint listed ther
 - `CLIENT_PERIOD` report kind + the aggregation query shipped now, UI later (§38.2).
 - *Milestone: a client-ready PDF generated from real project data, regenerable byte-identical a year later.*
 
-### Phase 11 — Commercial & operations *(brief Phase 5)*
+### Phase 11 — Commercial & operations
 - Variations with pricing, approval and revenue feed-through (§30.1).
 - `project_budgets` + computed actuals + variance (§30.2).
 - Scheduling with day/week/month, drag-and-drop assignment, conflicts and requirements (§31).
 - Project timeline (§35).
 - *Milestone: budget vs actual with approved variations included, and a week's crew scheduled with conflicts surfaced.*
 
-### Phase 12 — Compliance & analytics *(brief Phase 6)*
+### Phase 12 — Compliance & analytics
 - Subcontractor compliance documents, statuses and the 90/60/30/14/7 alert ladder (§33).
 - Client aggregated reporting UI, quarterly and annual (§38.2).
 - Advanced analytics and cross-project comparison.
 - *Milestone: a year of PwC projects aggregated into one client sustainability report.*
 
-### Phase 13 — Mobile *(the port — starts only when web is complete)*
+### Phase 13 — Complete mobile field experience
 
-Everything mobile, in one phase, against an API and a domain that are finished and proven. By this point every endpoint in §46 is live, every calculation is pinned by tests, and every screen has a working web reference — so this is UI and device integration, not product design under uncertainty.
+Build and validate the purpose-designed mobile workspace against the field jobs in §8 and §32. By this point the shared domain is proven, but the information architecture and interactions are mobile decisions—not copies of web screens.
 
-- **13.1 Catch up the existing app** to the current API: the shipped screens (login, register, home, switcher, log-time, approvals) get any contract changes accumulated across Phases 6W–12.
+- **13.1 Establish the mobile product shell:** navigation, authentication, company/project context, design system, accessibility and resilient API state. Reuse prototype code only where it fits the target experience.
 - **13.2 Supervisor site experience** (§32) — the `(app)/site/` group and its 11 actions. The flagship field screen.
 - **13.3 Evidence capture** — direct camera, multi-shot, project/date/location pre-fill, background upload with retry (§22.3).
 - **13.4 Site diary** on mobile — write, attendance confirm, Close Day with its missing-data prompts (§23).
@@ -2273,9 +2296,9 @@ Everything mobile, in one phase, against an API and a domain that are finished a
 - **13.6 Read-and-confirm surfaces** — schedule (not drag, §31), project sections that make sense on a phone (§20), timeline, compliance flags.
 - **13.7 Sign-off capture** — signature on glass, the one interaction that is genuinely better on a tablet than a desktop (§34).
 - **13.8 Offline capture** (§45 open item) — draft queue for diary, evidence and assets; basements and loading bays have no signal. Decide here whether it is in scope or stays deferred.
-- **13.9 EAS store submission** — dev-client, production builds, OTA channels, store listings. Moved here from Phase 5 so the app that ships to stores is the complete one.
+- **13.9 EAS store submission** — dev-client, production builds, OTA channels and store listings for the complete field app.
 - **13.10 Maestro E2E** on the supervisor day: start shift → photo → diary → assets → complete day.
-- *Milestone: a supervisor runs an entire site day from a phone, against functionality that was already proven on web.*
+- *Milestone: a supervisor runs an entire site day from a phone through a coherent field product that shares data and rules with the web workspace.*
 
 **Which project sections reach mobile** (the §20 gap called out earlier): Overview, Schedule (read), Crew, Site Diary, Photos & Evidence, Assets & Materials, Variations (create only), Documents (read), Client Sign-Off. **Not on mobile:** Time & Costs beyond own entry, Sustainability, Reports, and the full commercial view — those are desk work and stay on web.
 
@@ -2322,13 +2345,13 @@ Extends §13; same gates, same CI.
 
 ---
 
-## 45. Open items for Part II (ask before building the affected phase)
+## 45. Domain open items (ask before building the affected phase)
 
 - **Emission factor dataset redistribution.** Confirm the licensing terms for the UK Government GHG Conversion Factors (and any WRAP/Defra resource dataset) before bundling one into the seed or a platform-wide factor set. Until confirmed, Phase 9 ships the importer and orgs upload their own. *(Phase 9)*
 - **Feature packaging for the new modules** — the §43 table is a proposal. Which tier sells sustainability? Is asset tracking a Starter feature or the Pro hook? *(Phase 7, before the first gate is written)*
 - **Enabling-emissions policy for avoided claims** — deduct refurbishment/transport/storage always, or only when the org's methodology requires it? Default matters because it changes headline numbers. *(Phase 9)*
 - **Default displacement assumption** — ship at 100% or at "unknown, ask"? 100% is the industry-common default and the more flattering one. *(Phase 9)*
-- **Offline capture for supervisors** — basements, lifts and loading bays have no signal, and §32 is the flagship mobile experience. Now decided within Phase 13 (13.8): in scope for the mobile port, or still deferred? *(Phase 13)*
+- **Offline capture for supervisors** — basements, lifts and loading bays have no signal, and §32 is the flagship mobile experience. Decide in Phase 13 (13.8) whether the first release includes the resilient draft queue or explicitly defers it. *(Phase 13)*
 - **Client visibility defaults for evidence** — every new evidence/document/report row defaults to `client_visible = false`. Confirm that is right for photos, which clients most want to see. *(Phase 7)*
 - **GPS capture** — off by default (§39). Confirm; it is worker-location data and some organisations will not want it recorded at all. *(Phase 7)*
 - **Retention for evidence and originals** — audit rows expire on the plan's `audit_retention_days`; photos and originals currently do not expire at all, which is a growing storage bill. Lifecycle policy? *(Phase 7)*
@@ -2416,7 +2439,7 @@ Every section of the implementation brief, and where it is specified here.
 
 | Brief | Topic | Plan |
 |---|---|---|
-| intro | Scope, customers, lifecycle, extend-don't-rebuild | §19, §0, decision #12 |
+| intro | Scope, customers, lifecycle, one coherent product | §19, §0, decision #12 |
 | 1 | Project structure | §20 |
 | 2 | Project photos & evidence | §22 (storage §22.1) |
 | 3 | Site diary | §23 |
@@ -2453,4 +2476,4 @@ Every section of the implementation brief, and where it is specified here.
 | 34 | Admin sustainability settings | §39 |
 | 35 | Design requirements | §40 |
 | 36 | Calculation principles | §41 |
-| 37 | Implementation approach | §0 (rules), §19.3 (existing entities extended), §42 (phases + migrations), §46 (API changes), §37 (permissions), §22.1 (file storage), §26 (factor architecture), §27 (calculation service), §29 (reporting engine), §20/§32 (UI + mobile), §44 (testing), §0.2 + §44 (backward compatibility) |
+| 37 | Implementation approach | §0 (rules), §19.3 (shared foundations), §42 (phases + database changes), §46 (API), §37 (permissions), §22.1 (file storage), §26 (factor architecture), §27 (calculation service), §29 (reporting engine), §20/§32 (UI + mobile), §44 (testing) |

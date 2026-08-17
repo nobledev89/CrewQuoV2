@@ -4,13 +4,17 @@ Living checklist for the build. Full detail for every item is in **[CREWQUO_V2_P
 
 **Legend:** `[x]` done · `[~]` in progress · `[ ]` not started
 
-Last updated: 2026-08-17 · Current phase: **Phase 4 (backend complete — export engine landed; only the web portal screens remain, and they fold into Phase 6W)** · Phase 3 shipped
+Last updated: 2026-08-17 · Current phase: **Phase 5 — unified v2 web application** (every item built and verified; the closing milestone is an owner judgement) · Phases 0–4 complete
 
-> **Re-run the end-to-end verification any time:** `pnpm --filter @crewquo/api verify:e2e` (needs the DB up, migrations + seed applied, and the API running). **93 checks** covering currency, label rules, the Phase 3/4 core-loop numbers, the export engine, malformed identifiers, both migration backfills and the portal. Previous phases' scripts were ad-hoc and lost; this one is checked in at [apps/api/scripts/verify-e2e.ts](apps/api/scripts/verify-e2e.ts).
-
-> **Scope expanded 2026-08-17.** Phases 7–12 (project evidence, site diary, locations, asset & material tracking, the sustainability/carbon engine, reporting, variations, scheduling, compliance) are now specified in **Part II of the plan (§19–§47)**. Everything below Phase 6 is new work; Phases 0–4 are unaffected and must not regress.
+> **Re-run the end-to-end verification any time:** `pnpm --filter @crewquo/api verify:e2e` (needs the DB up, migrations + seed applied, and the API running). **163 checks** covering currency, label rules, the Phase 3/4 core-loop numbers, the export engine, malformed identifiers, both migration backfills, the portal, the placeholder/meter rules, the super-admin companies console, member management and the profile endpoint. Previous phases' scripts were ad-hoc and lost; this one is checked in at [apps/api/scripts/verify-e2e.ts](apps/api/scripts/verify-e2e.ts).
 >
-> **Web-first reorder 2026-08-17 (owner decision — plan decision #21).** **Phases 6W–12 are web-only. No new mobile screen until Phase 13.** Phase 6W is a new gate that closes the web parity backlog (plan §9.1) — Phases 1–3 were built mobile-first, so `apps/web` currently has only a landing page, login, a dashboard home, the 4 rate screens and company settings, while projects, approvals, providers, members, portal and the admin console have **no web UI at all**. Shipped mobile screens are **maintained, not deleted**: they keep working and stay green in CI. A phase is not done until its web surface is complete — every state, not a happy path.
+> **And the browser suite:** `pnpm --filter @crewquo/web test:e2e` — **17 Playwright tests** walking the whole loop through the real UI (register → paid plan → rates → subcontractor and client invites + accepts → project → assign → log time → submit → bulk approve → summary → portal → audit → exports → profile edit → member re-role/suspend/remove → the super-admin console → a comped trial appearing on the customer's own plan screen). Same prerequisites, plus a production build (`pnpm --filter @crewquo/web build`); Playwright starts the web server itself. Checked in at [apps/web/e2e/](apps/web/e2e/).
+>
+> **If a run fails at the very first step, check for a stale server first.** `playwright.config.ts` sets `reuseExistingServer`, and rebuilding `.next` under a running `next start` leaves it serving HTML that references chunk hashes which no longer exist — a blank page and a timeout, with nothing wrong in the code. Same for an `apps/api` process left over from an earlier session: it answers `/healthz` perfectly while 404ing every route added since it booted. Kill the listeners on :3000 and :4000 before concluding anything.
+
+> **Unified product scope — owner decision 2026-08-17.** The commercial core, field operations, project evidence, site diary, assets and materials, sustainability, reporting, variations, scheduling, compliance, web and mobile are all CrewQuo v2. There is no later extension inside this plan. Phases describe delivery order, not product importance.
+>
+> **New-app direction — owner decision 2026-08-17.** Phase 5 designs and builds a coherent web product; it does not copy the prototype mobile app or create one page per existing endpoint. Existing clients and APIs are reusable implementation inventory, not UX constraints. Phases 5–12 prove the web workspace and shared domain; Phase 13 delivers a purpose-built mobile field workspace, not a port.
 
 ---
 
@@ -53,7 +57,7 @@ Last updated: 2026-08-17 · Current phase: **Phase 4 (backend complete — expor
 - [x] **Milestone:** log in, pick a company, gates read from configurable plans ✅
 
 **Deferred within Phase 1 (non-blocking):**
-- [ ] Email delivery (Resend) for verify/reset links — currently logged in dev (arrives Phase 5, §5)
+- [ ] Email delivery (Resend) for verify/reset links — currently logged in dev (arrives Phase 6, §5)
 - [ ] `api-client` package extraction (mobile currently uses an inline typed fetch client)
 - [ ] Redis-backed entitlement cache (in-process TTL for now; Phase 2 stack)
 
@@ -85,7 +89,7 @@ Last updated: 2026-08-17 · Current phase: **Phase 4 (backend complete — expor
 >
 > **BILL-visibility scope:** `/v1/rate-cards` only ever returns the active company's *own* cards (PAY and BILL), so nothing leaks here. The provider-never-reads-client-BILL rule (§4) is realised in Phase 3: a project summary computes BILL/margin only for the *owner* (client) side; the provider only ever sees its frozen PAY snapshot.
 
-## ✅ Phase 3 — The core loop (mobile-first) (DONE) — plan §3.2, §3.4
+## ✅ Phase 3 — Delivery loop domain + mobile proof (DONE) — plan §3.2, §3.4
 
 - [x] Migration `0004_core_loop.sql`: `engagements`, `projects`, `project_assignments`, `time_logs`, `expenses`, `project_submissions`, `invites`, `push_tokens`
 - [x] Engagements: `GET/POST/PATCH /v1/engagements` (create-as-client needs `operates_downstream` + `withinLimit active_subcontractors`); one-hop visibility enforced
@@ -100,7 +104,7 @@ Last updated: 2026-08-17 · Current phase: **Phase 4 (backend complete — expor
 
 > **Deferred (non-blocking):** expense **receipt upload** (`receipt_url` stays null — needs R2/object storage); `CLIENT_PORTAL` invite kind (arrives with the Phase 4 portal). **One-time human step for push:** run `eas login` locally then a dev/prod build — `eas`/`getExpoPushTokenAsync` need your Expo account and a physical device (simulator is a no-op). Expo push tokens can't be minted from CI here.
 
-## Phase 4 — Client portal + exports + audit (backend complete; web screens → Phase 6W) — plan §3.6
+## ✅ Phase 4 — Client collaboration + exports + audit domain (DONE; experience → Phase 5) — plan §3.6
 
 - [x] Migration `0005_portal_audit.sql`: `line_item_notes`, `audit_logs`, `audit_settings`
 - [x] Audit logging (append-only): `recordAudit` writes at every Phase 3 mutation site (work submit/approve/reject, project CRUD, assignments, engagements, invites) + `GET /v1/audit-logs` (own trail, or a counterparty's client-visible slice via `?engagementId=`)
@@ -115,7 +119,7 @@ Last updated: 2026-08-17 · Current phase: **Phase 4 (backend complete — expor
 - [x] 89 tests green (11 new: portal read, note-write matrix, merge decision), all 5 packages type-check
 - [x] **Verified end-to-end** vs live Postgres (**55 checks**): client invited → claims placeholder → work logged/approved by the owner → portal shows the line at **BILL 64000¢** while the PAY snapshot stays **40000¢**, with no PAY figure, rate snapshot, or subcontractor identity anywhere in the payload; notes honour `client_can_comment` (client 403s, owner unaffected); outsider/owner/unpublished all 404; Crew plan can't add a portal client (403); auto-merge re-points the edge and creates **no** placeholder membership; a colliding second merge **declines** and claims instead, leaving the first merge untouched
 - [x] **Server-side PDF/XLSX export engine** — `GET /v1/projects/:id/export.pdf|.xlsx`, gated on the `exports` feature, owner side only, audited as `project.exported` (internal, never client-visible). `modules/exports/` splits into `data.ts` (SQL assembly, totals taken from `computeProjectSummary` so the file and the screen cannot disagree), `model.ts` (**the only place a figure is formatted** — the seam §29's report engine builds on), `pdf.ts` and `xlsx.ts` (layout only, no computation). XLSX carries money as *numbers* with a currency `numFmt` so a recipient can sum it; nulls stay empty cells, never zeros
-- [ ] Web portal screens in `apps/web` — **rolled into Phase 6W**, which is the phase that builds every missing web surface at once (§9.1). No portal route exists yet
+- [x] Client collaboration experience in `apps/web` — built with the unified Phase 5 application (§9.1): [client-side list](apps/web/src/app/(workspace)/portal/page.tsx) and [detail](apps/web/src/app/(workspace)/portal/[id]/page.tsx) with line items, notes thread and the shared activity trail
 - [x] **Milestone (backend):** a client logs in, sees only granted projects + visible audit trail; an owner downloads a PDF or XLSX whose numbers match the summary endpoint cell-for-cell. The *client-side* download moves to Phase 10 — see below
 - [x] 136 tests green (47 new: the export model incl. an ASCII-output guard, plus the Postgres error mapping) + **93 live-Postgres checks**
 
@@ -131,43 +135,66 @@ Last updated: 2026-08-17 · Current phase: **Phase 4 (backend complete — expor
 
 > **API hardening found while verifying (2026-08-17).** No route validated that an `:id` path parameter was a UUID, and nothing mapped Postgres error codes — so `GET /v1/projects/not-a-uuid` reached a `uuid` column, raised SQLSTATE `22P02`, and came back as **`500 Internal server error`**. That was true of *every* `:id` route in the app, and it is a lie: nothing internal went wrong, the request was malformed. Fixed in two places rather than forty handlers — [`http/pgErrors.ts`](apps/api/src/http/pgErrors.ts) maps the caller-provokable SQLSTATEs (`22P02`/`22003`/`22007`/`22008` → 422, `23505` → 409, `23503`/`23502`/`23514` → 422) while still logging every one, and [`uuidParam`](apps/api/src/http/params.ts) rejects at the edge with a 404 so a malformed id and someone else's id give the same answer. Genuine faults (`42P08`, `08006`, `53300`) stay 500s on purpose. 11 unit tests pin the mapping; `verify:e2e` asserts 8 routes never 500.
 
-## Phase 5 — Billing, invoicing, notifications, polish — plan §3.5, §5B
+# Remaining unified v2 build — plan §19–§47
+
+The capabilities below are part of the same v2 application. Full sequencing and acceptance criteria are in plan §42.
+
+## Phase 5 — Unified v2 web application — plan §9.1, §20, §42
+
+Build the new information architecture, navigation, workspace shell and end-to-end core workflows. Existing endpoints may accelerate this work, but contracts and backend orchestration may change when the intended experience requires it.
+
+**Functional surface: built 2026-08-17, every workflow reachable and proven in a real browser.** The first pass was built against the existing contracts, so nothing shipped regressed; a second pass then **added the endpoints the phase itself had found missing** (the super-admin companies console, member management, `PATCH /v1/me`) rather than leaving three screens saying "not available". The IA/visual-design pass remains a separate judgement (see the note under the list).
+
+- [x] **Workspace shell + route groups first.** Phases 1–2 gave each section its own `AuthProvider` layout, so moving from `/rates/cards` to `/settings` unmounted the provider, dropped the in-memory session and re-ran refresh-on-mount — a token round trip plus a "Loading workspace…" flash on *every* section change. Replaced by two route groups, [`(workspace)`](apps/web/src/app/(workspace)/layout.tsx) and [`(auth)`](apps/web/src/app/(auth)/layout.tsx), one provider each. **Every URL is unchanged** — a parenthesised directory is a grouping only, confirmed against the build's route list. Navigation regrouped into Workspace / Delivery / Network / Client portal / Rates / Company / Platform, with the platform group visible only to `isSuperAdmin`
+- [x] Auth completion: [register](apps/web/src/app/(auth)/register/page.tsx), [forgot-password](apps/web/src/app/(auth)/forgot-password/page.tsx), [reset-password](apps/web/src/app/(auth)/reset-password/page.tsx), [verify-email](apps/web/src/app/(auth)/verify-email/page.tsx), [profile](apps/web/src/app/(workspace)/profile/page.tsx). The reset/verify routes match the paths the API's links already build (`APP_BASE_URL/reset-password?token=…`), so no server change was needed. Added the **no-company state** the shell never had: registration allows skipping the company name, and that user previously landed on "Select a company to continue" with nothing to select
+- [x] Entitlements: [plan & usage](apps/web/src/app/(workspace)/plan/page.tsx) listing the **whole** catalog, so what you lack is as visible as what you have; `null` renders as *unlimited* and `0` as *none* (opposite meanings on one column, and the seed ships both). [Feature-locked / limit-reached components](apps/web/src/components/FeatureLock.tsx) name the missing key rather than saying "Forbidden"
+- [x] Engagements: [both sides of every edge](apps/web/src/app/(workspace)/network/engagements/page.tsx) in one table with a side column — they are the same object, and splitting them into two screens hides that — plus pause/resume/end
+- [x] Providers & clients: [add subcontractor](apps/web/src/app/(workspace)/network/providers/page.tsx) (gated on `operates_downstream`, metered on `active_subcontractors`) and [add portal client](apps/web/src/app/(workspace)/network/clients/page.tsx) (gated on `client_portal`, metered on `clients`), each showing the allowance beside the button instead of letting people find the cap by hitting it
+- [x] Members + invites: [member list, invite, role change, suspend/restore and removal](apps/web/src/app/(workspace)/company/members/page.tsx) and the **public [invite-accept page](apps/web/src/app/(auth)/invite/[token]/page.tsx)**, which reports the auto-merge outcome — including spelling out `SKIPPED` (nothing re-pointed, placeholder claimed instead, with the reason) rather than dressing it as success
+- [x] **Member management endpoints** (new, 2026-08-17): `PATCH /v1/members/:membershipId` and `DELETE /v1/members/:membershipId`, OWNER/ADMIN, both audited. Addressed by **membership** id, not user id — the same person may be a MEMBER of one company and OWNER of another, and §46's later `/v1/members/:membershipId/capabilities` keys on the same thing. Two lock-out invariants are pure functions in `policies.ts` with 14 unit tests: an admin may neither change an owner nor mint one (otherwise ADMIN and OWNER are one role with two names), and a company always keeps **at least one active owner** (nothing else can change currency, invite an admin back or hold the subscription, and a company with no owner cannot be repaired from inside the product). Self-demotion is allowed once a second active owner exists — that is how an owner hands over
+- [x] **`PATCH /v1/me`** (new, 2026-08-17): name + avatar, with [an editable profile screen](apps/web/src/app/(workspace)/profile/page.tsx). Email stays read-only on purpose — it is the address an invite is bound to and where a reset link goes, so changing it is a re-verification flow, not a text field. A rename is audited in **every** company the user belongs to, because that name is what appears on their approvals and audit rows; a silent rename would make an old row read as somebody else's
+- [x] Projects: [list](apps/web/src/app/(workspace)/projects/page.tsx) with search + status filters, [detail](apps/web/src/app/(workspace)/projects/[id]/page.tsx) with server-computed cost/bill/margin, per-subcontractor rollup, assignment, edit/delete and PDF/XLSX download. No money is recomputed client-side — the screen, the export and the portal all read `computeProjectSummary`
+- [x] Time & expenses: [provider entry](apps/web/src/app/(workspace)/work/page.tsx) (drafts, submit-all, returned-with-reason) and **[bulk review at scale](apps/web/src/app/(workspace)/review/page.tsx)** — filters by subcontractor/project/date, multi-select, batch approve, batch reject with one reason for the batch
+- [x] Client portal: [client-side list](apps/web/src/app/(workspace)/portal/page.tsx) and [detail](apps/web/src/app/(workspace)/portal/[id]/page.tsx) with line items, notes thread and the shared activity trail
+- [x] Audit trail [viewer with keyset paging + per-engagement visibility settings](apps/web/src/app/(workspace)/audit/page.tsx), which reports the *plan* state next to the share switch — exposure is opt-in three times over and flipping one switch alone shares nothing
+- [x] Super-admin console: [plans, prices, feature matrix, limit matrix](apps/web/src/app/(workspace)/admin/plans/page.tsx) **plus the [companies console](apps/web/src/app/(workspace)/admin/companies/page.tsx)** — the §5B item that could not be closed without backend work, now closed
+- [x] **Super-admin companies endpoints** (new, 2026-08-17): `GET /v1/admin/companies` (search by name or member email, plan filter, keyset cursor on `(created_at, id)`), `GET /v1/admin/companies/:id`, `POST|DELETE …/overrides[/:id]`, `POST …/comp-trial`, `POST …/subscription`. Every write **invalidates that company's entitlement cache** — the resolver memoises for 60s, so without it a support action appears not to have worked and gets performed twice; `verify:e2e` asserts a raised limit is live on the very next request. Each write is audited against the **subject** company, never the operator's, because the trail a customer reads is their own. The detail view reads `resolveEntitlements` and `getAllUsage` — the same resolver and meters every gate enforces — rather than re-deriving allowances in SQL, so the console cannot show an allowance the product would refuse
+- [x] Role-aware [dashboard](apps/web/src/app/(workspace)/app/page.tsx) — panels driven by what the company *is* on its engagements (hirer / subcontractor / somebody's client), never by a user role, plus a first-run setup checklist
+- [x] Playwright E2E ([parity.spec.ts](apps/web/e2e/parity.spec.ts)): register → paid plan → rates → subcontractor invite + accept → client invite + accept → project → assign → log time → submit → bulk approve → summary → portal → audit → exports → profile edit → member re-role/suspend/remove → super-admin console → a comped trial landing on the customer's own plan screen. **17 tests, all passing**, real Chromium against the real API against real Postgres. Three companies and three users for the core loop, because that is the smallest cast that proves the same data reads differently per side of an engagement, plus two staff accounts that own nothing
+- [x] Empty, loading, error, locked, limit-reached and permission-denied states written deliberately on every screen — including the ones that are *absences*: unpriced lines marked rather than blank, provisional portal totals labelled as partial, and missing endpoints stated instead of mocked
+- [x] 150 unit tests green (14 new: the two membership lock-out invariants), all 5 packages type-check, production build clean, **163 live-Postgres checks** and **17 browser tests** green
+- [ ] **Milestone (owner judgement):** whether onboarding → project → delivery → approval → client collaboration now *feels like one new, coherent product* — every workflow is reachable, proven and no longer blocked on a missing endpoint, but the IA and visual design were not redesigned from scratch. **This is the only Phase 5 item left, and it is yours to make:** walk the app and decide what to redesign before Phase 6 starts adding commerce on top of it
+
+> **The three gaps the first pass could only describe are now built (2026-08-17).** `GET /v1/admin/companies` + `/overrides` + `/comp-trial` (§7) and a `/subscription` route for §5B's "force plan change"; `PATCH`/`DELETE /v1/members/:membershipId`; `PATCH /v1/me`. Nothing in the UI says "not available yet" any more, and no screen ships a button that 404s.
+>
+> **Platform staff own no company, and the console must not require one.** Every workspace screen is gated on an active membership, which is correct — they all read company-scoped data. The platform console is the exception: it sends no `X-Company-Id` and operates *on* companies rather than from inside one. Gating it the same way made support unreachable by exactly the people it belongs to, so [`Shell`](apps/web/src/components/Shell.tsx) renders `/admin/*` for a super-admin with no membership and keeps the gate everywhere else. A Playwright test asserts both halves: `/projects` still asks a staff account to create a company, `/admin/companies` does not.
+>
+> **A reload must not blank a panel that holds its own state.** Two screens used `loading ? spinner : content`, so a post-save `reload()` unmounted the form and discarded the success notice it had just set — the change had landed and the screen said nothing. Both now branch on `loading && !data`. The companies console had a second version of the same bug: a `useEffect` re-seeding the plan/status form fired on the very fields the form changes, clearing the confirmation; it keys on `company.id` alone now. Neither was visible in a type-check or a unit test — the browser suite caught both.
+>
+> **Invite links are surfaced in the UI on purpose.** Email delivery is Phase 6, so the token returned by `POST /v1/providers` / `/clients` / `/members/invite` is the *only* copy that reaches a human — nothing re-reads it. [`InviteLink`](apps/web/src/components/InviteLink.tsx) shows it with an explicit "send this yourself, it is not shown again" warning. Dropping it would leave invites in the database that nobody can accept.
+>
+> **✅ `is_placeholder` staleness and the `clients` meter — fixed 2026-08-17.** `applyMerge` tombstones the placeholder on the MERGED path, but the CLAIMED path only inserted a membership, so a subcontractor who joined without already owning a company kept `is_placeholder = true` on what was now their real company. `markCompanyClaimed` clears it there, which is what the flag means: *"a stub for a party not yet on CrewQuo"* stops being true the moment somebody signs in and owns it. (The MERGED path is untouched — there the stub really does stay a stub, tombstoned via `claimed_by_company_id`.)
+>
+> That unblocked the second half. `countClients` now excludes engagements whose client side is still a stub, which is §5B as written — *"placeholder clients are free/unlimited (only real portal logins count toward `clients`)"*. **This loosens a cap**: a company that invited ten portal clients and had two accept now meters 2, not 10. That is the specified behaviour and it is asserted live, both halves — the claimed companies lose the flag, an un-accepted stub keeps it, and the meter reports 1 where two client edges exist.
+>
+> `countActiveSubcontractors` deliberately keeps counting `PENDING`. The spec's exemption names *clients* only, and the asymmetry is load-bearing: if a pending subcontractor edge were free, the `active_subcontractors` cap could be walked straight past by inviting, and the meter would bite only on the people who actually turned up.
+>
+> **Entitlements are eventually consistent for up to 60s.** `resolveEntitlements` memoises in process (`cache.ts`, `TTL_MS = 60_000`). Only writes that go through the super-admin console clear it — plan edits clear the whole cache, and the per-company routes invalidate that one company. Anything else that changes a company's *plan* out of band (a direct DB write, and from Phase 6 an MoR webhook) is invisible for up to a minute. Invisible in normal use, but it dictates the E2E fixture: a company registered *through the UI* has its free `crew` entitlements cached the moment the dashboard mounts, so subscribing it afterwards has no effect for a minute — which reads as "the paid feature is broken" when nothing is wrong. The fixture registers the paid company over HTTP and subscribes it **before anything reads it**, and proves the register *screen* in a separate test. Worth knowing before Phase 6 wires real plan changes to live customers.
+>
+> **`useSearchParams` needs a Suspense boundary.** The four auth pages reading `?token=`/`?next=` failed the production build (`missing-suspense-with-csr-bailout`) until each was split into an exported page wrapping the query-reading half in `<Suspense>`. Type-check does not catch this — only `next build` does, which is why the build is part of this phase's verification and not just the type-check.
+>
+> **Refresh tokens rotate, so a hard navigation immediately after sign-in can sign you back out.** `/login` and `/app` sit in different route groups, so arriving at `/app` mounts a second `AuthProvider`, which refreshes on mount and rotates the stored token. A full page load inside that window reads the token that has just been revoked, the refresh fails, and the visitor lands back on sign-in. A real user is not exposed — in-app links stay inside one route group and never remount the provider — but Playwright's `goto` is a hard load, so `signIn` now waits for the sidebar (which only renders once the rotated token is persisted). Worth remembering if server-side rendering or cookie auth is revisited, because both would widen that window.
+>
+> **Playwright talks to `127.0.0.1`, never `localhost`.** `next start` with no `-H` binds `::`, and here the health poll against `localhost` never connects: the run hangs for its full timeout against a perfectly healthy server. Same port-shadowing footgun the repo already pinned down for Postgres (Phase 1 local-env note), same answer — name the address explicitly on both ends. `playwright.config.ts` sets host and port, and `pnpm --filter @crewquo/web test:e2e` runs the suite (needs the DB up, migrations + seed applied, and the API on :4000).
+
+## Phase 6 — Commercial readiness — plan §3.5, §5B, §42
 
 - [ ] Migrations: `invoices`, `invoice_items`
 - [ ] Merchant-of-Record billing via **Gumroad** (decided 2026-08-17): checkout, webhooks, trial→paid, entitlement snapshots
 - [ ] Super-admin price editor + subscription management
 - [ ] Push + email notifications (Resend)
-- [ ] Reports *(EAS store submission moved to Phase 13.9)*
+- [ ] Production observability, support tooling, backup/restore rehearsal and launch runbook
 - [ ] Public marketing + legal pages (pricing/terms/privacy/refunds)
-
-## Phase 6 — Deferred
-
-- [ ] Offline draft capture (mobile) — *now decided inside Phase 13.8 rather than here*
-- [ ] Real-time updates
-- [ ] Optional v1 → v2 per-customer data importer (§12)
-
----
-
-# v2.1 — Field Operations, Evidence & Sustainability (plan Part II, §19–§47)
-
-Not started. Sequencing: finish Phase 4's **export engine** first (§29 builds on it), then **Phase 6W**; Phase 5 billing is independent and can land whenever revenue requires it. Full roadmap in plan §42.
-
-## Phase 6W — Web parity *(new gate — must clear before Phase 7)* — plan §9.1
-
-**No new backend work.** Every endpoint below already exists, is tested and is verified end-to-end against live Postgres. This is UI only — the bill for building Phases 1–3 mobile-first.
-
-- [ ] Auth completion: register, forgot/reset password, verify email, profile, company switcher
-- [ ] Entitlements: plan + live usage, limit-reached and feature-locked states
-- [ ] Engagements: list (both sides), create, pause/end
-- [ ] Providers & clients: list, add provider (placeholder + invite), add portal client
-- [ ] Members + invites, incl. the **public invite-accept page**
-- [ ] Projects: list, detail, create/edit, provider assignment, summary with cost/bill/margin
-- [ ] Time & expenses: entry + **bulk review/approve at scale** (filters, multi-select, reject-with-reason) — the clearest web-over-mobile win
-- [ ] Client portal: client-side project list + detail, line items, notes thread
-- [ ] Audit trail viewer + per-engagement visibility settings
-- [ ] Super-admin console: plans/prices/features/limits CRUD, companies + overrides
-- [ ] Playwright E2E: register → company → provider invite → project → log time → approve → portal → audit
-- [ ] **Milestone:** every workflow CrewQuo already supports is doable on the web app — no phone required
 
 **Non-negotiable throughout:** the ten calculation principles (§41), `record_revisions` + `recordAudit` on every new mutation (§36), entitlement keys registered (§43), tests written with the code (§44), and the Phase 0–4 end-to-end scripts re-run green at the end of every phase.
 
@@ -230,11 +257,11 @@ Not started. Sequencing: finish Phase 4's **export engine** first (§29 builds o
 - [ ] Advanced analytics / cross-project comparison
 - [ ] **Milestone:** a year of one client's projects aggregated into a single sustainability report
 
-## Phase 13 — Mobile *(the port — starts only when web is 100%)* — plan §8, §32, §42
+## Phase 13 — Complete mobile field experience — plan §8, §32, §42
 
-Everything mobile in one phase, against a finished and proven domain. Every endpoint live, every calculation pinned by tests, every screen with a working web reference — UI and device integration, not product design under uncertainty.
+Build and validate the field workspace against supervisor and crew jobs. The shared domain is proven by this point, but navigation and interactions are designed for mobile, device capabilities and intermittent connectivity.
 
-- [ ] **13.1** Catch the existing app up to the current API (contract drift from Phases 6W–12)
+- [ ] **13.1** Establish the mobile product shell: navigation, auth, company/project context, design system, accessibility and resilient API state; reuse prototype code only where it fits
 - [ ] **13.2** Supervisor site experience — `(app)/site/` and its 11 actions (§32)
 - [ ] **13.3** Evidence capture — direct camera, multi-shot, pre-fill, background upload with retry (§22.3)
 - [ ] **13.4** Site diary on mobile — write, attendance confirm, Close Day + missing-data prompts (§23)
@@ -242,11 +269,16 @@ Everything mobile in one phase, against a finished and proven domain. Every endp
 - [ ] **13.6** Read-and-confirm surfaces — schedule (not drag), phone-appropriate project sections, timeline, compliance flags
 - [ ] **13.7** Sign-off capture — signature on glass (§34)
 - [ ] **13.8** Offline capture — draft queue for diary/evidence/assets. **Decide in-scope or deferred here** (§45)
-- [ ] **13.9** EAS store submission — dev-client, production builds, OTA channels, listings *(moved from Phase 5)*
+- [ ] **13.9** EAS store submission — dev-client, production builds, OTA channels and listings for the complete field app
 - [ ] **13.10** Maestro E2E: start shift → photo → diary → assets → complete day
-- [ ] **Milestone:** a supervisor runs an entire site day from a phone, on functionality already proven on web
+- [ ] **Milestone:** a supervisor runs an entire site day from a phone through a coherent field product sharing the same data and rules as web
 
 > **Sections that reach mobile:** Overview · Schedule (read) · Crew · Site Diary · Photos & Evidence · Assets & Materials · Variations (create) · Documents (read) · Client Sign-Off. **Web only:** Time & Costs beyond own entry · Sustainability · Reports · full commercial view.
+
+## Future backlog (not part of the numbered build)
+
+- [ ] Real-time updates
+- [ ] Any v1 customer-data onboarding/importer requires a separate specification (§12)
 
 ---
 
@@ -255,16 +287,15 @@ Everything mobile in one phase, against a finished and proven domain. Every endp
 - [x] **Placeholder→linked merge policy → AUTO-MERGE.** On invite accept, if the invitee already owns a real company, the placeholder is claimed automatically (`companies.claimed_by_company_id`) and the engagement re-points to the real company — no confirmation prompt on either side. *Owner chose auto over the manual/two-sided-confirm recommendation; proceed as decided.* Open implementation assumption: if the accepting user owns **several** companies, merge into the one they're acting as (active company), falling back to their sole company when there's only one.
 - [x] **Rate rules are per-company — nothing about rates may be hardcoded.** ✅ **Implemented 2026-08-17.** The `FRI_SAT_NIGHT` branch is gone from `resolveRateLabel`; label rules live in `rate_card_templates.timeframe_definitions` as `label_rule` entries, with one template per company elected as the default the engine reads. Migration 0007 backfilled the old behaviour for anyone who was relying on it. This superseded the old "verify against v1" decision — the rule wasn't verified, it was removed.
 - [x] **Currency → USD default, user-changeable.** ✅ **Implemented 2026-08-17.** Migration 0006 moves the column default to `'USD'` and backfills existing `'GBP'` rows; `PATCH /v1/companies/:id` (OWNER/ADMIN) makes it changeable. Per-rate-card currency is still **open**, see the question below.
-- [x] **MoR → Gumroad** (replaces the Lemon Squeezy vs Paddle choice) — Phase 5. Confirm PH payout method and verify Gumroad's subscription-webhook coverage before building against it.
-- [x] **Visual design system → not needed from Claude.** Owner has frontend work done via Codex; skip brand-token selection. *Blocked on locating that codebase — see below.*
+- [x] **MoR → Gumroad** (replaces the Lemon Squeezy vs Paddle choice) — Phase 6. Confirm PH payout method and verify Gumroad's subscription-webhook coverage before building against it.
+- [x] **Application direction → one totally new v2 app.** Existing web/mobile screens are prototypes and reusable code only; they do not define the target information architecture, workflows or visual system.
 
 ### Still open
 
 - [ ] **Per-rate-card currency?** Company-level currency can't express "pay crew in PHP, bill a US client in USD" — but mixing currencies inside one company means `calculateMargin` (BILL − PAY) is subtracting different units, so it needs a stored FX rate per project. Company-level is what ships today. Decide before multi-currency clients are real.
-- [ ] **Where is the Codex frontend?** Not in this repo — `apps/web` contains only the Phase 2 console (login + rates screens), last touched by commit `02579c8`. Note that plan §40 now sets design constraints that apply to that work too.
-- [ ] **Real per-currency pricing numbers** (USD anchors exist; confirm the actual amounts) — Phase 5
+- [ ] **Real per-currency pricing numbers** (USD anchors exist; confirm the actual amounts) — Phase 6
 
-### Open for v2.1 (full detail in plan §45)
+### Domain decisions for the unified v2 build (full detail in plan §45)
 
 - [ ] **Emission factor dataset redistribution terms** — confirm licensing before bundling UK Gov GHG (or WRAP/Defra) factors; until then orgs import their own — Phase 9
 - [ ] **Feature packaging** for the new modules — the §43 tier table is a proposal, not a decision — Phase 7

@@ -50,6 +50,31 @@ export async function updatePasswordHash(
   );
 }
 
+/**
+ * Update the caller's own profile (§7 PATCH /v1/me).
+ *
+ * `avatarUrl` distinguishes "leave it" from "clear it": `undefined` keeps the
+ * current value, an explicit `null` erases it. `coalesce` cannot express that on
+ * its own, so the nullable column takes a separate "was this key present" flag.
+ */
+export async function updateUserProfile(
+  userId: string,
+  patch: { name?: string; avatarUrl?: string | null },
+  runner?: Queryable
+): Promise<UserRow> {
+  const rows = await query<UserRow>(
+    `update users set
+       name = coalesce($2, name),
+       avatar_url = case when $3 then $4 else avatar_url end,
+       updated_at = now()
+     where id = $1
+     returning ${COLUMNS}`,
+    [userId, patch.name ?? null, 'avatarUrl' in patch, patch.avatarUrl ?? null],
+    runner
+  );
+  return rows[0]!;
+}
+
 export async function markEmailVerified(userId: string, runner?: Queryable): Promise<void> {
   await query(
     `update users set email_verified_at = coalesce(email_verified_at, now()), updated_at = now()

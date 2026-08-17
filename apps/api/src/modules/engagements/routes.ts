@@ -6,6 +6,7 @@ import {
   createProviderSchema,
   inviteMemberSchema,
   updateEngagementSchema,
+  updateMemberSchema,
   type ClientView,
   type CreateClientResponse,
   type CreateProviderResponse,
@@ -14,13 +15,25 @@ import {
 import { asyncHandler } from '../../http/asyncHandler';
 import { getCompanyCtx } from '../../http/context';
 import { AppError } from '../../http/errors';
-import { param } from '../../http/params';
+import { param, uuidParam } from '../../http/params';
 import { requireRole } from '../../http/middleware/auth';
 import { withTransaction } from '../../db';
-import { canManage, isEngagementParticipant } from '../../authorization/policies';
+import {
+  canManage,
+  isEngagementParticipant,
+  membershipChangeRefusal,
+  membershipRemovalRefusal,
+} from '../../authorization/policies';
 import { assertWithinLimit, hasFeature, operatesDownstream } from '../entitlements/guards';
 import { findCompanyById, insertCompany } from '../companies/repo';
-import { listMembers } from '../memberships/repo';
+import {
+  countActiveOwners,
+  deleteMembership,
+  findMembershipInCompany,
+  listMembers,
+  toMemberView,
+  updateMembership,
+} from '../memberships/repo';
 import { insertInvite } from '../invites/repo';
 import { recordAudit } from '../audit/record';
 import {
@@ -320,6 +333,89 @@ membersRouter.post(
       description: `Member invited (${input.role})`,
     });
     res.status(201).json({ inviteToken: invite.invite_token });
+  })
+);
+
+/**
+ * Change a member's role or status (§7). OWNER/ADMIN, with the two lock-out
+ * invariants in `membershipChangeRefusal`: an admin never touches an owner or
+ * mints one, and the company keeps at least one active owner.
+ */
+membersRouter.patch(
+  '/:membershipId',
+  requireRole('OWNER', 'ADMIN'),
+  asyncHandler(async (req, res) => {
+    const ctx = getCompanyCtx(req);
+    const patch = updateMemberSchema.parse(req.body);
+    const membershipId = uuidParam(req, 'membershipId');
+
+    const target = await findMembershipInCompany(ctx.companyId, membershipId);
+    if (!target) throw new AppError('NOT_FOUND', 'Member not found');
+
+    const refusal = membershipChangeRefusal({
+      actorRole: ctx.role,
+      target: { userId: target.user_id, role: target.role, status: target.status },
+      activeOwnerCount: await countActiveOwners(ctx.companyId),
+      patch,
+    });
+    if (refusal) throw new AppError('FORBIDDEN', refusal);
+
+    const updated = await updateMembership(membershipId, patch);
+    await recordAudit({
+      companyId: ctx.companyId,
+      actorUserId: ctx.userId,
+      action: 'membership.updated',
+      entityType: 'MEMBERSHIP',
+      entityId: membershipId,
+      changes: {
+        ...(patch.role !== undefined ? { role: { from: target.role, to: updated.role } } : {}),
+        ...(patch.status !== undefined
+          ? { status: { from: target.status, to: updated.status } }
+          : {}),
+      },
+      description: `${target.user_name}'s membership was updated`,
+    });
+
+    res.json({
+      member: toMemberView({ ...target, role: updated.role, status: updated.status }),
+    });
+  })
+);
+
+/**
+ * Remove a member (§7). Distinct from suspending: this deletes the membership
+ * row, which frees a seat and ends their access. Their work rows are untouched —
+ * `time_logs.logged_by_user_id` references `users`, not the membership, so
+ * history survives the person leaving.
+ */
+membersRouter.delete(
+  '/:membershipId',
+  requireRole('OWNER', 'ADMIN'),
+  asyncHandler(async (req, res) => {
+    const ctx = getCompanyCtx(req);
+    const membershipId = uuidParam(req, 'membershipId');
+
+    const target = await findMembershipInCompany(ctx.companyId, membershipId);
+    if (!target) throw new AppError('NOT_FOUND', 'Member not found');
+
+    const refusal = membershipRemovalRefusal({
+      actorRole: ctx.role,
+      target: { userId: target.user_id, role: target.role, status: target.status },
+      activeOwnerCount: await countActiveOwners(ctx.companyId),
+    });
+    if (refusal) throw new AppError('FORBIDDEN', refusal);
+
+    await deleteMembership(membershipId);
+    await recordAudit({
+      companyId: ctx.companyId,
+      actorUserId: ctx.userId,
+      action: 'membership.removed',
+      entityType: 'MEMBERSHIP',
+      entityId: membershipId,
+      changes: { role: target.role, status: target.status },
+      description: `${target.user_name} was removed from the company`,
+    });
+    res.status(204).end();
   })
 );
 

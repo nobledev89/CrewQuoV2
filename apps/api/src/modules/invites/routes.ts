@@ -10,6 +10,7 @@ import { findUserById } from '../users/repo';
 import { findMembership, insertMembership } from '../memberships/repo';
 import { findEngagementEdge, updateEngagementStatus } from '../engagements/repo';
 import { applyMerge, planMerge } from '../companies/merge';
+import { markCompanyClaimed } from '../companies/repo';
 import { findInviteRowByToken, findInviteView, markInviteAccepted } from './repo';
 import { recordAudit } from '../audit/record';
 
@@ -137,7 +138,10 @@ invitesRouter.post(
           client
         );
       } else {
+        // CLAIMED: the invitee had no company of their own, so the stub becomes
+        // theirs — and stops being a stub. See `markCompanyClaimed`.
         await insertMembership({ userId: user.id, companyId: placeholderId, role }, client);
+        await markCompanyClaimed(placeholderId, client);
       }
       await updateEngagementStatus(invite.engagement_id!, 'ACTIVE', client);
       await markInviteAccepted(invite.id, client);

@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { planStatusSchema, priceIntervalSchema } from './enums';
-import { featureKeySchema, limitKeySchema } from './entitlements';
+import { planStatusSchema, priceIntervalSchema, subscriptionStatusSchema } from './enums';
+import { entitlementsSchema, featureKeySchema, limitKeySchema, limitUsageSchema } from './entitlements';
 
 /**
  * Super-admin plan management contracts (CREWQUO_V2_PLAN.md §5B, §7).
@@ -53,6 +53,181 @@ export const adminPlanPriceViewSchema = adminPlanPriceSchema.extend({
   id: z.string().uuid(),
 });
 export type AdminPlanPriceView = z.infer<typeof adminPlanPriceViewSchema>;
+
+// ── Companies console (§5B, §7: GET /v1/admin/companies + /overrides + /comp-trial) ──
+
+/**
+ * One row of the companies list: who they are, what they resolve to, and how
+ * close they are to their caps.
+ *
+ * `planId` is the plan they *resolve* against, which is the free default when
+ * `subscriptionStatus` is null — a company with no subscription row is not a
+ * company with no entitlements, and conflating the two is how support ends up
+ * telling someone their plan is broken.
+ */
+export const adminCompanySummarySchema = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  currency: z.string(),
+  isPlaceholder: z.boolean(),
+  /** Set when this company is a placeholder that was folded into a real one (§3.6). */
+  claimedByCompanyId: z.string().uuid().nullable(),
+  planId: z.string(),
+  subscriptionStatus: subscriptionStatusSchema.nullable(),
+  trialEnd: z.string().nullable(),
+  currentPeriodEnd: z.string().nullable(),
+  memberCount: z.number().int(),
+  overrideCount: z.number().int(),
+  createdAt: z.string(),
+});
+export type AdminCompanySummary = z.infer<typeof adminCompanySummarySchema>;
+
+export const adminCompaniesResponseSchema = z.object({
+  data: z.array(adminCompanySummarySchema),
+  nextCursor: z.string().nullable(),
+});
+export type AdminCompaniesResponse = z.infer<typeof adminCompaniesResponseSchema>;
+
+/**
+ * A query-string boolean. `z.coerce.boolean()` is wrong here: `Boolean('false')`
+ * is `true`, so `?includePlaceholders=false` would switch the flag *on*.
+ */
+const queryBoolean = z
+  .enum(['true', 'false'])
+  .default('false')
+  .transform((v) => v === 'true');
+
+/**
+ * GET /v1/admin/companies. Keyset cursor on `(created_at, id)` per §7 — an
+ * opaque string the caller echoes back, never an offset.
+ *
+ * Placeholders are excluded by default. Every invited provider and portal client
+ * creates one (§3.6), so they outnumber real companies and would bury a support
+ * search under stubs nobody can sign in to.
+ */
+export const adminCompanyListQuerySchema = z.object({
+  search: z.string().trim().max(200).optional(),
+  planId: z.string().trim().max(64).optional(),
+  includePlaceholders: queryBoolean,
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+  cursor: z.string().max(200).optional(),
+});
+export type AdminCompanyListQuery = z.infer<typeof adminCompanyListQuerySchema>;
+
+/** A live override row. Either the feature pair or the limit pair is set, never both. */
+export const adminOverrideViewSchema = z.object({
+  id: z.string().uuid(),
+  featureKey: featureKeySchema.nullable(),
+  featureEnabled: z.boolean().nullable(),
+  limitKey: limitKeySchema.nullable(),
+  limitValue: z.number().int().nullable(),
+  note: z.string().nullable(),
+  expiresAt: z.string().nullable(),
+  createdAt: z.string(),
+  /** True once `expiresAt` has passed — the resolver already ignores it. */
+  expired: z.boolean(),
+});
+export type AdminOverrideView = z.infer<typeof adminOverrideViewSchema>;
+
+/**
+ * GET /v1/admin/companies/:id — the support view. Resolved entitlements and live
+ * usage come from the same resolver and meters the company itself hits, so this
+ * screen cannot disagree with what that company is actually allowed to do.
+ */
+export const adminCompanyDetailSchema = z.object({
+  company: adminCompanySummarySchema,
+  entitlements: entitlementsSchema,
+  usage: z.array(limitUsageSchema),
+  overrides: z.array(adminOverrideViewSchema),
+});
+export type AdminCompanyDetail = z.infer<typeof adminCompanyDetailSchema>;
+
+/**
+ * POST /v1/admin/companies/:id/overrides — grant or revoke one thing for one
+ * company.
+ *
+ * Exactly one of the two pairs must be supplied. A row carrying both a feature
+ * and a limit would be two decisions in one record with one expiry, and
+ * `resolveEntitlements` applies each half independently — so the shape is
+ * enforced here rather than left to whoever reads the merge code next.
+ *
+ * `limitValue: null` is *unlimited*, not zero, and `undefined` is "not this kind
+ * of override". The two are opposite instructions, which is why the field is
+ * nullable-and-optional rather than one or the other.
+ */
+export const adminOverrideCreateSchema = z
+  .object({
+    featureKey: featureKeySchema.optional(),
+    featureEnabled: z.boolean().optional(),
+    limitKey: limitKeySchema.optional(),
+    limitValue: z.number().int().min(0).nullable().optional(),
+    note: z.string().trim().max(1000).optional(),
+    /** ISO timestamp. Omitted = permanent until removed. */
+    expiresAt: z.string().datetime().optional(),
+  })
+  .superRefine((v, ctx) => {
+    const isFeature = v.featureKey !== undefined;
+    const isLimit = v.limitKey !== undefined;
+    if (isFeature === isLimit) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Supply exactly one of featureKey or limitKey',
+      });
+      return;
+    }
+    if (isFeature && v.featureEnabled === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['featureEnabled'],
+        message: 'featureEnabled is required with featureKey',
+      });
+    }
+    if (isLimit && v.limitValue === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['limitValue'],
+        message: 'limitValue is required with limitKey (null = unlimited)',
+      });
+    }
+  });
+export type AdminOverrideCreate = z.infer<typeof adminOverrideCreateSchema>;
+
+/**
+ * POST /v1/admin/companies/:id/comp-trial — put a company on a plan as a trial
+ * for N days, or extend the one it has.
+ *
+ * Separate from the subscription endpoint below because it is the support action
+ * with a different intent: no money is involved, the end date is the whole point,
+ * and the status is always `TRIALING`.
+ */
+export const adminCompTrialSchema = z.object({
+  planId: z.string().trim().min(1).max(64),
+  days: z.number().int().min(1).max(3650),
+});
+export type AdminCompTrial = z.infer<typeof adminCompTrialSchema>;
+
+/**
+ * POST /v1/admin/companies/:id/subscription — force a plan or status.
+ *
+ * §5B's console lists "force plan change" beside overrides and comped trials;
+ * §7 names only the other two routes, so this one is the addition recorded in
+ * §46. It writes `company_subscriptions` directly — there is no merchant of
+ * record yet (Phase 6), and until there is, a platform operator changing a plan
+ * *is* the billing system.
+ */
+export const adminSetSubscriptionSchema = z.object({
+  planId: z.string().trim().min(1).max(64),
+  status: subscriptionStatusSchema.default('ACTIVE'),
+  currency: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .regex(/^[A-Z]{3}$/)
+    .optional(),
+  interval: priceIntervalSchema.optional(),
+  currentPeriodEnd: z.string().datetime().nullable().optional(),
+});
+export type AdminSetSubscription = z.infer<typeof adminSetSubscriptionSchema>;
 
 export const adminPlanViewSchema = z.object({
   id: z.string(),

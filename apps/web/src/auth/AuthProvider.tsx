@@ -9,7 +9,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import type { AuthResponse, MembershipSummary } from '@crewquo/shared';
+import type { AuthResponse, MembershipSummary, PublicUser, RegisterRequest } from '@crewquo/shared';
 import { api } from '@/api/client';
 
 /**
@@ -21,6 +21,7 @@ import { api } from '@/api/client';
 interface Session {
   accessToken: string;
   refreshToken: string;
+  user: PublicUser;
   memberships: MembershipSummary[];
 }
 
@@ -30,6 +31,7 @@ interface AuthState {
   companyId: string | null;
   activeMembership: MembershipSummary | null;
   login: (email: string, password: string) => Promise<void>;
+  register: (input: RegisterRequest) => Promise<void>;
   logout: () => Promise<void>;
   setCompanyId: (companyId: string) => void;
   /**
@@ -38,6 +40,18 @@ interface AuthState {
    * or the switcher and every money label keep showing the old value.
    */
   refreshMemberships: () => Promise<void>;
+  /**
+   * Re-read `/v1/me` into the session. The shell renders the display name from the
+   * cached user, so editing the profile has to refresh it or the sidebar keeps
+   * showing the old name until the next sign-in.
+   */
+  refreshUser: () => Promise<void>;
+  /**
+   * Create a company and switch to it. A user who accepted a MEMBER invite has no
+   * company of their own, and a user whose only company is somebody else's needs a
+   * way to start their own — so this is on the switcher, not buried in settings.
+   */
+  createCompany: (name: string, currency: string) => Promise<string>;
 }
 
 const STORAGE_KEY = 'crewquo.session';
@@ -55,6 +69,7 @@ function fromAuthResponse(res: AuthResponse): Session {
   return {
     accessToken: res.tokens.accessToken,
     refreshToken: res.tokens.refreshToken,
+    user: res.user,
     memberships: res.memberships,
   };
 }
@@ -106,6 +121,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [setCompanyId]
   );
 
+  const register = useCallback(
+    async (input: RegisterRequest) => {
+      const res = await api.register(input);
+      const next = fromAuthResponse(res);
+      setSession(next);
+      persist(next);
+      // Registering without a company name is allowed by the API, so there may be
+      // no membership to select yet — the shell prompts for one in that case.
+      setCompanyId(next.memberships[0]?.companyId ?? '');
+    },
+    [setCompanyId]
+  );
+
   const refreshMemberships = useCallback(async () => {
     if (!session) return;
     const { memberships } = await api.memberships(session.accessToken);
@@ -113,6 +141,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSession(next);
     persist(next);
   }, [session]);
+
+  const refreshUser = useCallback(async () => {
+    if (!session) return;
+    const { user } = await api.me(session.accessToken);
+    const next = { ...session, user };
+    setSession(next);
+    persist(next);
+  }, [session]);
+
+  const createCompany = useCallback(
+    async (name: string, currency: string) => {
+      if (!session) throw new Error('Not signed in');
+      const { company } = await api.createCompany(session.accessToken, { name, currency });
+      const { memberships } = await api.memberships(session.accessToken);
+      const next = { ...session, memberships };
+      setSession(next);
+      persist(next);
+      setCompanyId(company.id);
+      return company.id;
+    },
+    [session, setCompanyId]
+  );
 
   const logout = useCallback(async () => {
     if (session) await api.logout(session.refreshToken).catch(() => undefined);
@@ -131,11 +181,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       companyId,
       activeMembership,
       login,
+      register,
       logout,
       setCompanyId,
       refreshMemberships,
+      refreshUser,
+      createCompany,
     };
-  }, [ready, session, companyId, login, logout, setCompanyId, refreshMemberships]);
+  }, [
+    ready,
+    session,
+    companyId,
+    login,
+    register,
+    logout,
+    setCompanyId,
+    refreshMemberships,
+    refreshUser,
+    createCompany,
+  ]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

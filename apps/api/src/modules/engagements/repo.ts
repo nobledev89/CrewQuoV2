@@ -136,7 +136,14 @@ export async function updateEngagementStatus(
   );
 }
 
-/** Count distinct providers the active company engages (usage: active_subcontractors). */
+/**
+ * Providers the active company engages (usage: `active_subcontractors`).
+ *
+ * `PENDING` counts. An invited-but-unaccepted subcontractor holds a seat on
+ * purpose: if pending edges were free, the cap could be walked straight past by
+ * inviting, and the meter would only bite on the people who actually turned up.
+ * This is the opposite of the `clients` rule below, which §5B states explicitly.
+ */
 export async function countActiveSubcontractors(companyId: string): Promise<number> {
   const row = await queryOne<{ n: number }>(
     `select count(*)::int as n from engagements
@@ -146,11 +153,27 @@ export async function countActiveSubcontractors(companyId: string): Promise<numb
   return row?.n ?? 0;
 }
 
-/** Count distinct clients the active company works for (usage: clients). */
+/**
+ * Clients the active company works for (usage: `clients`).
+ *
+ * §5B: *"Placeholder clients are free/unlimited (only real portal logins count
+ * toward `clients`)"*. So a client company that is still a stub — invited, never
+ * accepted — is excluded, and the meter counts the edges whose client side is a
+ * company someone can actually sign in to.
+ *
+ * That exclusion only became implementable once `is_placeholder` was cleared on
+ * the CLAIMED accept path (`markCompanyClaimed`); until then the flag stayed true
+ * for companies that had genuinely joined, and filtering on it would have
+ * *undercounted* real portal customers rather than excluding stubs.
+ */
 export async function countClients(companyId: string): Promise<number> {
   const row = await queryOne<{ n: number }>(
-    `select count(*)::int as n from engagements
-      where provider_company_id = $1 and status in ('PENDING','ACTIVE','PAUSED')`,
+    `select count(*)::int as n
+       from engagements e
+       join companies c on c.id = e.client_company_id
+      where e.provider_company_id = $1
+        and e.status in ('PENDING','ACTIVE','PAUSED')
+        and not c.is_placeholder`,
     [companyId]
   );
   return row?.n ?? 0;

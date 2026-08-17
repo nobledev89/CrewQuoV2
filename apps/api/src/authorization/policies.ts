@@ -1,4 +1,4 @@
-import type { MembershipRole, WorkStatus } from '@crewquo/shared';
+import type { MembershipRole, MembershipStatus, WorkStatus } from '@crewquo/shared';
 
 /**
  * Centralized authorization policy (CREWQUO_V2_PLAN.md §4). Pure functions over
@@ -150,6 +150,84 @@ export function canEditLineItemNoteBody(userId: string, note: { authorUserId: st
 
 export function canResolveLineItemNote(companyId: string, edge: EngagementEdge): boolean {
   return isEngagementParticipant(companyId, edge);
+}
+
+// ── Member management (§3.1, §7) ───────────────────────────────────────────────
+
+/**
+ * The subject of a membership change, as the route loaded it.
+ */
+export interface MembershipSubject {
+  userId: string;
+  role: MembershipRole;
+  status: MembershipStatus;
+}
+
+/**
+ * May `actorRole` change this membership, and would the change leave the company
+ * governable? Returns the refusal reason, or null when the change is allowed.
+ *
+ * Two invariants, both about lock-out rather than tidiness:
+ *
+ *  1. **An admin may not touch an owner, or mint one.** ADMIN is the delegated
+ *     manager of people; OWNER additionally holds company settings, currency and
+ *     (from Phase 6) billing. If an admin could demote an owner or promote
+ *     themselves, ADMIN and OWNER would be the same role with two names, and the
+ *     first thing a compromised admin account would do is take the company.
+ *  2. **A company keeps at least one active owner.** Nothing else can change the
+ *     currency, invite an admin back, or manage the subscription — and a company
+ *     with no owner cannot be repaired from inside the product at all. The count
+ *     is of *active* owners, because a suspended one cannot act either.
+ *
+ * Self-demotion is deliberately permitted when another active owner exists: that
+ * is how an owner hands over, and blocking it would leave "promote a successor,
+ * then step down" impossible without support intervention.
+ */
+export function membershipChangeRefusal(args: {
+  actorRole: MembershipRole;
+  target: MembershipSubject;
+  /** Active OWNER memberships in the company, counting the target if it is one. */
+  activeOwnerCount: number;
+  patch: { role?: MembershipRole; status?: MembershipStatus };
+}): string | null {
+  const { actorRole, target, patch } = args;
+  if (!isOwnerOrAdmin(actorRole)) return 'Requires an owner or admin role';
+  if (actorRole === 'ADMIN' && target.role === 'OWNER') {
+    return 'An admin cannot change an owner’s membership';
+  }
+  if (actorRole === 'ADMIN' && patch.role === 'OWNER') {
+    return 'An admin cannot grant ownership';
+  }
+
+  const losesOwner =
+    target.role === 'OWNER' &&
+    target.status === 'ACTIVE' &&
+    ((patch.role !== undefined && patch.role !== 'OWNER') ||
+      (patch.status !== undefined && patch.status !== 'ACTIVE'));
+  if (losesOwner && args.activeOwnerCount <= 1) {
+    return 'A company must keep at least one active owner';
+  }
+  return null;
+}
+
+/** The same two invariants for removal, where every change is a loss. */
+export function membershipRemovalRefusal(args: {
+  actorRole: MembershipRole;
+  target: MembershipSubject;
+  activeOwnerCount: number;
+}): string | null {
+  if (!isOwnerOrAdmin(args.actorRole)) return 'Requires an owner or admin role';
+  if (args.actorRole === 'ADMIN' && args.target.role === 'OWNER') {
+    return 'An admin cannot remove an owner';
+  }
+  if (
+    args.target.role === 'OWNER' &&
+    args.target.status === 'ACTIVE' &&
+    args.activeOwnerCount <= 1
+  ) {
+    return 'A company must keep at least one active owner';
+  }
+  return null;
 }
 
 // ── Placeholder → real company merge (owner decision, 2026-08-17) ──────────────

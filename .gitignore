@@ -27,3 +27,9 @@ Thumbs.db
 
 # test / coverage
 coverage/
+
+# playwright: per-run traces, screenshots and reports — regenerated every run
+test-results/
+playwright-report/
+blob-report/
+.playwright/

@@ -810,6 +810,403 @@ async function main(): Promise<void> {
   );
   eq('a company that never used the branch gets no invented rule', fresh.rowCount, 0);
 
+  // ── Placeholder companies stop being placeholders when claimed ────────────
+  section('Placeholder flag + the clients meter (§5B)');
+
+  // Both counterparties accepted an invite without owning a company, which is the
+  // CLAIMED path: the stub is now their real company, so the flag must be gone.
+  // While it stayed true, the UI reported "Invitation pending" for a subcontractor
+  // who had plainly joined, and §5B's placeholder-clients-are-free rule could not
+  // be implemented — filtering on the flag would have excluded real customers.
+  const claimedFlags = await db.query<{ id: string; is_placeholder: boolean }>(
+    `select id, is_placeholder from companies where id = any($1)`,
+    [[northgate, harbour]]
+  );
+  const flagOf = (id: string) => claimedFlags.rows.find((r) => r.id === id)?.is_placeholder;
+  eq('a claimed provider placeholder is no longer a placeholder', flagOf(northgate), false);
+  eq('...nor is a claimed portal client', flagOf(harbour), false);
+
+  // A stub nobody accepted stays a stub — and stays free.
+  const unclaimed = await call('POST', '/v1/clients', {
+    token: owner.token,
+    companyId: meridian,
+    body: { name: `Never Accepts ${RUN}`, email: `never+${RUN}@verify.crewquo.test` },
+  });
+  eq('a second portal client is invited', unclaimed.status, 201);
+  const unclaimedId = unclaimed.json.client.clientCompanyId as string;
+  eq(
+    '...and is still a placeholder',
+    (await db.query<{ is_placeholder: boolean }>(
+      `select is_placeholder from companies where id = $1`,
+      [unclaimedId]
+    )).rows[0]?.is_placeholder,
+    true
+  );
+
+  const meterEnt = await call('GET', '/v1/entitlements', {
+    token: owner.token,
+    companyId: meridian,
+  });
+  const clientsUsage = meterEnt.json.usage.find((u: any) => u.key === 'clients');
+  // Two client edges exist; only the one somebody can sign in to is billable.
+  eq('the clients meter counts the accepted client only', clientsUsage?.used, 1);
+
+  // ── Super-admin console (§5B): the three per-company levers ───────────────
+  section('Super-admin companies console');
+
+  const staff = await register('staff');
+  await db.query(`update users set is_super_admin = true where id = $1`, [staff.userId]);
+
+  const notStaff = await call('GET', '/v1/admin/companies', { token: owner.token });
+  eq('an ordinary account cannot read the console', notStaff.status, 403);
+
+  const found = await call(
+    'GET',
+    `/v1/admin/companies?search=${encodeURIComponent(`Meridian Contracts ${RUN}`)}`,
+    { token: staff.token }
+  );
+  eq('staff can search companies', found.status, 200);
+  eq('...finding the one company by name', found.json.data.length, 1);
+  eq('...with its resolved plan', found.json.data[0]?.planId, 'pro');
+  eq('...and its live member count', found.json.data[0]?.memberCount, 2);
+
+  const byEmail = await call(
+    'GET',
+    `/v1/admin/companies?search=${encodeURIComponent(owner.email)}`,
+    { token: staff.token }
+  );
+  eq('searching by a member email finds their company', byEmail.json.data[0]?.id, meridian);
+
+  // Placeholders are hidden by default — every invite creates one, so they would
+  // otherwise bury the search.
+  const hidden = await call(
+    'GET',
+    `/v1/admin/companies?search=${encodeURIComponent(`Never Accepts ${RUN}`)}`,
+    { token: staff.token }
+  );
+  eq('placeholders are excluded by default', hidden.json.data.length, 0);
+  const shown = await call(
+    'GET',
+    `/v1/admin/companies?search=${encodeURIComponent(`Never Accepts ${RUN}`)}&includePlaceholders=true`,
+    { token: staff.token }
+  );
+  eq('...and included on request', shown.json.data.length, 1);
+  // `Boolean('false')` is true, which is why the flag is not a coerced boolean.
+  const falseFlag = await call(
+    'GET',
+    `/v1/admin/companies?search=${encodeURIComponent(`Never Accepts ${RUN}`)}&includePlaceholders=false`,
+    { token: staff.token }
+  );
+  eq('...and "false" really means false', falseFlag.json.data.length, 0);
+
+  const page1 = await call('GET', '/v1/admin/companies?limit=1', { token: staff.token });
+  eq('a page of one returns one row', page1.json.data.length, 1);
+  check('...with a cursor for the next page', typeof page1.json.nextCursor === 'string');
+  const page2 = await call(
+    'GET',
+    `/v1/admin/companies?limit=1&cursor=${encodeURIComponent(page1.json.nextCursor)}`,
+    { token: staff.token }
+  );
+  check(
+    '...and the next page is a different company',
+    page2.json.data[0]?.id !== page1.json.data[0]?.id,
+    { first: page1.json.data[0]?.id, second: page2.json.data[0]?.id }
+  );
+
+  const detail = await call(`GET`, `/v1/admin/companies/${meridian}`, { token: staff.token });
+  eq('the detail view resolves entitlements', detail.json.entitlements.planId, 'pro');
+  check(
+    '...reports live usage from the same meters the product enforces',
+    detail.json.usage.some((u: any) => u.key === 'clients' && u.used === 1),
+    detail.json.usage
+  );
+  eq('...and starts with no overrides', detail.json.overrides.length, 0);
+
+  // A limit override must be visible *immediately*. Entitlements memoize for 60s
+  // and meridian has been read many times by now, so this only passes if the write
+  // invalidated the cache — a support action nobody can see land gets done twice.
+  const seatOverride = await call('POST', `/v1/admin/companies/${meridian}/overrides`, {
+    token: staff.token,
+    body: { limitKey: 'internal_seats', limitValue: 99, note: 'verify-e2e' },
+  });
+  eq('a limit override is applied', seatOverride.status, 201);
+  const afterOverride = await call('GET', '/v1/entitlements', {
+    token: owner.token,
+    companyId: meridian,
+  });
+  eq(
+    'the raised limit is live at once, not after the 60s TTL',
+    afterOverride.json.limits.internal_seats,
+    99
+  );
+
+  const featureOverride = await call('POST', `/v1/admin/companies/${meridian}/overrides`, {
+    token: staff.token,
+    body: { featureKey: 'sso', featureEnabled: true, note: 'verify-e2e' },
+  });
+  eq('a feature override is applied', featureOverride.status, 201);
+  const withSso = await call('GET', '/v1/entitlements', {
+    token: owner.token,
+    companyId: meridian,
+  });
+  check(
+    'the granted feature appears without a plan change',
+    withSso.json.features.includes('sso'),
+    withSso.json.features
+  );
+
+  const bothPairs = await call('POST', `/v1/admin/companies/${meridian}/overrides`, {
+    token: staff.token,
+    body: { featureKey: 'sso', featureEnabled: true, limitKey: 'clients', limitValue: 5 },
+  });
+  eq('an override carrying both a feature and a limit is rejected', bothPairs.status, 422);
+  const neitherPair = await call('POST', `/v1/admin/companies/${meridian}/overrides`, {
+    token: staff.token,
+    body: { note: 'nothing to apply' },
+  });
+  eq('...as is one carrying neither', neitherPair.status, 422);
+
+  const revoked = await call(
+    'DELETE',
+    `/v1/admin/companies/${meridian}/overrides/${seatOverride.json.override.id}`,
+    { token: staff.token }
+  );
+  eq('an override can be revoked', revoked.status, 204);
+  const afterRevoke = await call('GET', '/v1/entitlements', {
+    token: owner.token,
+    companyId: meridian,
+  });
+  eq('...and the plan value returns immediately', afterRevoke.json.limits.internal_seats, 8);
+
+  // Comp a trial on a fresh company, so the plan it lands on is unambiguous.
+  const trialCo = await register('trialco', `Trial Co ${RUN}`);
+  const trial = await call('POST', `/v1/admin/companies/${trialCo.companyId}/comp-trial`, {
+    token: staff.token,
+    body: { planId: 'starter', days: 14 },
+  });
+  eq('a trial is comped', trial.status, 200);
+  eq('...as TRIALING', trial.json.company.subscriptionStatus, 'TRIALING');
+  eq('...on the granted plan', trial.json.company.planId, 'starter');
+  const firstEnd = new Date(trial.json.company.trialEnd as string).getTime();
+  check('...ending in the future', firstEnd > Date.now());
+
+  const extended = await call('POST', `/v1/admin/companies/${trialCo.companyId}/comp-trial`, {
+    token: staff.token,
+    body: { planId: 'starter', days: 7 },
+  });
+  const secondEnd = new Date(extended.json.company.trialEnd as string).getTime();
+  check(
+    'extending a live trial adds to it rather than restarting it',
+    secondEnd > firstEnd,
+    { firstEnd, secondEnd }
+  );
+
+  const forced = await call('POST', `/v1/admin/companies/${trialCo.companyId}/subscription`, {
+    token: staff.token,
+    body: { planId: 'business', status: 'ACTIVE' },
+  });
+  eq('a plan can be forced', forced.status, 200);
+  eq('...to the new plan', forced.json.company.planId, 'business');
+  const forcedEnt = await call('GET', '/v1/entitlements', {
+    token: trialCo.token,
+    companyId: trialCo.companyId!,
+  });
+  eq('...and the company resolves against it at once', forcedEnt.json.planId, 'business');
+
+  const badPlan = await call('POST', `/v1/admin/companies/${trialCo.companyId}/subscription`, {
+    token: staff.token,
+    body: { planId: 'no-such-plan', status: 'ACTIVE' },
+  });
+  eq('an unknown plan is refused rather than written', badPlan.status, 422);
+
+  // The trail belongs to the company it was done to, not to the operator.
+  const staffTrail = await call('GET', '/v1/audit-logs?entityType=SUBSCRIPTION', {
+    token: trialCo.token,
+    companyId: trialCo.companyId!,
+  });
+  const planRow = staffTrail.json.data.find((r: any) => r.action === 'company.plan_changed');
+  check('a forced plan change is audited on the subject company', Boolean(planRow), staffTrail.json.data.length);
+  eq('...with both sides of the change', planRow?.changes?.plan?.to, 'business');
+  eq('...and is never client-visible', planRow?.visibleToClient, false);
+
+  const malformedAdmin = [
+    ['GET', '/v1/admin/companies/not-a-uuid', undefined],
+    ['POST', '/v1/admin/companies/not-a-uuid/overrides', { featureKey: 'sso', featureEnabled: true }],
+    ['POST', '/v1/admin/companies/not-a-uuid/comp-trial', { planId: 'starter', days: 7 }],
+  ] as const;
+  for (const [method, path, body] of malformedAdmin) {
+    const res = await call(method, path, { token: staff.token, body });
+    check(
+      `${method} ${path} is a 4xx, never a 500 (got ${res.status})`,
+      res.status >= 400 && res.status < 500,
+      { status: res.status, body: res.json }
+    );
+  }
+
+  // ── Member management (§3.1, §7) ──────────────────────────────────────────
+  section('Member role changes and removal');
+
+  const memberList = await call('GET', '/v1/members', {
+    token: owner.token,
+    companyId: meridian,
+  });
+  eq('the member list carries a membership id to address', memberList.status, 200);
+  const ownerMembership = memberList.json.data.find((m: any) => m.userId === owner.userId);
+  const crewMembership = memberList.json.data.find((m: any) => m.userId === memberUser.userId);
+  check('both memberships are listed', Boolean(ownerMembership && crewMembership));
+
+  const memberAttempt = await call('PATCH', `/v1/members/${ownerMembership.membershipId}`, {
+    token: memberUser.token,
+    companyId: meridian,
+    body: { role: 'MEMBER' },
+  });
+  eq('a MEMBER cannot manage memberships', memberAttempt.status, 403);
+
+  const promote = await call('PATCH', `/v1/members/${crewMembership.membershipId}`, {
+    token: owner.token,
+    companyId: meridian,
+    body: { role: 'MANAGER' },
+  });
+  eq('an owner promotes a member', promote.status, 200);
+  eq('...to the new role', promote.json.member.role, 'MANAGER');
+
+  const selfDemote = await call('PATCH', `/v1/members/${ownerMembership.membershipId}`, {
+    token: owner.token,
+    companyId: meridian,
+    body: { role: 'ADMIN' },
+  });
+  eq('the only active owner cannot demote themselves', selfDemote.status, 403);
+  const selfSuspend = await call('PATCH', `/v1/members/${ownerMembership.membershipId}`, {
+    token: owner.token,
+    companyId: meridian,
+    body: { status: 'SUSPENDED' },
+  });
+  eq('...nor suspend themselves', selfSuspend.status, 403);
+  const selfRemove = await call('DELETE', `/v1/members/${ownerMembership.membershipId}`, {
+    token: owner.token,
+    companyId: meridian,
+  });
+  eq('...nor remove themselves', selfRemove.status, 403);
+
+  await call('PATCH', `/v1/members/${crewMembership.membershipId}`, {
+    token: owner.token,
+    companyId: meridian,
+    body: { role: 'ADMIN' },
+  });
+  const adminVsOwner = await call('PATCH', `/v1/members/${ownerMembership.membershipId}`, {
+    token: memberUser.token,
+    companyId: meridian,
+    body: { role: 'MEMBER' },
+  });
+  eq('an admin cannot change an owner', adminVsOwner.status, 403);
+  const adminSelfPromote = await call('PATCH', `/v1/members/${crewMembership.membershipId}`, {
+    token: memberUser.token,
+    companyId: meridian,
+    body: { role: 'OWNER' },
+  });
+  eq('...nor grant themselves ownership', adminSelfPromote.status, 403);
+
+  const suspend = await call('PATCH', `/v1/members/${crewMembership.membershipId}`, {
+    token: owner.token,
+    companyId: meridian,
+    body: { status: 'SUSPENDED' },
+  });
+  eq('an owner suspends a member', suspend.json.member.status, 'SUSPENDED');
+  const suspendedRead = await call('GET', '/v1/projects', {
+    token: memberUser.token,
+    companyId: meridian,
+  });
+  eq('...and a suspended membership can no longer act as the company', suspendedRead.status, 403);
+  await call('PATCH', `/v1/members/${crewMembership.membershipId}`, {
+    token: owner.token,
+    companyId: meridian,
+    body: { status: 'ACTIVE' },
+  });
+
+  const seatsBefore = await call('GET', '/v1/entitlements', {
+    token: owner.token,
+    companyId: meridian,
+  });
+  eq(
+    'the seat meter counts both members',
+    seatsBefore.json.usage.find((u: any) => u.key === 'internal_seats')?.used,
+    2
+  );
+  const removed = await call('DELETE', `/v1/members/${crewMembership.membershipId}`, {
+    token: owner.token,
+    companyId: meridian,
+  });
+  eq('an owner removes a member', removed.status, 204);
+  const seatsAfter = await call('GET', '/v1/entitlements', {
+    token: owner.token,
+    companyId: meridian,
+  });
+  eq(
+    '...which frees the seat',
+    seatsAfter.json.usage.find((u: any) => u.key === 'internal_seats')?.used,
+    1
+  );
+  // The work they logged is attributed to the user, not the membership, so it survives.
+  const survivingLogs = await call('GET', `/v1/projects/${projectId}/summary`, {
+    token: owner.token,
+    companyId: meridian,
+  });
+  eq('...and the project numbers are unchanged', survivingLogs.json.summary.laborCostCents, 40000);
+
+  const removedTrail = await call('GET', '/v1/audit-logs?entityType=MEMBERSHIP', {
+    token: owner.token,
+    companyId: meridian,
+  });
+  check(
+    'the removal is audited',
+    removedTrail.json.data.some((r: any) => r.action === 'membership.removed'),
+    removedTrail.json.data.length
+  );
+
+  // ── PATCH /v1/me ──────────────────────────────────────────────────────────
+  section('Own profile (PATCH /v1/me)');
+
+  const renamed = await call('PATCH', '/v1/me', {
+    token: owner.token,
+    body: { name: 'Renamed Owner' },
+  });
+  eq('a user renames themselves', renamed.status, 200);
+  eq('...and the new name is returned', renamed.json.user.name, 'Renamed Owner');
+  eq('...while the email is untouched', renamed.json.user.email, owner.email);
+
+  const emailAttempt = await call('PATCH', '/v1/me', {
+    token: owner.token,
+    body: { email: 'someone-else@verify.crewquo.test' },
+  });
+  // Unknown keys are stripped, so this is an empty patch — and an empty patch is
+  // a 422 rather than a silent no-op that reads as success.
+  eq('email is not editable through the profile', emailAttempt.status, 422);
+  const stillMine = await call('GET', '/v1/me', { token: owner.token });
+  eq('...and the address really did not change', stillMine.json.user.email, owner.email);
+
+  const emptyPatch = await call('PATCH', '/v1/me', { token: owner.token, body: {} });
+  eq('an empty profile patch is rejected', emptyPatch.status, 422);
+
+  const avatar = await call('PATCH', '/v1/me', {
+    token: owner.token,
+    body: { avatarUrl: 'https://example.test/a.png' },
+  });
+  eq('an avatar can be set', avatar.json.user.avatarUrl, 'https://example.test/a.png');
+  const cleared = await call('PATCH', '/v1/me', {
+    token: owner.token,
+    body: { avatarUrl: null },
+  });
+  // null clears; undefined would have meant "leave it alone".
+  eq('...and cleared with an explicit null', cleared.json.user.avatarUrl, null);
+
+  const nameTrail = await call('GET', '/v1/audit-logs?entityType=USER', {
+    token: owner.token,
+    companyId: meridian,
+  });
+  const nameRow = nameTrail.json.data.find((r: any) => r.action === 'user.updated');
+  check('a rename is audited in each of the user’s companies', Boolean(nameRow));
+  eq('...with both sides of the change', nameRow?.changes?.name?.to, 'Renamed Owner');
+
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);
   if (failures.length === 0) {

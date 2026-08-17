@@ -39,6 +39,16 @@ export const AUDIT_ACTIONS = [
   'note.deleted',
   'company.merged',
   'company.updated',
+  'membership.updated',
+  'membership.removed',
+  'user.updated',
+  // Platform-staff actions (§5B super-admin console). Recorded against the
+  // *subject* company, since that is whose entitlements changed — the operator's
+  // own company is irrelevant to the company reading its trail later.
+  'company.plan_changed',
+  'company.trial_comped',
+  'company.override_applied',
+  'company.override_removed',
 ] as const;
 export const auditActionSchema = z.enum(AUDIT_ACTIONS);
 export type AuditAction = z.infer<typeof auditActionSchema>;
@@ -53,6 +63,10 @@ export const AUDIT_ENTITY_TYPES = [
   'INVITE',
   'NOTE',
   'COMPANY',
+  'MEMBERSHIP',
+  'USER',
+  'SUBSCRIPTION',
+  'ENTITLEMENT_OVERRIDE',
 ] as const;
 export const auditEntityTypeSchema = z.enum(AUDIT_ENTITY_TYPES);
 export type AuditEntityType = z.infer<typeof auditEntityTypeSchema>;

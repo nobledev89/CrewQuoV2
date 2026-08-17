@@ -48,6 +48,29 @@ export async function updateCompany(
   return row;
 }
 
+/**
+ * A placeholder stops being a placeholder the moment a real person owns it.
+ *
+ * `is_placeholder` means "a stub for a party not yet on CrewQuo" (§3.1). When an
+ * invitee accepts and *claims* the stub — the CLAIMED path, where they had no
+ * company of their own — that description stops being true: someone signed in,
+ * it is their real company, and it is the one they log time from. Leaving the flag
+ * set made the UI report "Invitation pending" for a subcontractor who had plainly
+ * joined, and made §5B's "only real portal logins count toward `clients`"
+ * unimplementable, since the flag no longer distinguished a stub from a customer.
+ *
+ * The MERGED path does not come through here: there the placeholder really does
+ * stay a placeholder, tombstoned via `claimed_by_company_id` (see `merge.ts`).
+ */
+export async function markCompanyClaimed(id: string, runner?: Queryable): Promise<void> {
+  await query(
+    `update companies set is_placeholder = false, updated_at = now()
+      where id = $1 and is_placeholder`,
+    [id],
+    runner
+  );
+}
+
 export async function insertCompany(
   input: { name: string; currency: string; isPlaceholder?: boolean },
   runner?: Queryable

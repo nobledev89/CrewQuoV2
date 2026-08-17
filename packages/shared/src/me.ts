@@ -28,6 +28,23 @@ export const currencyCodeSchema = z
  */
 export const DEFAULT_CURRENCY = 'USD';
 
+/**
+ * PATCH /v1/me (§7) — the signed-in account's own profile.
+ *
+ * Name and avatar only. Email is deliberately absent: it is the identity an
+ * invite is bound to and the address a reset link is sent to, so changing it is a
+ * re-verification flow rather than a text field. `avatarUrl` accepts null to
+ * clear it — `undefined` means "leave alone", which is a different instruction.
+ */
+export const updateMeSchema = z
+  .object({
+    name: z.string().trim().min(1).max(200),
+    avatarUrl: z.string().trim().url().max(2000).nullable(),
+  })
+  .partial()
+  .refine((v) => Object.keys(v).length > 0, { message: 'Nothing to update' });
+export type UpdateMe = z.infer<typeof updateMeSchema>;
+
 /** POST /v1/me/companies — create a company; the caller becomes OWNER. */
 export const createCompanyRequestSchema = z.object({
   name: z.string().trim().min(1).max(200),
