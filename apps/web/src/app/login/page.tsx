@@ -16,7 +16,7 @@ export default function LoginPage() {
 
   useEffect(() => {
     document.title = 'Sign in · CrewQuo';
-    if (ready && session) router.replace('/');
+    if (ready && session) router.replace('/app');
   }, [ready, session, router]);
 
   async function onSubmit(event: React.FormEvent) {
@@ -25,7 +25,7 @@ export default function LoginPage() {
     setError(null);
     try {
       await login(email.trim(), password);
-      router.replace('/');
+      router.replace('/app');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'We could not sign you in. Check your details and try again.');
     } finally {

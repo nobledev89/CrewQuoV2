@@ -9,7 +9,7 @@ import { useAuth } from '@/auth/AuthProvider';
 const NAV = [
   {
     label: 'Workspace',
-    items: [{ href: '/', label: 'Overview', icon: 'overview' }],
+    items: [{ href: '/app', label: 'Overview', icon: 'overview' }],
   },
   {
     label: 'Rate management',
@@ -23,7 +23,7 @@ const NAV = [
 ];
 
 const PAGE_NAMES: Record<string, string> = {
-  '/': 'Overview',
+  '/app': 'Overview',
   '/rates/roles': 'Roles',
   '/rates/cards': 'Rate cards',
   '/rates/templates': 'Templates',
@@ -52,7 +52,7 @@ export function Shell({ children }: { children: ReactNode }) {
       <a className="cq-skip-link" href="#main-content">Skip to content</a>
       <div className="cq-app-shell">
         <aside className="cq-sidebar" aria-label="Primary navigation">
-          <Link className="cq-brand" href="/" translate="no">
+          <Link className="cq-brand" href="/app" translate="no">
             <span className="cq-brand__mark" aria-hidden="true">CQ</span>
             <span className="cq-brand__name">CrewQuo</span>
           </Link>
@@ -63,7 +63,7 @@ export function Shell({ children }: { children: ReactNode }) {
                 <div className="cq-nav-group" key={group.label}>
                   <div className="cq-nav-label">{group.label}</div>
                   {group.items.map((item) => {
-                    const active = item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);
+                    const active = pathname === item.href || (item.href !== '/app' && pathname.startsWith(item.href));
                     return (
                       <Link className="cq-nav-link" key={item.href} href={item.href} aria-current={active ? 'page' : undefined} title={item.label}>
                         <NavIcon name={item.icon} />
