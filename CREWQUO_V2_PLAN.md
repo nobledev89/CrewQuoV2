@@ -34,10 +34,12 @@ v1 works but is hard to use and hard to evolve. The complexity comes from two so
 Moving authorization into an **API layer backed by Postgres** collapses that class of problem: access checks become SQL `WHERE` clauses and middleware — one source of truth, testable in isolation.
 
 ### Goals
-- **Mobile-first.** Expo (React Native) is the primary client; web is secondary (heavy admin + client portal).
+- **Web-first build order** *(revised 2026-08-17 — see decision #21)*. Every feature is built and proven complete on the web app before it is built on mobile. Mobile remains the intended day-to-day surface for supervisors and crew in the field, but it is a **port of finished functionality, not a parallel build**.
 - **Straight to the point.** Fewer screens, fewer taps, opinionated default flows.
 - Own the backend: Postgres + a TypeScript API on Render, deployable and debuggable end to end.
 - Keep what's genuinely good in v1: the **rate/margin engine** and the **PAY vs BILL** model.
+
+> **Historical note.** Phases 1–3 were built mobile-first under the original goal ("Expo is the primary client; web is secondary"). That produced a working mobile core loop and a web app that stops at the rate-card console — the imbalance §9.1 now closes. The shipped mobile screens stay and keep working; the *order of new work* is what changed.
 
 ### Non-goals (v2.0)
 - Migrating v1 production data (v1 stays live).
@@ -54,8 +56,8 @@ Single Turborepo monorepo, pnpm workspaces.
 ```
 crewquo-v2/
 ├─ apps/
-│  ├─ mobile/        Expo + expo-router (PRIMARY client)
-│  ├─ web/           Next.js on Vercel (admin + client portal + super-admin console)
+│  ├─ mobile/        Expo + expo-router (field client — ported after web is complete, §42 Phase 13)
+│  ├─ web/           Next.js on Vercel (PRIMARY build surface: full app + client portal + super-admin console)
 │  └─ api/           Express 5 + node-postgres on Render
 ├─ packages/
 │  ├─ shared/        Zod schemas, domain types, the rate engine (pure TS, no I/O)
@@ -621,7 +623,12 @@ GET    /v1/admin/companies  POST /v1/admin/companies/:id/overrides  POST /v1/adm
 
 ---
 
-## 8. Mobile app (Expo — primary)
+## 8. Mobile app (Expo — field client, ported after web)
+
+> **Status (revised 2026-08-17, decision #21): maintenance only until §42 Phase 13.**
+> What is already shipped — login, register, home, company switcher, log-time, approvals inbox, push-token registration — **stays, keeps working, and is kept green in CI**. It is not deleted and not frozen against bug fixes or API-contract changes.
+> **No new mobile screens are built until the web surface in §9 is functionally complete.** Every Part II feature (evidence, diary, assets, sustainability, variations, scheduling, the supervisor experience) is built on web first, proven, and then ported in Phase 13.
+> The screen inventory below remains the target design for the mobile app; the routes not yet built simply arrive in Phase 13 rather than alongside each feature phase.
 
 `expo-router`, file-based, bottom-tab layout, **one primary action per screen**. Dependencies: `@tanstack/react-query`, `react-hook-form` + `zod`, `expo-secure-store`, `expo-notifications`, `@sentry/react-native`, `expo-updates` (OTA). Data layer: react-query against `packages/api-client`; optimistic updates on submit/approve.
 
@@ -640,11 +647,30 @@ Notifications: push on submit / approve / reject. Offline draft capture = Phase 
 
 ---
 
-## 9. Web app (Vercel)
+## 9. Web app (Vercel) — the primary build surface
 
-Next.js (App Router). Handles the heavy work awkward on a phone. Shares `packages/shared` + `packages/api-client` with mobile — **no business logic duplicated.** Auth via httpOnly cookies (SSR-friendly).
+Next.js (App Router). **Every feature ships here first and ships here complete.** Shares `packages/shared` + `packages/api-client` with mobile — **no business logic duplicated.** Auth via httpOnly cookies (SSR-friendly).
 
-**Areas:** Auth pages · Dashboard · **Rate cards & templates** (the big tables) · Projects + assignments + summaries · Time/expense review at scale · **Client portal** (line items, notes, audit trail, exports) · **Invoices** · Reports · Company & members admin · **Super-admin console** (§5B) · **Public marketing + legal pages** (pricing, terms, privacy, refunds) for MoR verification.
+**Areas:** Auth pages · Dashboard · **Rate cards & templates** (the big tables) · Projects + assignments + summaries · Time/expense review at scale · **Client portal** (line items, notes, audit trail, exports) · **Invoices** · Reports · Company & members admin · **Super-admin console** (§5B) · **Public marketing + legal pages** (pricing, terms, privacy, refunds) for MoR verification · plus every Part II section (§20).
+
+### 9.1 Web parity backlog (the gap Phases 1–3 left)
+
+Phases 1–3 were built mobile-first, so `apps/web` today is a marketing landing page (`/`), login, an authenticated dashboard home (`/app`) and the four rate-card screens. Everything below is **shipped, tested API functionality with no web UI at all** — it is the scope of §42's Phase 6W gate, and none of it is new backend work.
+
+| Area | Endpoints already live | Web screens needed |
+|---|---|---|
+| Auth & context | `/v1/auth/*`, `/v1/me/*` | register, forgot/reset password, verify email, company switcher, profile |
+| Entitlements | `/v1/entitlements` | plan + live usage display, limit-reached states |
+| Engagements | `/v1/engagements` | list (both sides of the edge), create, pause/end |
+| Providers & clients | `/v1/providers`, `/v1/clients` | list, add provider (placeholder + invite), add portal client |
+| Members & invites | `/v1/members`, `/v1/members/invite`, `/v1/invites/:token` | member list, invite flow, **public invite-accept page** |
+| Projects | `/v1/projects`, `/v1/projects/:id/summary`, `/assignments` | list, detail, create/edit, assign provider, summary with margin |
+| Time & expenses | `/v1/time-logs`, `/v1/expenses`, `/v1/project-submissions` | entry, **bulk review/approve at scale** (the thing a phone is bad at), reject with reason |
+| Client portal | `/v1/portal/*`, `/v1/line-item-notes` | client-side project list + detail, line items, notes thread |
+| Audit | `/v1/audit-logs`, `/v1/audit-settings` | trail viewer, per-engagement visibility settings |
+| Super-admin | `/v1/admin/*` | plans/prices/features/limits CRUD, companies + overrides |
+
+**Bulk review at scale is the highest-value item here** and the clearest case for web over mobile: approving 200 time logs across 12 providers is a table with filters and multi-select, not a swipe deck.
 
 ---
 
@@ -672,11 +698,11 @@ Next.js (App Router). Handles the heavy work awkward on a phone. Shares `package
 
 **Phase 4 — Client portal + exports + audit.** Client-side portal via engagements + `projects.client_visible`; `line_item_notes`, `audit_logs` (+ nightly `expires_at` cleanup job), `audit_settings`. Server-side PDF/XLSX exports. Web portal + placeholder→linked company **merge flow**. *Milestone: a client logs in, sees only granted projects + visible audit trail, downloads an export.*
 
-**Phase 5 — Billing, invoicing, notifications, polish.** `invoices`/`invoice_items`. **MoR billing** (Lemon Squeezy/Paddle): checkout, webhooks, trial→paid, entitlement snapshots. Super-admin price editor + subscription management. Push + email notifications. Reports. EAS store submission. Public marketing + legal pages.
+**Phase 5 — Billing, invoicing, notifications, polish.** `invoices`/`invoice_items`. **MoR billing** (Lemon Squeezy/Paddle): checkout, webhooks, trial→paid, entitlement snapshots. Super-admin price editor + subscription management. Push + email notifications. Reports. Public marketing + legal pages. *(EAS store submission moved to Phase 13.9 — decision #21.)*
 
 **Phase 6 (deferred).** Offline draft capture, real-time updates, and the optional v1→v2 per-customer importer (§12).
 
-> **Phases 7–12 — the v2.1 expansion — are specified in §42.** They add project evidence, site diary, locations, asset & material tracking, the sustainability/carbon engine, reporting, variations, scheduling, the supervisor mobile experience and subcontractor compliance. Phase 4's remaining **server-side PDF/XLSX export engine** is the shared foundation for §29's reports and should be finished before Phase 10.
+> **Phases 6W–13 are specified in §42.** **Phase 6W** closes the web parity backlog (§9.1) — everything the API already does, given a web UI. **Phases 7–12** are the v2.1 expansion, web-only: project evidence, site diary, locations, asset & material tracking, the sustainability/carbon engine, reporting, variations, scheduling and subcontractor compliance. **Phase 13** ports the whole thing to mobile, including the supervisor field experience (decision #21). Phase 4's remaining **server-side PDF/XLSX export engine** is the shared foundation for §29's reports and should be finished before Phase 10.
 
 ---
 
@@ -740,6 +766,7 @@ This spec resolves contradictions that existed while the plan evolved: (a) the o
 18. **Storage is not an outcome.** An asset in storage stays `PENDING` and is excluded from reuse/recycling/diversion numerators *and* denominators until a final destination is recorded (§25.4).
 19. **Every generated report stores a reproducible snapshot** of its numbers, factor-set versions and source record ids, plus the rendered file. Re-rendering reads the snapshot; it never recalculates (§29.4).
 20. **Waste-hierarchy and destination semantics are configurable data, not code** — the `destination_types` table carries the tier and the counts-as flags, so an org can see and adjust its own assumptions (§25.4, §39).
+21. **Web-first build order** *(owner decision, 2026-08-17 — reverses the original "mobile-first" goal in §1).* Every feature is built complete on web before any mobile work. Phases 6W–12 are web-only; **all** mobile work is consolidated into Phase 13, after the web app is functionally complete. Shipped mobile screens are maintained, never deleted. Rationale: proving the domain once, on the faster surface, beats debugging product decisions across two clients simultaneously — and the API is client-agnostic (§46), so the later port is UI work, not rework. Cost accepted: the supervisor field experience (§32), which is the most naturally mobile part of the product, demos on desktop until Phase 13.
 
 ---
 
@@ -763,7 +790,9 @@ This spec resolves contradictions that existed while the plan evolved: (a) the o
 
 **Open on the existing roadmap:** Phase 4's server-side PDF/XLSX **export engine** and the web portal screens; Phase 5 billing/invoicing/notifications; the Phase 2 follow-up to move the `FRI_SAT_NIGHT` label rule out of code and into per-company `rate_card_templates` data; the `USD` currency default.
 
-**Next:** finish the export engine (it is the foundation §29 builds on), then start **Phase 7** (§42).
+**The web/mobile imbalance:** `apps/web` has a marketing landing page, login, a dashboard home and the four rate-card screens. `apps/mobile` has the working core loop. Everything from Phases 1, 3 and 4 — projects, approvals, providers, members, invites, portal, audit, super-admin — has **no web UI**. That is the §9.1 backlog and the reason Phase 6W exists.
+
+**Next:** finish the export engine (it is the foundation §29 builds on), then **Phase 6W — web parity** (§42), then Phase 7. All mobile work is now Phase 13 (decision #21).
 
 ---
 ---
@@ -1834,6 +1863,8 @@ create index on schedule_assignments (project_id, starts_at);
 
 ## 32. Supervisor mobile experience
 
+> **Built in Phase 13, not alongside the feature phases** (decision #21). The web equivalents of everything below ship first; this screen is the field port of proven functionality.
+
 A separate, simplified project screen for supervisors — **not** the desktop admin UI shrunk down. New expo-router group `apps/mobile/app/(app)/site/`.
 
 ```
@@ -2133,6 +2164,30 @@ Same discipline as Phases 0–4: one phase at a time, each independently demoabl
 
 **Sequencing against the existing roadmap.** Finish Phase 4's **export engine** first — §29 is built on it. Phase 5 (billing/invoicing) is independent of everything here and can land whenever revenue requires it, with one dependency: §30.1 links variations to `invoices`, so that FK arrives with Phase 5 or is added when it does.
 
+### The web-first gate (decision #21)
+
+> **Phases 6W through 12 are web-only. No new mobile screen is built until Phase 13.**
+>
+> Existing mobile screens (§8) are maintained, not extended: they keep working, stay green in CI, and get updated when an API contract they use changes. Nothing is deleted.
+>
+> A phase is **not done** until its web surface is complete — every screen, every state (empty, loading, error, limit-reached, permission-denied), not a happy path with the rest deferred. "Complete on web" is the gate for starting the next phase, and the whole point of the reorder is that it is enforced per phase rather than checked at the end.
+
+### Phase 6W — Web parity *(new gate, before Phase 7)*
+
+Closes the §9.1 backlog. **No new backend work** — every endpoint listed there already exists, is tested and is verified end-to-end against live Postgres. This is UI only.
+
+- [ ] Auth completion: register, forgot/reset password, verify email, profile, company switcher
+- [ ] Entitlements: plan + live usage, limit-reached and feature-locked states
+- [ ] Engagements, providers, clients: list/create/pause/end, invite flows, **public invite-accept page**
+- [ ] Members + invites
+- [ ] Projects: list, detail, create/edit, provider assignment, summary with cost/bill/margin
+- [ ] Time & expenses: entry plus **bulk review/approve at scale** — filters, multi-select, reject-with-reason
+- [ ] Client portal: client-side project list + detail, line items, notes thread
+- [ ] Audit trail viewer + per-engagement visibility settings
+- [ ] Super-admin console: plans/prices/features/limits, companies + overrides
+- [ ] Playwright E2E over the full loop: register → company → provider invite → project → log time → approve → portal → audit
+- *Milestone: everything CrewQuo can already do, doable on the web app — no phone required for any workflow.*
+
 ### Phase 7 — Evidence foundations *(brief Phase 1)*
 - **7.0 Storage service** (§22.1): `stored_files`, R2 presign/complete, `sharp` derivatives, download authorization, `storage_gb` metering. Retro-fit expense receipt upload, which Phase 3 deferred.
 - **7.1 Capability layer** (§37): `capabilities`, bundles, overrides, `resolveCapabilities`, `hasCapability`, role-derived defaults. Ship before the modules that need Supervisor ≠ Manager.
@@ -2140,15 +2195,15 @@ Same discipline as Phases 0–4: one phase at a time, each independently demoabl
 - **7.3 Project evidence** (§22): records, batch upload, camera capture, gallery/timeline/filters, selection.
 - **7.4 Project documents** (§24).
 - **7.5 Site diary** (§23) with attendance, Close Day and post-close revisions.
-- **7.6** Web: the project section shell (§20) with these five sections. Mobile: Add Photo + Site Diary.
-- *Milestone: a supervisor photographs a floor from a phone, writes the day's diary, closes the day — and it is all on the project, attributed, dated and located.*
+- **7.6 Web UI:** the project section shell (§20) with these five sections — evidence gallery/timeline/filters with drag-and-drop batch upload, document manager, diary editor with Close Day. Desktop upload and batch metadata editing carry this phase; camera capture arrives in Phase 13.
+- *Milestone: a full day's evidence — photos, documents and a closed diary entry — captured and organised on the project from a desktop, attributed, dated and located.*
 
 ### Phase 8 — Assets & materials *(brief Phase 2)*
 - `asset_types` (seeded, no invented weights), `project_assets` with bulk lines and weight provenance (§25.2, §25.3).
 - `destination_types` (seeded per §25.4), `destination_organisations`, `asset_movements` with partial splits and derived `outcome_state`.
 - Mass roll-ups and the pending/allocated split (§28.2, mass only — no carbon yet).
 - Evidence and document linkage to assets and movements.
-- Web: asset table with inline editing and bulk entry. Mobile: Assets Removed + Waste/Reuse flows.
+- Web: asset table with inline editing, bulk entry/paste-import, movement recording and destination assignment.
 - *Milestone: 42 chairs in, 30 donated and 12 recycled out, with weights, evidence and a destination organisation on each — and the project reports the tonnage split correctly.*
 
 ### Phase 9 — Sustainability engine *(brief Phase 3)*
@@ -2169,19 +2224,36 @@ Same discipline as Phases 0–4: one phase at a time, each independently demoabl
 - `CLIENT_PERIOD` report kind + the aggregation query shipped now, UI later (§38.2).
 - *Milestone: a client-ready PDF generated from real project data, regenerable byte-identical a year later.*
 
-### Phase 11 — Commercial & field operations *(brief Phase 5)*
+### Phase 11 — Commercial & operations *(brief Phase 5)*
 - Variations with pricing, approval and revenue feed-through (§30.1).
 - `project_budgets` + computed actuals + variance (§30.2).
-- Scheduling with day/week/month, conflicts and requirements (§31).
-- Supervisor mobile experience (§32).
+- Scheduling with day/week/month, drag-and-drop assignment, conflicts and requirements (§31).
 - Project timeline (§35).
-- *Milestone: budget vs actual with approved variations included, and a supervisor running the day from the site screen.*
+- *Milestone: budget vs actual with approved variations included, and a week's crew scheduled with conflicts surfaced.*
 
 ### Phase 12 — Compliance & analytics *(brief Phase 6)*
 - Subcontractor compliance documents, statuses and the 90/60/30/14/7 alert ladder (§33).
 - Client aggregated reporting UI, quarterly and annual (§38.2).
 - Advanced analytics and cross-project comparison.
 - *Milestone: a year of PwC projects aggregated into one client sustainability report.*
+
+### Phase 13 — Mobile *(the port — starts only when web is complete)*
+
+Everything mobile, in one phase, against an API and a domain that are finished and proven. By this point every endpoint in §46 is live, every calculation is pinned by tests, and every screen has a working web reference — so this is UI and device integration, not product design under uncertainty.
+
+- **13.1 Catch up the existing app** to the current API: the shipped screens (login, register, home, switcher, log-time, approvals) get any contract changes accumulated across Phases 6W–12.
+- **13.2 Supervisor site experience** (§32) — the `(app)/site/` group and its 11 actions. The flagship field screen.
+- **13.3 Evidence capture** — direct camera, multi-shot, project/date/location pre-fill, background upload with retry (§22.3).
+- **13.4 Site diary** on mobile — write, attendance confirm, Close Day with its missing-data prompts (§23).
+- **13.5 Assets & waste** — Assets Removed and Waste/Reuse flows, destination assignment on site (§25).
+- **13.6 Read-and-confirm surfaces** — schedule (not drag, §31), project sections that make sense on a phone (§20), timeline, compliance flags.
+- **13.7 Sign-off capture** — signature on glass, the one interaction that is genuinely better on a tablet than a desktop (§34).
+- **13.8 Offline capture** (§45 open item) — draft queue for diary, evidence and assets; basements and loading bays have no signal. Decide here whether it is in scope or stays deferred.
+- **13.9 EAS store submission** — dev-client, production builds, OTA channels, store listings. Moved here from Phase 5 so the app that ships to stores is the complete one.
+- **13.10 Maestro E2E** on the supervisor day: start shift → photo → diary → assets → complete day.
+- *Milestone: a supervisor runs an entire site day from a phone, against functionality that was already proven on web.*
+
+**Which project sections reach mobile** (the §20 gap called out earlier): Overview, Schedule (read), Crew, Site Diary, Photos & Evidence, Assets & Materials, Variations (create only), Documents (read), Client Sign-Off. **Not on mobile:** Time & Costs beyond own entry, Sustainability, Reports, and the full commercial view — those are desk work and stay on web.
 
 **Throughout every phase:** `record_revisions` on the tables §36 lists, `recordAudit` on every mutation, entitlement keys registered (§43), tests written with the code (§44), and no regression in what Phases 0–4 already do.
 
@@ -2232,7 +2304,7 @@ Extends §13; same gates, same CI.
 - **Feature packaging for the new modules** — the §43 table is a proposal. Which tier sells sustainability? Is asset tracking a Starter feature or the Pro hook? *(Phase 7, before the first gate is written)*
 - **Enabling-emissions policy for avoided claims** — deduct refurbishment/transport/storage always, or only when the org's methodology requires it? Default matters because it changes headline numbers. *(Phase 9)*
 - **Default displacement assumption** — ship at 100% or at "unknown, ask"? 100% is the industry-common default and the more flattering one. *(Phase 9)*
-- **Offline capture for supervisors** — currently Phase 6. Basements, lifts and loading bays have no signal, and §32 is the flagship mobile experience. Promote it into Phase 11? *(Phase 11)*
+- **Offline capture for supervisors** — basements, lifts and loading bays have no signal, and §32 is the flagship mobile experience. Now decided within Phase 13 (13.8): in scope for the mobile port, or still deferred? *(Phase 13)*
 - **Client visibility defaults for evidence** — every new evidence/document/report row defaults to `client_visible = false`. Confirm that is right for photos, which clients most want to see. *(Phase 7)*
 - **GPS capture** — off by default (§39). Confirm; it is worker-location data and some organisations will not want it recorded at all. *(Phase 7)*
 - **Retention for evidence and originals** — audit rows expire on the plan's `audit_retention_days`; photos and originals currently do not expire at all, which is a growing storage bill. Lifecycle policy? *(Phase 7)*
