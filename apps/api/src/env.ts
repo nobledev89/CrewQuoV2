@@ -56,10 +56,13 @@ if (!parsed.success) {
   console.error('[api] Invalid environment configuration:');
   console.error(parsed.error.flatten().fieldErrors);
   console.error('Hint: copy .env.example to .env at the repo root and fill it in.');
-  // Exiting inside a test runner kills the worker and surfaces as "process.exit
-  // unexpectedly called with 1", which buries the field that was actually wrong.
-  if (isTest) throw new Error('Invalid environment configuration');
-  process.exit(1);
+  // Throw rather than exit. process.exit kills the host before it can report
+  // anything useful: a test runner shows "process.exit unexpectedly called with
+  // 1", and a serverless host shows only FUNCTION_INVOCATION_FAILED. A thrown
+  // error carries the field names into the log, which is the whole point of
+  // validating here. Local dev still gets the friendly hint printed above first.
+  const missing = Object.keys(parsed.error.flatten().fieldErrors).join(', ');
+  throw new Error(`[api] Invalid environment configuration: ${missing}`);
 }
 
 export const env = parsed.data;

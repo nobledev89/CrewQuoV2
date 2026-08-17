@@ -1,5 +1,7 @@
-# Render blueprint. Import via Render Dashboard → New → Blueprint (needs your Render account).
-# See CREWQUO_V2_PLAN.md §10.
+# Render blueprint — the API and its Postgres. Import via Render Dashboard →
+# New → Blueprint (needs your Render account). See CREWQUO_V2_PLAN.md §10.
+#
+# The web console is NOT here: apps/web deploys to Vercel. See README §Deployment.
 databases:
   - name: crewquo-db
     plan: basic-256mb
@@ -12,7 +14,13 @@ services:
     runtime: node
     region: oregon
     plan: starter
-    buildCommand: corepack enable && pnpm install --frozen-lockfile
+    # --prod=false is load-bearing. NODE_ENV=production below applies at build
+    # time too, and pnpm then skips devDependencies — which is where tsx lives.
+    # startCommand runs the API through tsx, so a prod-only install would leave
+    # the service failing with "tsx: not found".
+    buildCommand: corepack enable && pnpm install --frozen-lockfile --prod=false
+    # Forward-only migrations, applied before the new version takes traffic.
+    preDeployCommand: pnpm db:migrate
     startCommand: pnpm --filter @crewquo/api start
     healthCheckPath: /healthz
     autoDeploy: true
@@ -23,3 +31,15 @@ services:
         fromDatabase:
           name: crewquo-db
           property: connectionString
+      # Required in production — src/env.ts only falls back to insecure defaults
+      # outside production, so the API refuses to boot without these. Render
+      # generates and stores them; they never enter the repo.
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      # Public URL of the Vercel web console — used in password-reset and
+      # verify-email links. sync: false makes Render prompt for it rather than
+      # silently defaulting to http://localhost:3000.
+      - key: APP_BASE_URL
+        sync: false

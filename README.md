@@ -67,7 +67,41 @@ infra/
   render.yaml     Render blueprint (API + Postgres)
 ```
 
+## Deployment
+
+Two hosts, one each. **They are not interchangeable** — `apps/api` is a long-running
+Express server (`app.listen`), so it cannot run as a Vercel serverless function; a
+Vercel project pointed at it fails at runtime with `FUNCTION_INVOCATION_FAILED`.
+
+### API + Postgres → Render
+
+Import `infra/render.yaml` via Render Dashboard → New → Blueprint. The blueprint
+generates the JWT secrets and wires `DATABASE_URL` itself; the one value it prompts
+for is `APP_BASE_URL`, which is the public Vercel URL below.
+
+Migrations run automatically before each deploy takes traffic (`preDeployCommand`).
+
+### Web console → Vercel
+
+Create the project from this repo, then in **Settings → General**:
+
+| Setting | Value |
+| --- | --- |
+| Root Directory | `apps/web` |
+| Framework Preset | Next.js |
+| Build / Install Command | leave as the defaults |
+
+And in **Settings → Environment Variables**:
+
+| Variable | Value |
+| --- | --- |
+| `NEXT_PUBLIC_API_URL` | the Render API URL, e.g. `https://crewquo-api.onrender.com` |
+
+`NEXT_PUBLIC_*` is inlined at build time, not read at runtime — set it before you
+build, and redeploy after changing it, or the browser will keep calling
+`http://localhost:4000`.
+
 ## Notes
 
-- The API runs via `tsx` in both dev and production for now; a bundled build step is added when needed.
+- The API runs via `tsx` in both dev and production for now; a bundled build step is added when needed. This is why the Render build installs with `--prod=false`: `tsx` is a devDependency, and `NODE_ENV=production` would otherwise make pnpm skip it.
 - ESLint is intentionally not wired up yet (added in a later step); `type-check` + `test` are the current CI gates.
