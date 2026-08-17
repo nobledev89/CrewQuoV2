@@ -75,15 +75,40 @@ Vercel project pointed at it fails at runtime with `FUNCTION_INVOCATION_FAILED`.
 
 ### API + Postgres → Render
 
-Render Dashboard → **New → Blueprint** (not "New → Web Service" — a standalone web
-service ignores `render.yaml` and gives you an API with no database). Point it at
-this repo and Render reads `render.yaml` from the root, provisioning the Postgres
-and the API together.
+Either route works — the blueprint is only automation.
 
-The blueprint generates the JWT secrets and wires `DATABASE_URL` itself; the one
-value it prompts for is `APP_BASE_URL`, the public Vercel URL below.
+**Blueprint.** Dashboard → **New → Blueprint** → this repo. Render reads
+`render.yaml` from the root (it looks nowhere else) and creates the Postgres and
+the API together, wiring `DATABASE_URL` and generating the JWT secrets. It prompts
+for one value, `APP_BASE_URL` — the Vercel URL below.
 
-`render.yaml` must stay at the repository root — Render does not look anywhere else.
+**By hand.** Create the Postgres first (**New → PostgreSQL**), then **New → Web
+Service** on this repo, leaving Root Directory blank — the build must run from the
+monorepo root for the pnpm workspace to resolve.
+
+| Field | Value |
+| --- | --- |
+| Build Command | `corepack enable && pnpm install --frozen-lockfile --prod=false` |
+| Start Command | `pnpm db:migrate && pnpm --filter @crewquo/api start` |
+| Health Check Path | `/healthz` |
+
+Then add the environment variables the blueprint would have set:
+
+| Variable | Value |
+| --- | --- |
+| `NODE_ENV` | `production` |
+| `DATABASE_URL` | the Postgres **Internal Database URL** |
+| `JWT_ACCESS_SECRET` | 32+ random chars — `openssl rand -base64 32` |
+| `JWT_REFRESH_SECRET` | a *different* 32+ random string |
+| `APP_BASE_URL` | the Vercel URL below |
+
+Both secrets are mandatory in production: `apps/api/src/env.ts` only falls back to
+insecure defaults outside production, so the service refuses to boot without them.
+
+Migrations run in the start command rather than a `preDeployCommand`, which needs a
+paid instance. They are forward-only and tracked, so re-running on each boot is a
+no-op. Don't move them into the build command — build containers can't reach the
+database's internal URL.
 
 Migrations run automatically before each deploy takes traffic (`preDeployCommand`).
 

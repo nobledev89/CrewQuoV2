@@ -1,10 +1,20 @@
-# Render blueprint — the API and its Postgres. Import via Render Dashboard →
-# New → Blueprint (needs your Render account). See CREWQUO_V2_PLAN.md §10.
+# Render blueprint — the API and its Postgres. Render Dashboard → New →
+# Blueprint. See CREWQUO_V2_PLAN.md §10 and README §Deployment.
 #
-# The web console is NOT here: apps/web deploys to Vercel. See README §Deployment.
+# The web console is NOT here: apps/web deploys to Vercel.
+#
+# Plans are set to `free` so this imports without a card. Free tiers have real
+# limits — the web service sleeps after inactivity (first request then takes
+# ~30s), and Render's free Postgres is time-limited and DELETED when it expires.
+# Before this holds anything you care about, raise `plan` to `starter` on the
+# service and `basic-256mb` on the database.
+#
+# Everything here can equally be done by hand in the dashboard: create a Postgres,
+# create a web service, copy the commands and env vars below. The blueprint just
+# does it in one step and wires DATABASE_URL for you.
 databases:
   - name: crewquo-db
-    plan: basic-256mb
+    plan: free
     region: oregon
     postgresMajorVersion: "16"
 
@@ -13,15 +23,19 @@ services:
     name: crewquo-api
     runtime: node
     region: oregon
-    plan: starter
+    plan: free
     # --prod=false is load-bearing. NODE_ENV=production below applies at build
     # time too, and pnpm then skips devDependencies — which is where tsx lives.
     # startCommand runs the API through tsx, so a prod-only install would leave
     # the service failing with "tsx: not found".
     buildCommand: corepack enable && pnpm install --frozen-lockfile --prod=false
-    # Forward-only migrations, applied before the new version takes traffic.
-    preDeployCommand: pnpm db:migrate
-    startCommand: pnpm --filter @crewquo/api start
+    # Migrations run here rather than in a preDeployCommand, which needs a paid
+    # instance. They are forward-only and tracked in schema_migrations, so
+    # re-running on every boot is a no-op ("No new migrations to apply"), and a
+    # failed migration correctly stops the service from serving a bad schema.
+    # The build step is the wrong place for them: build containers cannot reach
+    # the database's internal URL.
+    startCommand: pnpm db:migrate && pnpm --filter @crewquo/api start
     healthCheckPath: /healthz
     autoDeploy: true
     envVars:
