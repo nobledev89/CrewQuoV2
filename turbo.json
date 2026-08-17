@@ -4,7 +4,12 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**"]
+      // .next/** matters as much as dist/**: without it turbo records the web
+      // build as producing no files, so a cache hit restores nothing and the
+      // deploy finds no output at all ("FULL TURBO" followed by a missing .next).
+      // .next/cache is turbo's own advice to exclude — it is Next's incremental
+      // cache, not build output, and bloats the artifact.
+      "outputs": [".next/**", "!.next/cache/**", "dist/**"]
     },
     "dev": {
       "cache": false,
