@@ -6,6 +6,7 @@
     // the value from tsconfig.base.json and collapse every zod-inferred type.
     "strict": true,
     "strictNullChecks": true,
+    "noImplicitAny": true,
     "lib": [
       "ES2022",
       "DOM",

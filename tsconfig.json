@@ -19,7 +19,8 @@
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "strict": true,
-    "strictNullChecks": true
+    "strictNullChecks": true,
+    "noImplicitAny": true
   },
   "files": []
 }

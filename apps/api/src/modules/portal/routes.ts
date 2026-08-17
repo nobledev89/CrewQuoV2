@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import type { PortalProjectDetail } from '@crewquo/shared';
+import type { PortalProjectDetail, PortalProjectView } from '@crewquo/shared';
 import { asyncHandler } from '../../http/asyncHandler';
 import { getCompanyCtx } from '../../http/context';
 import { AppError } from '../../http/errors';
@@ -30,7 +30,10 @@ portalRouter.get(
     // Each project's owner may be on a different plan, so the gate is per-owner.
     // Cached per owner to keep a long project list to one entitlement read each.
     const allowedByOwner = new Map<string, boolean>();
-    const visible = [];
+    // Annotated rather than left to inference: an unannotated `[]` only widens
+    // via TypeScript's evolving-array analysis, which needs noImplicitAny, so it
+    // silently becomes never[] under a config that has drifted.
+    const visible: PortalProjectView[] = [];
     for (const project of projects) {
       let allowed = allowedByOwner.get(project.providerCompanyId);
       if (allowed === undefined) {

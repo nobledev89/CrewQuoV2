@@ -10,6 +10,10 @@
     // errors then land on innocent call sites like extractRate().
     "strict": true,
     "strictNullChecks": true,
+    // Pinned for the same reason. Losing noImplicitAny while strictNullChecks
+    // stays on disables evolving-array inference, so `const xs = []` freezes as
+    // never[] and every .push() fails with "not assignable to type 'never'".
+    "noImplicitAny": true,
     "types": ["node"]
   },
   "include": ["src"]
