@@ -102,6 +102,8 @@ a:hover { text-decoration: underline; }
 .cq-table tbody tr:hover td { background: #fafbfc; }
 .cq-table td[align="right"], .cq-table th[align="right"] { text-align: right; }
 .cq-table__primary { color: var(--cq-text); font-weight: 600; }
+.cq-link-button { appearance: none; border: 0; padding: 0; background: transparent; color: var(--cq-accent); font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.cq-link-button:hover { color: var(--cq-accent-hover); }
 .cq-table__actions { width: 1%; text-align: right !important; }
 .cq-table-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 54px; padding: 9px 12px; border-bottom: 1px solid var(--cq-border); }
 .cq-table-toolbar__meta { color: var(--cq-text-muted); font-size: 12px; white-space: nowrap; }

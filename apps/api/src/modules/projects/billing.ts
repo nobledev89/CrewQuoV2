@@ -6,6 +6,7 @@ import {
 } from '@crewquo/shared';
 import { listResolveCandidates } from '../rates/repo';
 import { pickEffectiveCard } from '../rates/resolve';
+import type { Queryable } from '../../db';
 
 /**
  * BILL-side pricing for one time log (CREWQUO_V2_PLAN.md §6) — what the project
@@ -33,6 +34,7 @@ export async function resolveBillCentsForLog(args: {
   hoursRegular: number;
   hoursOt: number;
   labelRules: readonly TimeframeDefinition[];
+  runner?: Queryable;
 }): Promise<number | null> {
   const label = resolveRateLabel(args.shiftType, args.workDate, args.labelRules);
   const candidates = await listResolveCandidates({
@@ -42,7 +44,7 @@ export async function resolveBillCentsForLog(args: {
     label,
     date: args.workDate,
     counterpartyId: args.clientCompanyId,
-  });
+  }, args.runner);
   const card = pickEffectiveCard(candidates, args.workDate, args.clientCompanyId);
   if (!card) return null;
   return calculateCost({

@@ -446,14 +446,15 @@ export async function listResolveCandidates(args: {
   label: RateLabel;
   date: string;
   counterpartyId?: string;
-}): Promise<RateCardView[]> {
+}, runner?: Queryable): Promise<RateCardView[]> {
   const rows = await query<RateCardRow>(
     `select ${RATE_CARD_COLS} from rate_cards
       where company_id = $1 and kind = $2 and role_id = $3 and rate_label = $4
         and active and effective_from <= $5
         and (counterparty_company_id is null or counterparty_company_id = $6)
       order by effective_from desc`,
-    [args.companyId, args.kind, args.roleId, args.label, args.date, args.counterpartyId ?? null]
+    [args.companyId, args.kind, args.roleId, args.label, args.date, args.counterpartyId ?? null],
+    runner
   );
   return rows.map(toRateCardView);
 }

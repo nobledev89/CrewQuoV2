@@ -33,6 +33,7 @@ import { pushRouter } from './modules/push/routes';
 import { auditLogsRouter, auditSettingsRouter } from './modules/audit/routes';
 import { portalRouter } from './modules/portal/routes';
 import { lineItemNotesRouter } from './modules/notes/routes';
+import { invoicesRouter } from './modules/invoices/routes';
 
 /** Build the Express app. Kept separate from listen() so tests can import it. */
 export function buildApp(): Express {
@@ -86,6 +87,7 @@ export function buildApp(): Express {
   app.use('/v1/line-item-notes', requireAuth, lineItemNotesRouter);
   app.use('/v1/audit-logs', requireAuth, auditLogsRouter);
   app.use('/v1/audit-settings', requireAuth, auditSettingsRouter);
+  app.use('/v1/invoices', requireAuth, invoicesRouter);
 
   app.use('/v1/admin', requireAuth, requireSuperAdmin, adminRouter);
 

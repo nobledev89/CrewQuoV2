@@ -42,6 +42,12 @@ export const AUDIT_ACTIONS = [
   'membership.updated',
   'membership.removed',
   'user.updated',
+  'invoice.created',
+  'invoice.updated',
+  'invoice.issued',
+  'invoice.paid',
+  'invoice.voided',
+  'invoice.deleted',
   // Platform-staff actions (§5B super-admin console). Recorded against the
   // *subject* company, since that is whose entitlements changed — the operator's
   // own company is irrelevant to the company reading its trail later.
@@ -65,6 +71,7 @@ export const AUDIT_ENTITY_TYPES = [
   'COMPANY',
   'MEMBERSHIP',
   'USER',
+  'INVOICE',
   'SUBSCRIPTION',
   'ENTITLEMENT_OVERRIDE',
 ] as const;

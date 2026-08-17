@@ -1,0 +1,306 @@
+import type {
+  CreateInvoice,
+  CreateInvoiceItem,
+  InvoiceSourceType,
+  InvoiceView,
+  ShiftType,
+  UpdateInvoice,
+  UpdateInvoiceItem,
+} from '@crewquo/shared';
+import { query, queryOne, withTransaction, type Queryable } from '../../db';
+import { AppError } from '../../http/errors';
+import { findCompanyById } from '../companies/repo';
+import { findEngagementEdge } from '../engagements/repo';
+import { resolveBillCentsForLog } from '../projects/billing';
+import { getProject } from '../projects/repo';
+import { getEffectiveTimeframeDefinitions } from '../rates/repo';
+import {
+  deleteInvoice,
+  deleteInvoiceItem,
+  getInvoice,
+  insertInvoice,
+  insertInvoiceItem,
+  issueInvoice,
+  recalculateInvoiceTotals,
+  transitionInvoice,
+  updateInvoiceDraft,
+  updateManualItem,
+} from './repo';
+
+interface DerivedItem {
+  description: string;
+  quantity: number;
+  unitAmountCents: number;
+  sourceType: InvoiceSourceType;
+  sourceId: string;
+}
+
+interface ApprovedTimeRow {
+  id: string;
+  role_name: string;
+  role_id: string;
+  shift_type: ShiftType;
+  work_date: string;
+  hours_regular: string;
+  hours_ot: string;
+}
+
+interface ApprovedExpenseRow {
+  id: string;
+  amount_cents: number;
+  category: string | null;
+  description: string | null;
+}
+
+async function loadDerivedItems(args: {
+  projectId: string;
+  ownerCompanyId: string;
+  clientCompanyId: string;
+  only?: { sourceType: 'TIME_LOG' | 'EXPENSE'; sourceId: string };
+  runner: Queryable;
+}): Promise<DerivedItem[]> {
+  const sourceType = args.only?.sourceType ?? null;
+  const sourceId = args.only?.sourceId ?? null;
+  const logs = sourceType === 'EXPENSE' ? [] : await query<ApprovedTimeRow>(
+    `select t.id, r.name as role_name, t.role_id, t.shift_type,
+            to_char(t.work_date, 'YYYY-MM-DD') as work_date,
+            t.hours_regular, t.hours_ot
+       from time_logs t
+       join role_catalog r on r.id = t.role_id
+      where t.project_id = $1 and t.status = 'APPROVED'
+        and ($2::uuid is null or t.id = $2)
+        and not exists (
+          select 1 from invoice_items ii join invoices i on i.id = ii.invoice_id
+           where ii.source_type = 'TIME_LOG' and ii.source_id = t.id and i.status <> 'VOID'
+        )
+      order by t.work_date, t.created_at
+      for update of t`,
+    [args.projectId, sourceType === 'TIME_LOG' ? sourceId : null],
+    args.runner
+  );
+  const expenses = sourceType === 'TIME_LOG' ? [] : await query<ApprovedExpenseRow>(
+    `select e.id, e.amount_cents, e.category, e.description
+       from expenses e
+      where e.project_id = $1 and e.status = 'APPROVED'
+        and ($2::uuid is null or e.id = $2)
+        and not exists (
+          select 1 from invoice_items ii join invoices i on i.id = ii.invoice_id
+           where ii.source_type = 'EXPENSE' and ii.source_id = e.id and i.status <> 'VOID'
+        )
+      order by e.created_at
+      for update of e`,
+    [args.projectId, sourceType === 'EXPENSE' ? sourceId : null],
+    args.runner
+  );
+
+  if (args.only && logs.length + expenses.length === 0) {
+    throw new AppError(
+      'CONFLICT',
+      'Source is not approved work on this project, or it is already invoiced'
+    );
+  }
+
+  const labelRules = await getEffectiveTimeframeDefinitions(args.ownerCompanyId, args.runner);
+  const items: DerivedItem[] = [];
+  const missingRateIds: string[] = [];
+  for (const log of logs) {
+    const hoursRegular = Number(log.hours_regular);
+    const hoursOt = Number(log.hours_ot);
+    const amount = await resolveBillCentsForLog({
+      ownerCompanyId: args.ownerCompanyId,
+      clientCompanyId: args.clientCompanyId,
+      roleId: log.role_id,
+      shiftType: log.shift_type,
+      workDate: log.work_date,
+      hoursRegular,
+      hoursOt,
+      labelRules,
+      runner: args.runner,
+    });
+    if (amount === null) {
+      missingRateIds.push(log.id);
+      continue;
+    }
+    const hours = `${hoursRegular}h${hoursOt ? ` + ${hoursOt}h OT` : ''}`;
+    items.push({
+      description: `${log.role_name} - ${log.work_date} (${hours})`,
+      quantity: 1,
+      unitAmountCents: amount,
+      sourceType: 'TIME_LOG',
+      sourceId: log.id,
+    });
+  }
+  if (missingRateIds.length > 0) {
+    throw new AppError('VALIDATION', 'Some approved time cannot be billed because a BILL rate is missing', {
+      timeLogIds: missingRateIds,
+    });
+  }
+
+  for (const expense of expenses) {
+    const label = expense.description || expense.category || 'Approved expense';
+    items.push({
+      description: label,
+      quantity: 1,
+      unitAmountCents: expense.amount_cents,
+      sourceType: 'EXPENSE',
+      sourceId: expense.id,
+    });
+  }
+  return items;
+}
+
+async function insertDerivedItems(invoiceId: string, items: DerivedItem[], runner: Queryable) {
+  for (const item of items) await insertInvoiceItem({ invoiceId, ...item }, runner);
+}
+
+export async function createProjectInvoice(
+  issuerCompanyId: string,
+  input: CreateInvoice
+): Promise<InvoiceView> {
+  return withTransaction(async (runner) => {
+    await query(`select pg_advisory_xact_lock(hashtextextended($1, 0))`,
+      [`invoice-project:${input.projectId}`], runner);
+    const project = await getProject(issuerCompanyId, input.projectId, runner);
+    if (!project || !project.clientCompanyId || !project.engagementId) {
+      throw new AppError('VALIDATION', 'Project must be linked to a client before it can be invoiced');
+    }
+    const edge = await findEngagementEdge(project.engagementId, runner);
+    if (!edge || edge.provider_company_id !== issuerCompanyId ||
+        edge.client_company_id !== project.clientCompanyId) {
+      throw new AppError('VALIDATION', 'Project client engagement is inconsistent');
+    }
+    const company = await findCompanyById(issuerCompanyId, runner);
+    if (!company) throw new AppError('NOT_FOUND', 'Company not found');
+
+    const invoiceId = await insertInvoice({
+      engagementId: edge.id,
+      issuerCompanyId,
+      counterpartyCompanyId: project.clientCompanyId,
+      projectId: project.id,
+      currency: company.currency,
+      dueAt: input.dueAt,
+      taxCents: input.taxCents,
+    }, runner);
+    if (input.includeApprovedWork) {
+      const items = await loadDerivedItems({
+        projectId: project.id,
+        ownerCompanyId: issuerCompanyId,
+        clientCompanyId: project.clientCompanyId,
+        runner,
+      });
+      await insertDerivedItems(invoiceId, items, runner);
+      await recalculateInvoiceTotals(invoiceId, runner);
+    }
+    return (await getInvoice(invoiceId, runner))!;
+  });
+}
+
+export async function addInvoiceItem(invoice: InvoiceView, input: CreateInvoiceItem) {
+  return withTransaction(async (runner) => {
+    await lockDraft(invoice.id, runner);
+    if (!invoice.projectId) throw new AppError('VALIDATION', 'Invoice has no project');
+    await query(`select pg_advisory_xact_lock(hashtextextended($1, 0))`,
+      [`invoice-project:${invoice.projectId}`], runner);
+    if (input.sourceType === 'MANUAL') {
+      await insertInvoiceItem({
+        invoiceId: invoice.id,
+        description: input.description,
+        quantity: input.quantity,
+        unitAmountCents: input.unitAmountCents,
+        sourceType: 'MANUAL',
+        sourceId: null,
+      }, runner);
+    } else {
+      const items = await loadDerivedItems({
+        projectId: invoice.projectId,
+        ownerCompanyId: invoice.issuerCompanyId,
+        clientCompanyId: invoice.counterpartyCompanyId,
+        only: input,
+        runner,
+      });
+      await insertDerivedItems(invoice.id, items, runner);
+    }
+    await recalculateInvoiceTotals(invoice.id, runner);
+    return (await getInvoice(invoice.id, runner))!;
+  });
+}
+
+/** Pull newly approved, still-unbilled work into an existing draft. */
+export async function importApprovedInvoiceItems(invoice: InvoiceView) {
+  return withTransaction(async (runner) => {
+    await lockDraft(invoice.id, runner);
+    if (!invoice.projectId) throw new AppError('VALIDATION', 'Invoice has no project');
+    await query(`select pg_advisory_xact_lock(hashtextextended($1, 0))`,
+      [`invoice-project:${invoice.projectId}`], runner);
+    const items = await loadDerivedItems({
+      projectId: invoice.projectId,
+      ownerCompanyId: invoice.issuerCompanyId,
+      clientCompanyId: invoice.counterpartyCompanyId,
+      runner,
+    });
+    await insertDerivedItems(invoice.id, items, runner);
+    await recalculateInvoiceTotals(invoice.id, runner);
+    return (await getInvoice(invoice.id, runner))!;
+  });
+}
+
+async function lockDraft(id: string, runner: Queryable) {
+  const row = await queryOne(
+    `select 1 from invoices where id = $1 and status = 'DRAFT' for update`, [id], runner
+  );
+  if (!row) throw new AppError('CONFLICT', 'Only a draft invoice can be edited');
+}
+
+export async function editInvoice(invoiceId: string, patch: UpdateInvoice) {
+  return withTransaction(async (runner) => {
+    await updateInvoiceDraft(invoiceId, patch, runner);
+    return (await getInvoice(invoiceId, runner))!;
+  });
+}
+
+export async function editInvoiceItem(
+  invoiceId: string,
+  itemId: string,
+  patch: UpdateInvoiceItem
+) {
+  return withTransaction(async (runner) => {
+    await lockDraft(invoiceId, runner);
+    await updateManualItem(invoiceId, itemId, patch, runner);
+    await recalculateInvoiceTotals(invoiceId, runner);
+    return (await getInvoice(invoiceId, runner))!;
+  });
+}
+
+export async function removeInvoiceItem(invoiceId: string, itemId: string) {
+  return withTransaction(async (runner) => {
+    await lockDraft(invoiceId, runner);
+    await deleteInvoiceItem(invoiceId, itemId, runner);
+    await recalculateInvoiceTotals(invoiceId, runner);
+    return (await getInvoice(invoiceId, runner))!;
+  });
+}
+
+export async function removeInvoice(invoiceId: string) {
+  return withTransaction((runner) => deleteInvoice(invoiceId, runner));
+}
+
+export async function issueDraftInvoice(invoiceId: string) {
+  return withTransaction(async (runner) => {
+    await issueInvoice(invoiceId, runner);
+    return (await getInvoice(invoiceId, runner))!;
+  });
+}
+
+export async function markInvoicePaid(invoiceId: string) {
+  return withTransaction(async (runner) => {
+    await transitionInvoice(invoiceId, 'ISSUED', 'PAID', runner);
+    return (await getInvoice(invoiceId, runner))!;
+  });
+}
+
+export async function voidIssuedInvoice(invoiceId: string) {
+  return withTransaction(async (runner) => {
+    await transitionInvoice(invoiceId, 'ISSUED', 'VOID', runner);
+    return (await getInvoice(invoiceId, runner))!;
+  });
+}

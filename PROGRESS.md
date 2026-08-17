@@ -189,7 +189,7 @@ Build the new information architecture, navigation, workspace shell and end-to-e
 
 ## Phase 6 — Commercial readiness — plan §3.5, §5B, §42
 
-- [ ] Migrations: `invoices`, `invoice_items`
+- [x] **Invoice foundation** (2026-08-17): migration `0008_invoices.sql`; shared Zod contracts and deterministic amount/total rules; `/v1/invoices` + item CRUD + issue/paid/void transitions; owner/provider-side management and issued-only client visibility; audit + portal-note anchoring; and a unified `/invoices` web workspace. Creating from a project snapshots every approved, not-yet-invoiced time log through the same BILL-rate resolver used by summaries/portal/exports and passes approved expenses through at cost. Missing BILL rates block the draft, work-backed amounts cannot be supplied by the caller, project advisory locks prevent concurrent double-invoicing, totals are recomputed server-side, issue assigns a serialized annual number and makes the document immutable, and voided sources become eligible again. **Phase 11 hook:** approved variation lines join this same source builder when the variations domain exists; no variation table or calculation exists yet to duplicate here.
 - [ ] Merchant-of-Record billing via **Gumroad** (decided 2026-08-17): checkout, webhooks, trial→paid, entitlement snapshots
 - [ ] Super-admin price editor + subscription management
 - [ ] Push + email notifications (Resend)

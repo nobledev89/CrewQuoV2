@@ -67,11 +67,13 @@ export async function listProjects(ownerCompanyId: string): Promise<ProjectView[
 
 export async function getProject(
   ownerCompanyId: string,
-  id: string
+  id: string,
+  runner?: Queryable
 ): Promise<ProjectView | null> {
   const row = await queryOne<ProjectRow>(
     `${PROJECT_SELECT} where p.owner_company_id = $1 and p.id = $2`,
-    [ownerCompanyId, id]
+    [ownerCompanyId, id],
+    runner
   );
   return row ? toProjectView(row) : null;
 }

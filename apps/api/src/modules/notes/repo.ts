@@ -141,13 +141,14 @@ export async function entityBelongsToEngagement(
   entityId: string,
   engagementId: string
 ): Promise<boolean> {
-  if (entityType === 'INVOICE') return false; // invoices arrive in Phase 5
   const sql = {
     PROJECT: `select 1 from projects where id = $1 and engagement_id = $2`,
     TIME_LOG: `select 1 from time_logs t join projects p on p.id = t.project_id
                 where t.id = $1 and $2 in (t.engagement_id, p.engagement_id)`,
     EXPENSE: `select 1 from expenses e join projects p on p.id = e.project_id
                where e.id = $1 and $2 in (e.engagement_id, p.engagement_id)`,
+    INVOICE: `select 1 from invoices where id = $1 and engagement_id = $2
+               and status <> 'DRAFT'`,
   }[entityType];
   return (await queryOne(sql, [entityId, engagementId])) !== null;
 }

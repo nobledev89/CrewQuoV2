@@ -1,4 +1,4 @@
-import type { MembershipRole, MembershipStatus, WorkStatus } from '@crewquo/shared';
+import type { InvoiceStatus, MembershipRole, MembershipStatus, WorkStatus } from '@crewquo/shared';
 
 /**
  * Centralized authorization policy (CREWQUO_V2_PLAN.md §4). Pure functions over
@@ -150,6 +150,28 @@ export function canEditLineItemNoteBody(userId: string, note: { authorUserId: st
 
 export function canResolveLineItemNote(companyId: string, edge: EngagementEdge): boolean {
   return isEngagementParticipant(companyId, edge);
+}
+
+// ── Invoices (§3.5) ───────────────────────────────────────────────────────────
+
+/** Issuers can see drafts; the billed client sees an invoice only after issue. */
+export function canReadInvoice(
+  companyId: string,
+  edge: EngagementEdge,
+  status: InvoiceStatus
+): boolean {
+  if (isEngagementProviderSide(companyId, edge)) return true;
+  return isEngagementClientSide(companyId, edge) && status !== 'DRAFT';
+}
+
+/** Only a manager on the provider/issuer side may mutate a draft invoice. */
+export function canManageInvoice(
+  companyId: string,
+  role: MembershipRole,
+  edge: EngagementEdge,
+  status: InvoiceStatus
+): boolean {
+  return isEngagementProviderSide(companyId, edge) && canManage(role) && status === 'DRAFT';
 }
 
 // ── Member management (§3.1, §7) ───────────────────────────────────────────────

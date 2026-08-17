@@ -24,6 +24,8 @@ import type {
   CreateCompanyRequest,
   CreateEngagement,
   CreateExpense,
+  CreateInvoice,
+  CreateInvoiceItem,
   CreateLineItemNote,
   CreateProject,
   CreateProvider,
@@ -36,6 +38,7 @@ import type {
   FeatureKey,
   InviteMember,
   InviteView,
+  InvoiceView,
   LimitKey,
   LineItemNoteView,
   LoginRequest,
@@ -63,6 +66,8 @@ import type {
   UpdateCompany,
   UpdateEngagement,
   UpdateExpense,
+  UpdateInvoice,
+  UpdateInvoiceItem,
   UpdateLineItemNote,
   UpdateMe,
   UpdateMember,
@@ -403,6 +408,52 @@ export const api = {
   /** Owner-side export (feature: `exports`). Returns the file itself. */
   exportProject: (t: string, c: string, id: string, format: 'pdf' | 'xlsx') =>
     download(`/v1/projects/${id}/export.${format}`, { accessToken: t, companyId: c }),
+
+  // ── Invoices (§3.5) ─────────────────────────────────────────────────────────
+  listInvoices: (t: string, c: string) =>
+    request<ListResponse<InvoiceView>>('GET', '/v1/invoices', { accessToken: t, companyId: c }),
+  getInvoice: (t: string, c: string, id: string) =>
+    request<{ invoice: InvoiceView }>('GET', `/v1/invoices/${id}`, {
+      accessToken: t, companyId: c,
+    }),
+  createInvoice: (t: string, c: string, body: CreateInvoice) =>
+    request<{ invoice: InvoiceView }>('POST', '/v1/invoices', {
+      accessToken: t, companyId: c, body,
+    }),
+  updateInvoice: (t: string, c: string, id: string, body: UpdateInvoice) =>
+    request<{ invoice: InvoiceView }>('PATCH', `/v1/invoices/${id}`, {
+      accessToken: t, companyId: c, body,
+    }),
+  deleteInvoice: (t: string, c: string, id: string) =>
+    request<void>('DELETE', `/v1/invoices/${id}`, { accessToken: t, companyId: c }),
+  addInvoiceItem: (t: string, c: string, id: string, body: CreateInvoiceItem) =>
+    request<{ invoice: InvoiceView }>('POST', `/v1/invoices/${id}/items`, {
+      accessToken: t, companyId: c, body,
+    }),
+  importApprovedInvoiceItems: (t: string, c: string, id: string) =>
+    request<{ invoice: InvoiceView }>('POST', `/v1/invoices/${id}/items/import-approved`, {
+      accessToken: t, companyId: c,
+    }),
+  updateInvoiceItem: (t: string, c: string, id: string, itemId: string, body: UpdateInvoiceItem) =>
+    request<{ invoice: InvoiceView }>('PATCH', `/v1/invoices/${id}/items/${itemId}`, {
+      accessToken: t, companyId: c, body,
+    }),
+  deleteInvoiceItem: (t: string, c: string, id: string, itemId: string) =>
+    request<{ invoice: InvoiceView }>('DELETE', `/v1/invoices/${id}/items/${itemId}`, {
+      accessToken: t, companyId: c,
+    }),
+  issueInvoice: (t: string, c: string, id: string) =>
+    request<{ invoice: InvoiceView }>('POST', `/v1/invoices/${id}/issue`, {
+      accessToken: t, companyId: c,
+    }),
+  markInvoicePaid: (t: string, c: string, id: string) =>
+    request<{ invoice: InvoiceView }>('POST', `/v1/invoices/${id}/paid`, {
+      accessToken: t, companyId: c,
+    }),
+  voidInvoice: (t: string, c: string, id: string) =>
+    request<{ invoice: InvoiceView }>('POST', `/v1/invoices/${id}/void`, {
+      accessToken: t, companyId: c,
+    }),
 
   // ── Work: time logs ──────────────────────────────────────────────────────────
   workContext: (t: string, c: string) =>

@@ -2227,7 +2227,7 @@ Create the new product experience described in §9 and §20. The existing API ca
 
 ### Phase 6 — Commercial readiness
 
-- [ ] `invoices` and `invoice_items`, with totals derived from the same approved work and variation calculations.
+- [x] `invoices` and `invoice_items`, with totals derived from the same approved work calculations. Built 2026-08-17 with API + web workflow, immutable issue snapshots, issued-only client visibility and double-invoice protection. Phase 11 plugs approved variations into the same source builder when that domain exists.
 - [ ] Merchant-of-Record checkout, webhooks, trial-to-paid state and entitlement snapshots.
 - [ ] Super-admin price and subscription management.
 - [ ] Push and email notifications with user preferences and retry-safe delivery.

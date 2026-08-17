@@ -3,10 +3,12 @@ import {
   canEditLineItemNoteBody,
   canManage,
   canManageAuditSettings,
+  canManageInvoice,
   canProviderEditWork,
   canProviderSubmit,
   canReadBillRates,
   canReadCounterpartyAudit,
+  canReadInvoice,
   canReadPortal,
   canResolveLineItemNote,
   canReviewWork,
@@ -26,6 +28,22 @@ const CLIENT = 'client-co';
 const PROVIDER = 'provider-co';
 const OUTSIDER = 'outsider-co';
 const edge: EngagementEdge = { clientCompanyId: CLIENT, providerCompanyId: PROVIDER };
+
+describe('invoice boundary', () => {
+  it('lets the issuer see drafts but hides them from the billed client', () => {
+    expect(canReadInvoice(PROVIDER, edge, 'DRAFT')).toBe(true);
+    expect(canReadInvoice(CLIENT, edge, 'DRAFT')).toBe(false);
+    expect(canReadInvoice(CLIENT, edge, 'ISSUED')).toBe(true);
+    expect(canReadInvoice(OUTSIDER, edge, 'ISSUED')).toBe(false);
+  });
+
+  it('allows only issuer-side managers to mutate drafts', () => {
+    expect(canManageInvoice(PROVIDER, 'OWNER', edge, 'DRAFT')).toBe(true);
+    expect(canManageInvoice(PROVIDER, 'MEMBER', edge, 'DRAFT')).toBe(false);
+    expect(canManageInvoice(CLIENT, 'OWNER', edge, 'DRAFT')).toBe(false);
+    expect(canManageInvoice(PROVIDER, 'OWNER', edge, 'ISSUED')).toBe(false);
+  });
+});
 
 describe('role gates', () => {
   it('OWNER/ADMIN/MANAGER can manage, MEMBER cannot', () => {

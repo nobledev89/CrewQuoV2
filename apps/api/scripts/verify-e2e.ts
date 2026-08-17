@@ -431,6 +431,7 @@ async function main(): Promise<void> {
     body: {
       name: `Pier 9 Fit-Out ${RUN}`,
       clientCompanyId: harbour,
+      engagementId: clientRes.json.client.engagementId,
       clientVisible: true,
       startsOn: '2026-07-20',
       notes: 'Verification fixture.',
@@ -638,6 +639,7 @@ async function main(): Promise<void> {
     ['/v1/rate-card-templates/not-a-uuid', 'a template'],
     ['/v1/role-catalog/not-a-uuid', 'a role'],
     ['/v1/time-logs/not-a-uuid', 'a time log'],
+    ['/v1/invoices/not-a-uuid', 'an invoice'],
   ] as const;
   for (const [path, what] of malformed) {
     const res = await call('GET', path, { token: owner.token, companyId: meridian });
@@ -670,6 +672,109 @@ async function main(): Promise<void> {
   check('the payload contains no PAY figure', !payload.includes('40000'));
   check('...no rate snapshot', !payload.includes('resolvedRate'));
   check('...and no subcontractor identity', !payload.includes('Northgate'));
+
+  // ── Invoices: approved work → immutable commercial snapshot ────────────────
+  section('Invoices (Phase 6 foundation)');
+
+  const invoiceCreate = await call('POST', '/v1/invoices', {
+    token: owner.token,
+    companyId: meridian,
+    body: { projectId, taxCents: 0, includeApprovedWork: true },
+  });
+  eq('an owner creates a draft invoice from approved work', invoiceCreate.status, 201);
+  const invoiceId = invoiceCreate.json.invoice.id as string;
+  eq('the draft snapshots the project summary BILL total', invoiceCreate.json.invoice.subtotalCents, 65550);
+  eq('...as one server-priced time line and one approved expense',
+    invoiceCreate.json.invoice.items.map((i: any) => i.sourceType).sort(), ['EXPENSE', 'TIME_LOG']);
+  eq('...in the issuer company currency', invoiceCreate.json.invoice.currency, 'USD');
+
+  const hiddenDraft = await call('GET', `/v1/invoices/${invoiceId}`, {
+    token: clientUser.token,
+    companyId: harbour,
+  });
+  eq('the billed client cannot see a draft', hiddenDraft.status, 404);
+
+  const spoofed = await call('POST', `/v1/invoices/${invoiceId}/items`, {
+    token: owner.token,
+    companyId: meridian,
+    body: { sourceType: 'TIME_LOG', sourceId: logId, unitAmountCents: 1 },
+  });
+  eq('a caller cannot inject an amount into a work-backed line', spoofed.status, 422);
+
+  const manual = await call('POST', `/v1/invoices/${invoiceId}/items`, {
+    token: owner.token,
+    companyId: meridian,
+    body: { sourceType: 'MANUAL', description: 'Mobilisation', quantity: 2.5, unitAmountCents: 1000 },
+  });
+  eq('a manual line is added to the draft', manual.status, 201);
+  eq('fractional quantity is rounded and rolled into the subtotal', manual.json.invoice.subtotalCents, 68050);
+  const manualId = manual.json.invoice.items.find((i: any) => i.sourceType === 'MANUAL').id;
+
+  const editedManual = await call('PATCH', `/v1/invoices/${invoiceId}/items/${manualId}`, {
+    token: owner.token,
+    companyId: meridian,
+    body: { quantity: 3 },
+  });
+  eq('editing a manual line recomputes the header', editedManual.json.invoice.subtotalCents, 68550);
+
+  const taxed = await call('PATCH', `/v1/invoices/${invoiceId}`, {
+    token: owner.token,
+    companyId: meridian,
+    body: { taxCents: 1000 },
+  });
+  eq('tax is added without trusting a client-supplied total', taxed.json.invoice.totalCents, 69550);
+
+  const secondDraft = await call('POST', '/v1/invoices', {
+    token: owner.token,
+    companyId: meridian,
+    body: { projectId, includeApprovedWork: true },
+  });
+  eq('already-claimed approved work is not copied to another draft', secondDraft.json.invoice.items.length, 0);
+  const duplicateSource = await call('POST', `/v1/invoices/${secondDraft.json.invoice.id}/items`, {
+    token: owner.token,
+    companyId: meridian,
+    body: { sourceType: 'EXPENSE', sourceId: expenseId },
+  });
+  eq('explicit double-invoicing is rejected', duplicateSource.status, 409);
+  await call('DELETE', `/v1/invoices/${secondDraft.json.invoice.id}`, {
+    token: owner.token,
+    companyId: meridian,
+  });
+
+  const issuedInvoice = await call('POST', `/v1/invoices/${invoiceId}/issue`, {
+    token: owner.token,
+    companyId: meridian,
+  });
+  eq('issuing freezes the draft', issuedInvoice.json.invoice.status, 'ISSUED');
+  check('...and assigns a stable human number', /^CQ-\d{4}-\d{6}$/.test(issuedInvoice.json.invoice.number));
+
+  const immutable = await call('PATCH', `/v1/invoices/${invoiceId}`, {
+    token: owner.token,
+    companyId: meridian,
+    body: { taxCents: 0 },
+  });
+  eq('an issued invoice is immutable', immutable.status, 403);
+
+  const clientInvoice = await call('GET', `/v1/invoices/${invoiceId}`, {
+    token: clientUser.token,
+    companyId: harbour,
+  });
+  eq('the billed client can read the issued invoice', clientInvoice.status, 200);
+  eq('...with the exact frozen total', clientInvoice.json.invoice.totalCents, 69550);
+
+  const paidInvoice = await call('POST', `/v1/invoices/${invoiceId}/paid`, {
+    token: owner.token,
+    companyId: meridian,
+  });
+  eq('the issuer can mark an issued invoice paid', paidInvoice.json.invoice.status, 'PAID');
+
+  const invoiceTrail = await call('GET', '/v1/audit-logs?entityType=INVOICE', {
+    token: owner.token,
+    companyId: meridian,
+  });
+  check('invoice creation, issue and payment are audited',
+    ['invoice.created', 'invoice.issued', 'invoice.paid'].every((action) =>
+      invoiceTrail.json.data.some((r: any) => r.action === action)));
 
   // ── Migration 0006 backfill (narrow on purpose) ───────────────────────────
   section('Migration 0006 currency backfill');

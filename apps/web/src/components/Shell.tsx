@@ -26,6 +26,7 @@ const NAV: { label: string; items: NavItem[] }[] = [
     label: 'Delivery',
     items: [
       { href: '/projects', label: 'Projects', icon: 'template' },
+      { href: '/invoices', label: 'Invoices', icon: 'card' },
       { href: '/review', label: 'Approvals', icon: 'check' },
       { href: '/work', label: 'Log work', icon: 'clock' },
     ],
@@ -72,6 +73,7 @@ const NAV: { label: string; items: NavItem[] }[] = [
 const PAGE_NAMES: Record<string, string> = {
   '/app': 'Overview',
   '/projects': 'Projects',
+  '/invoices': 'Invoices',
   '/review': 'Approvals',
   '/work': 'Log work',
   '/network/engagements': 'Engagements',
