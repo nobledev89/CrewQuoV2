@@ -18,7 +18,7 @@ Last updated: 2026-08-17 · Current phase: **Phase 4 (audit + portal landed; exp
 - [x] `infra/migrations/0001_init.sql`: `users`, `companies`, `memberships`, `refresh_tokens`, `system_settings`
 - [x] `infra/seed/index.ts`: placeholder seed
 - [x] `infra/docker-compose.yml`: local Postgres 16
-- [x] `infra/render.yaml`: Render blueprint (API + Postgres)
+- [x] `render.yaml`: Render blueprint (API + Postgres) — at the repo root, which is the only place Render reads it (moved from `infra/` 2026-08-17)
 - [x] CI workflow (`.github/workflows/ci.yml`): type-check + test
 - [x] `README.md`
 - [x] **Verified:** `pnpm install`, `pnpm type-check`, `pnpm test` (3 passing), API boots on :4000

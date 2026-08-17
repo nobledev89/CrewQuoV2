@@ -64,7 +64,7 @@ infra/
   migrations/     Forward-only SQL migrations + runner
   seed/           Seed scripts
   docker-compose.yml   Local Postgres
-  render.yaml     Render blueprint (API + Postgres)
+render.yaml       Render blueprint (API + Postgres) — must sit at the repo root
 ```
 
 ## Deployment
@@ -75,9 +75,15 @@ Vercel project pointed at it fails at runtime with `FUNCTION_INVOCATION_FAILED`.
 
 ### API + Postgres → Render
 
-Import `infra/render.yaml` via Render Dashboard → New → Blueprint. The blueprint
-generates the JWT secrets and wires `DATABASE_URL` itself; the one value it prompts
-for is `APP_BASE_URL`, which is the public Vercel URL below.
+Render Dashboard → **New → Blueprint** (not "New → Web Service" — a standalone web
+service ignores `render.yaml` and gives you an API with no database). Point it at
+this repo and Render reads `render.yaml` from the root, provisioning the Postgres
+and the API together.
+
+The blueprint generates the JWT secrets and wires `DATABASE_URL` itself; the one
+value it prompts for is `APP_BASE_URL`, the public Vercel URL below.
+
+`render.yaml` must stay at the repository root — Render does not look anywhere else.
 
 Migrations run automatically before each deploy takes traffic (`preDeployCommand`).
 

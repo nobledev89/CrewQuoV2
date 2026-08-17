@@ -58,7 +58,7 @@ crewquo-v2/
 │  ├─ shared/        Zod schemas, domain types, the rate engine (pure TS, no I/O)
 │  ├─ api-client/    Typed fetch client built from shared Zod schemas (web + mobile)
 │  └─ ui/            Design tokens + RN-first primitives (shared where practical)
-├─ infra/            render.yaml, migration runner, seed scripts, docker-compose (local pg)
+├─ infra/            migration runner, seed scripts, docker-compose (local pg)
 ├─ package.json      workspaces + turbo tasks
 ├─ turbo.json
 └─ pnpm-workspace.yaml
@@ -647,7 +647,7 @@ Next.js (App Router). Handles the heavy work awkward on a phone. Shares `package
 
 ## 10. Infrastructure & environments
 
-- **Render:** `infra/render.yaml` declares the API web service + Postgres + Redis (Phase 2+). Auto-deploy from `main`.
+- **Render:** `render.yaml` (repo root — Render reads it nowhere else) declares the API web service + Postgres + Redis (Phase 2+). Auto-deploy from `main`.
 - **Vercel:** web app; preview deploy per PR.
 - **EAS:** mobile dev-client + store builds + OTA channels (`preview`, `production`).
 - **Environments:** `local` (docker-compose Postgres in `infra/`) → `staging` → `production`.
