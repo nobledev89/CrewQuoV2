@@ -1,23 +1,26 @@
 # CrewQuo v2 — Complete Build Specification
 
-> **Status:** Approved (direction greenlit 2026-07-20). Build may begin at Phase 0.
-> **Decision:** Greenfield rebuild. v2 is a **new, independent product** with **no runtime connection to v1**. v1 (Next.js + Firebase) stays live and frozen. No shared database, no shared auth, no data migration in scope (see §12 for optional later onboarding).
+> **Status:** Part I (§1–§18) is **built and shipping** — Phases 0–3 done, Phase 4 in progress (see `PROGRESS.md`). Part II (§19–§47) is the **approved v2.1 expansion**: field operations, project evidence, asset & material tracking and sustainability reporting. Not started.
+> **Decision (Part I):** Greenfield rebuild. v2 is a **new, independent product** with **no runtime connection to v1**. v1 (Next.js + Firebase) stays live and frozen. No shared database, no shared auth, no data migration in scope (see §12 for optional later onboarding).
+> **Decision (Part II):** **Extend, do not rebuild.** The v2 codebase in this repo is the base. Every new capability is additive — new migrations, new modules, new routes — reusing the existing auth, tenancy, engagement graph, rate engine and entitlement machinery. Nothing already shipped may regress.
 
 ---
 
 ## 0. For the implementing agent — read this first
 
-You can build v2 from this document plus two files from the v1 repo. Do this before writing code:
+**Part I (§1–§18) is history and reference.** It describes what is already built and why; the DDL and API contract there match the code on `main`. Read it to understand the shape of the system before extending it. The two v1 files it tells you to read (`firestore.rules`, `functions/src/rates.ts`) have already been ported — the rate engine lives in `packages/shared/src/rate-engine/`, the access rules in `apps/api/src/authorization/policies.ts`.
 
-1. **Read `firestore.rules`** (repo root) — the authoritative source of v1's access rules. §4 here is the port; if anything is ambiguous, the rules file is ground truth for intended behavior.
-2. **Read `functions/src/rates.ts`** — the rate/margin engine. §6 here says to port it *verbatim*; that file is the exact logic.
-3. **Treat this document's DDL (§3) and API contract (§7) as canonical.** They are fully specified — do not invent alternative shapes.
-4. **Build phase-by-phase (§11). Do not batch phases.** Each phase is independently demoable and testable. Ship and verify one before starting the next.
-5. **This is a new repo (`crewquo-v2`), not this one.** Nothing from the v1 Next.js/Firebase codebase is imported — only the *domain rules* carry over.
-6. **When a genuine product decision is unspecified, stop and ask the user** rather than guessing. The open items are listed in §17; everything else is decided.
-7. **What this spec does NOT contain:** final visual design (spacing, colors, copy) and per-screen pixel layout. Screen *inventory, purpose, data, and actions* are specified (§8/§9); the visual polish is produced during build against the design tokens in `packages/ui`.
+**Part II (§19–§47) is the work to do.** Before touching each module, read the existing implementation named in that section and follow its pattern rather than inventing a parallel one. Rules that hold for all of it:
 
-Conventions used in the DDL: every table has `id uuid primary key default gen_random_uuid()`, `created_at timestamptz not null default now()`, and `updated_at timestamptz not null default now()` unless stated otherwise. Enumerated values are `text` columns with `CHECK` constraints (easier to migrate than native enums); allowed values are listed inline. Money is stored as integer minor units (`*_cents`) unless noted. All foreign keys are `not null` unless marked `nullable`.
+1. **Build phase-by-phase (§42). Do not batch phases.** Each phase is independently demoable and testable. Ship and verify one before starting the next — that is how Phases 0–4 were built, and it worked.
+2. **Migrations are additive and forward-only.** `infra/migrations/NNNN_name.sql`, numbered from `0006`. No existing column is dropped or retyped; new columns are nullable or defaulted. Existing endpoints keep their response shapes — new fields are added, never renamed.
+3. **Treat the DDL and API contracts in this document as canonical.** They are fully specified — do not invent alternative shapes.
+4. **Domain logic goes in `packages/shared` as pure functions** (no DB imports), the way the rate engine does. The API loads rows and passes them in. This is what makes it exhaustively testable, and the sustainability numbers *must* be exhaustively tested.
+5. **The calculation principles in §41 are non-negotiable.** They outrank convenience, UI polish and schedule. Read them before writing a single carbon-related line.
+6. **When a genuine product decision is unspecified, stop and ask the user** rather than guessing. The open items are listed in §17 and §45; everything else is decided.
+7. **What this spec does NOT contain:** final visual design (spacing, colors, copy) and per-screen pixel layout. Screen *inventory, purpose, data, and actions* are specified (§8/§9, §20, §32); §40 sets the design constraints the visuals must satisfy.
+
+Conventions used in the DDL: every table has `id uuid primary key default gen_random_uuid()`, `created_at timestamptz not null default now()`, and `updated_at timestamptz not null default now()` unless stated otherwise. Enumerated values are `text` columns with `CHECK` constraints (easier to migrate than native enums); allowed values are listed inline. Money is stored as integer minor units (`*_cents`) unless noted. **Physical quantities are `numeric`, never integer minor units** — mass in kilograms, distance in kilometres, energy in kWh, emissions in kgCO₂e (§25.3, §41). All foreign keys are `not null` unless marked `nullable`.
 
 ---
 
@@ -673,6 +676,8 @@ Next.js (App Router). Handles the heavy work awkward on a phone. Shares `package
 
 **Phase 6 (deferred).** Offline draft capture, real-time updates, and the optional v1→v2 per-customer importer (§12).
 
+> **Phases 7–12 — the v2.1 expansion — are specified in §42.** They add project evidence, site diary, locations, asset & material tracking, the sustainability/carbon engine, reporting, variations, scheduling, the supervisor mobile experience and subcontractor compliance. Phase 4's remaining **server-side PDF/XLSX export engine** is the shared foundation for §29's reports and should be finished before Phase 10.
+
 ---
 
 ## 12. Relationship to v1
@@ -721,21 +726,1635 @@ This spec resolves contradictions that existed while the plan evolved: (a) the o
 7. **Parties are a company graph** (`companies` + `engagements`); client/subcontractor are relative, reversible; no separate client/sub tables.
 8. **One-hop visibility;** operate-downstream is a paid capability.
 9. **Plans are super-admin-configurable data** (entitlements engine); metering axis = active subcontractors; portal is a feature gate.
-10. **Billing via Merchant-of-Record** (Lemon Squeezy primary, Paddle alt); hard-cap tiers.
+10. **Billing via Merchant-of-Record** (Gumroad, decided 2026-08-17; Lemon Squeezy/Paddle were the earlier candidates); hard-cap tiers.
 11. **Membership roles:** OWNER/ADMIN/MANAGER/MEMBER; positions (client/provider) come from engagements.
+
+### Locked for Part II (the v2.1 expansion)
+
+12. **Extend, don't fork.** No parallel project model, no second auth system, no duplicate storage layer. New modules sit beside the existing ones in `apps/api/src/modules/` and reuse `policies.ts`, `resolveEntitlements`, `recordAudit` and the engagement graph.
+13. **Job functions are a capability layer over the existing four roles, not new roles** (§37). Project Manager / Supervisor / Worker / Finance / Sustainability are *bundles of capability keys* granted per membership. `memberships.role` keeps its current meaning and current behaviour. **Client stays an engagement position**, never a user role — decision #7 is unchanged.
+14. **Physical units:** mass in **kilograms** (`numeric(14,3)`), distance in **kilometres** (`numeric(12,3)`), energy in **kWh**, emissions in **kgCO₂e** (`numeric(18,6)`). Stored at full precision, rounded only for display. Whatever unit the user typed is stored alongside the converted value.
+15. **The carbon engine is to sustainability what the rate engine is to costing** — versioned reference data in the database, pure resolution/calculation functions in `packages/shared/src/carbon-engine/`, a frozen snapshot written at the moment of calculation. Same architecture, same testing bar (§26, §27).
+16. **No emission factor is ever hard-coded.** Factors arrive by import into `emission_factor_sets`; the seed ships the importer and the schema, never invented numbers (§26).
+17. **Avoided emissions are a separate table, separate bucket, separate headline figure** — there is no code path that nets them against Scope 1/2/3 (§27.3, §41).
+18. **Storage is not an outcome.** An asset in storage stays `PENDING` and is excluded from reuse/recycling/diversion numerators *and* denominators until a final destination is recorded (§25.4).
+19. **Every generated report stores a reproducible snapshot** of its numbers, factor-set versions and source record ids, plus the rendered file. Re-rendering reads the snapshot; it never recalculates (§29.4).
+20. **Waste-hierarchy and destination semantics are configurable data, not code** — the `destination_types` table carries the tier and the counts-as flags, so an org can see and adjust its own assumptions (§25.4, §39).
 
 ---
 
 ## 17. Open items (ask the user before building the affected phase)
 
+**Part I:**
 - **Exact seed pricing per currency** — §5B has USD anchors; confirm real numbers + which currencies to localize (affects `plan_prices` seed, Phase 1/5).
-- **Placeholder→linked merge policy** — when "PwC" later signs up, auto-suggest merge vs manual admin action; how to re-point existing engagements (Phase 4).
-- **MoR final choice** — Lemon Squeezy vs Paddle — and confirmed PH payout method (Phase 5).
-- **Rate-label date logic for `FRI_SAT_NIGHT`** — confirm the weekday/date rules that select this label vs `MON_THU_NIGHT` (mirror v1 exactly; verify against `rates.ts` when porting, Phase 2).
-- **Visual design system** — brand colors/typography for `packages/ui` (needed once UI work starts, Phase 2+).
+- **MoR payout method** — confirm the PH payout route and Gumroad's subscription-webhook coverage before building against it (Phase 5).
+- **Per-rate-card currency** — company-level currency can't express "pay crew in PHP, bill a US client in USD"; mixing currencies inside one company makes `calculateMargin` subtract different units. Decide before multi-currency clients are real.
+- **Where is the Codex frontend?** Not in this repo — `apps/web` contains only the Phase 2 console.
+
+**Part II open items are listed in §45.**
 
 ---
 
-## 18. Immediate next step
+## 18. Where the build stands (2026-08-17)
 
-**Phase 0 scaffold:** create the `crewquo-v2` monorepo (turbo + pnpm workspaces), stand up `apps/api` + Render Postgres + the migration runner + `/healthz`, and land the first `packages/shared` Zod schemas + the `schema_migrations` table. That gives a deployable skeleton to build every phase on.
+`PROGRESS.md` is the living checklist; this is the one-paragraph version.
+
+**Shipped:** the monorepo and migration runner (Phase 0); users/companies/memberships, JWT + Google auth, the authorization policy module, and the super-admin-configurable entitlements engine (Phase 1); the rate engine in `packages/shared` with 37 pinned branches, the rate-card catalog and `/v1/rates/resolve` plus a web console (Phase 2); engagements, providers/clients/invites with placeholder auto-merge, projects and assignments, the `DRAFT→SUBMITTED→APPROVED/REJECTED` work loop with a frozen PAY snapshot, project summaries with BILL/margin, and Expo push (Phase 3); the append-only audit trail with retention, per-engagement portal settings, the client portal read surface and line-item notes (Phase 4, partial).
+
+**Open on the existing roadmap:** Phase 4's server-side PDF/XLSX **export engine** and the web portal screens; Phase 5 billing/invoicing/notifications; the Phase 2 follow-up to move the `FRI_SAT_NIGHT` label rule out of code and into per-company `rate_card_templates` data; the `USD` currency default.
+
+**Next:** finish the export engine (it is the foundation §29 builds on), then start **Phase 7** (§42).
+
+---
+---
+
+# PART II — v2.1: Field Operations, Evidence & Sustainability Platform
+
+---
+
+## 19. What v2.1 is, and what it does not change
+
+### 19.1 The shift
+
+v2.0 is a crew-costing product: who worked, at what rate, what did it cost, what is the margin. v2.1 keeps all of that and makes CrewQuo follow a job through its whole life:
+
+```
+Plan → Crew → Work → Evidence → Assets → Waste/Reuse → Costs → Sustainability → Client Report
+```
+
+The commercial engine stays the spine. Evidence and sustainability hang off the same projects, the same engagements and the same approval workflow — they are not a second product bolted on the side.
+
+### 19.2 Who it is for
+
+Businesses running crews, subcontractors, assets and materials across commercial sites: office clearance · office relocation · commercial removals · furniture installation · furniture refurbishment · commercial fit-out · facilities management · IT decommissioning / ITAD · waste and recycling contractors · reuse organisations · property maintenance · and other subcontractor-heavy field operations.
+
+What they share: the client increasingly wants proof — photographic evidence of the work, a defensible record of where every item went, and a carbon and diversion-from-landfill report they can put in their own ESG return. Today that is assembled by hand from phone photos, weighbridge tickets and spreadsheets. CrewQuo generates it from the data the crew already captured.
+
+### 19.3 What is already there and gets extended (not replaced)
+
+| Existing | How v2.1 uses it |
+|---|---|
+| `companies` + `engagements` (§3.1–3.2) | Destination organisations, subcontractor compliance and client-level reporting all ride the same company graph. Reuse recipients that are also CrewQuo customers are just companies. |
+| `projects` (§3.4) | Gains locations, evidence, diary, assets, activities, variations, budgets, sign-off. The table itself gains only a small number of nullable columns. |
+| `time_logs` / `expenses` workflow (§3.4) | The `DRAFT→SUBMITTED→APPROVED/REJECTED` shape is reused verbatim for variations. The supervisor mobile screen (§32) is a new front end over the *same* endpoints. |
+| Rate engine (`packages/shared/src/rate-engine/`, §6) | The model for the carbon engine (§26). Also supplies labour cost to planned-vs-actual (§30) and to variation pricing. |
+| `computeProjectSummary` + `projects/billing.ts` | Extended in place with variation revenue and actuals — **not** duplicated by a second calculator, which is why the summary and the portal cannot disagree today. |
+| `policies.ts` (§4) | Gains the capability checks (§37). One-hop visibility and the PAY/BILL guard apply unchanged to every new resource. |
+| `audit_logs` + `recordAudit` (§3.6) | Every new mutation records to it. §36 adds a `record_revisions` table for before/after values on the records that need them. |
+| Entitlements engine (§5B) | New feature and limit keys gate the new modules (§43). No new gating mechanism. |
+| Invites, portal, notes (§3.6) | Client sign-off and client-visible evidence reuse the portal surface and its `client_visible` discipline. |
+
+### 19.4 Non-goals for v2.1
+
+- **Not a certified carbon accounting platform.** CrewQuo calculates and discloses; it does not verify. §27.5 and §41 govern what may and may not be claimed.
+- **No bundled emission factor dataset** until redistribution terms are confirmed (§45).
+- **No item-level tracking requirement.** Bulk lines are the default; item-level is opt-in per line (§25.2).
+- **No offline capture** — still Phase 6, and it matters more now that supervisors work in basements and loading bays. Flagged in §45.
+- **Not a replacement for a client's own ESG reporting system.** CrewQuo produces a project/client report and the underlying data; integration/export to third-party ESG platforms is later.
+
+---
+
+## 20. Project structure & navigation
+
+Every project opens into a fixed set of sections. This is the information architecture for both `apps/web` and (in reduced form) `apps/mobile`.
+
+| Section | Contents | Spec |
+|---|---|---|
+| **Overview** | Status, client, site, dates, PM/supervisor, headline commercial + sustainability figures, recent activity | §20, §30, §28 |
+| **Schedule** | Assigned crew, subcontractors, vehicles by day/week | §31 |
+| **Crew** | Who is assigned, roles, supervisors, compliance flags | §31, §33 |
+| **Time & Costs** | Time logs, approvals, labour cost, planned vs actual | §3.4, §30 |
+| **Expenses** | Expense lines + receipts | §3.4 |
+| **Site Diary** | Daily entries, open/closed | §23 |
+| **Photos & Evidence** | Gallery / timeline / filters / report selection | §22 |
+| **Assets & Materials** | Asset lines, weights, destinations, movements | §25 |
+| **Sustainability** | Mass balance, rates, emissions, avoided, data quality | §28 |
+| **Variations** | Extra works, pricing, approval | §30 |
+| **Documents** | RAMS, WTNs, certificates, POs, drawings | §24 |
+| **Client Sign-Off** | Signature capture, completion statement, history | §34 |
+| **Reports** | Generate sustainability report / evidence pack, past reports | §29 |
+
+A **Timeline** view (§35) cuts across all of them chronologically.
+
+**Layout rule.** These are sections of one record, not thirteen dashboards. Do not wrap each in an oversized card. Use a persistent left section rail (web) with a dense header strip carrying the project identity and 4–6 key figures, and put filters and detail in side panels rather than nested cards. §40 is binding here.
+
+**Progressive disclosure.** A project that has no assets, no diary and no evidence must not show twelve empty sections shouting for attention: sections with no data and no entitlement collapse to a single "not used on this project" line, and the section rail marks which sections have content.
+
+---
+
+## 21. Project locations
+
+A commercial job is rarely one place. Locations are a per-project tree — floors within a building, zones within a warehouse — and they are the spatial key that evidence, assets, diary entries and schedule assignments hang off.
+
+```sql
+create table project_locations (
+  id         uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(id) on delete cascade,
+  parent_id  uuid references project_locations(id) on delete cascade,   -- nullable: top level
+  kind  text not null check (kind in
+          ('BUILDING','FLOOR','ROOM','DEPARTMENT','WAREHOUSE_ZONE','LOADING_BAY','SITE_AREA','OTHER')),
+  name       text not null,          -- "Floor 3", "Loading Bay", "Storage Area"
+  reference  text,                   -- client's own room/zone code
+  notes      text,
+  sort_order int not null default 0,
+  active     boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index on project_locations (project_id, parent_id);
+```
+
+Example — *PwC London*: `Floor 1`, `Floor 2`, `Floor 3`, `Loading Bay`, `Storage Area`, with rooms nested under floors.
+
+- **Depth is capped at 4** and cycles are rejected in the API (a parent must belong to the same project and must not be a descendant).
+- Deleting a location with children or references is refused; `active = false` retires it while preserving history.
+- Locations are optional everywhere. A single-area job never has to create one.
+- **Templates:** a company may save a location tree (e.g. "5-floor office") and apply it to a new project — a `POST /v1/projects/:id/locations/apply-template` over `company.settings`-stored trees. Deferred to Phase 7b if time is short.
+
+---
+
+## 22. Project evidence (photos & files)
+
+Not an image gallery — an evidence record. The value is in the metadata, because that is what makes a photo usable in a report and defensible in a dispute.
+
+### 22.1 Storage layer (build first — Phase 7.0)
+
+Cloudflare R2 is already the decided store (§2) but nothing uses it yet (expense receipt upload is still deferred). Phase 7 opens by building the storage service the whole expansion depends on.
+
+```sql
+create table stored_files (
+  id            uuid primary key default gen_random_uuid(),
+  company_id    uuid not null references companies(id) on delete cascade,
+  project_id    uuid references projects(id) on delete cascade,   -- nullable: company-level files
+  bucket_key    text not null unique,
+  original_filename text not null,
+  content_type  text not null,
+  byte_size     bigint not null,
+  checksum_sha256 text,
+  kind    text not null check (kind in ('IMAGE','DOCUMENT','SIGNATURE','EXPORT')),
+  variant text not null default 'ORIGINAL' check (variant in ('ORIGINAL','WEB','THUMB')),
+  derivative_of uuid references stored_files(id),      -- WEB/THUMB point at their ORIGINAL
+  status  text not null default 'PENDING'
+            check (status in ('PENDING','READY','FAILED','DELETED')),
+  uploaded_by_user_id uuid not null references users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index on stored_files (company_id, created_at desc);
+create index on stored_files (project_id) where project_id is not null;
+```
+
+- **Key layout:** `co/{companyId}/proj/{projectId}/{kind}/{fileId}/{variant}.{ext}`. Company-scoped prefixes make per-tenant deletion and usage metering a prefix operation.
+- **Upload flow:** `POST /v1/files/presign` (validates content type, size, entitlement `storage_gb`, returns a presigned PUT + a `PENDING` row) → client PUTs to R2 → `POST /v1/files/:id/complete` (verifies size/checksum, flips to `READY`, enqueues derivatives). Bytes never pass through the API.
+- **Derivatives:** the API generates a `WEB` variant (long edge ~2000px, quality tuned for print at report size) and a `THUMB` (long edge 400px) with `sharp`, in an in-process job queue. **The `ORIGINAL` is retained** — a compressed-only pipeline destroys the one thing that makes a photo evidence. Originals may be lifecycle-tiered later; that is an R2 policy, not an app decision.
+- **Client-side pre-compression** is applied *only* above a size threshold (mobile: `expo-image-manipulator`; web: canvas), and never below the quality the `WEB` variant would produce anyway.
+- **Access:** downloads are served via short-lived presigned GETs minted by the API after the same authorization check as the owning record. R2 is never public.
+- **Validation:** content type sniffed server-side on complete, not trusted from the client. Max sizes per kind. Rejected uploads are marked `FAILED` and their keys swept.
+
+### 22.2 Evidence records
+
+```sql
+create table project_evidence (
+  id         uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(id) on delete cascade,
+  company_id uuid not null references companies(id),        -- the uploader's active company
+  file_id       uuid not null references stored_files(id),  -- ORIGINAL
+  web_file_id   uuid references stored_files(id),
+  thumb_file_id uuid references stored_files(id),
+  category text not null check (category in
+    ('BEFORE','DURING','AFTER','COLLECTION','DELIVERY','INSTALLATION','REUSE','DONATION',
+     'RECYCLING','WASTE','DAMAGE','INCIDENT','ASSET','OTHER')),
+  caption text,
+  notes   text,
+  evidence_date date,                    -- the PROJECT date it depicts
+  captured_at   timestamptz,             -- EXIF DateTimeOriginal when present
+  location_id    uuid references project_locations(id),
+  asset_id       uuid references project_assets(id) on delete set null,
+  diary_entry_id uuid references site_diary_entries(id) on delete set null,
+  variation_id   uuid references variations(id) on delete set null,
+  incident_id    uuid references project_incidents(id) on delete set null,
+  asset_movement_id uuid references asset_movements(id) on delete set null,
+  gps_lat numeric(9,6), gps_lng numeric(9,6), gps_accuracy_m numeric(8,2),
+  client_visible boolean not null default false,
+  sort_order int not null default 0,
+  uploaded_by_user_id uuid not null references users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index on project_evidence (project_id, evidence_date desc, created_at desc);
+create index on project_evidence (project_id, category);
+create index on project_evidence (asset_id) where asset_id is not null;
+```
+
+> **Migration ordering note.** `project_evidence` references tables defined later in this document. The migration creates tables in dependency order and adds the back-references with `alter table … add constraint` at the end of the file. Same for the other cross-linked pairs.
+
+**Three timestamps, deliberately.** `created_at` is when it was uploaded, `captured_at` is when the camera says the shutter fired, `evidence_date` is the project day it belongs to — a supervisor uploading Friday's photos on Monday sets `evidence_date` to Friday. Reports order by `evidence_date`; disputes rely on `created_at` and `captured_at`. Never conflate them.
+
+### 22.3 Capture & upload
+
+- **Multi-select and batch upload**, with per-file progress and resumable individual failures — a partial batch must not lose the successful files.
+- **Direct camera capture on mobile**, with the current project, today's date and (if the supervisor is working in one) the current location pre-filled.
+- **Drag-and-drop on desktop**, including folder drops.
+- **Batch metadata:** category, date, location, caption and client-visible flag can be applied to a whole selection at once, then overridden per photo. Tagging 40 photos individually is the failure mode that kills evidence capture.
+- **GPS is optional and org-configurable** (§39). Where enabled, coordinates come from the device at capture, not from EXIF alone.
+- **Non-image evidence** (a short video, a PDF scan) is accepted and stored; the gallery shows a type badge instead of a thumbnail. Video transcoding is out of scope — store and link only.
+
+### 22.4 Views
+
+Gallery (dense grid, no cards), chronological timeline grouped by `evidence_date`, and a table view for bulk metadata editing. Filters: category · date range · uploader · location · asset · client-visible · "in report". Selection is sticky across filter changes so a user can build a report set from several passes, and the selection is what §29 consumes.
+
+---
+
+## 23. Site diary
+
+A per-project, per-day record of what actually happened. It is the narrative backbone of the evidence pack and the first thing anyone reaches for in a dispute.
+
+```sql
+create table site_diary_entries (
+  id         uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(id) on delete cascade,
+  company_id uuid not null references companies(id),      -- author's company (provider or owner)
+  entry_date date not null,
+  start_time time, finish_time time,
+  supervisor_user_id uuid references users(id),
+  work_completed      text,
+  areas_completed     text,
+  activities          text,
+  delays              text,
+  client_instructions text,
+  issues              text,
+  deliveries          text,
+  collections         text,
+  vehicle_movements   text,
+  waste_movements     text,
+  hs_notes            text,          -- health & safety
+  weather             text,
+  notes               text,
+  workers_present_count       int,   -- denormalized from attendance for quick display
+  subcontractors_present_count int,
+  status text not null default 'OPEN' check (status in ('OPEN','CLOSED')),
+  closed_by_user_id uuid references users(id),
+  closed_at timestamptz,
+  created_by_user_id uuid not null references users(id),
+  updated_by_user_id uuid references users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (project_id, company_id, entry_date)
+);
+create index on site_diary_entries (project_id, entry_date desc);
+
+-- Structured attendance, so the diary agrees with the schedule and the timesheets.
+create table site_diary_attendance (
+  id uuid primary key default gen_random_uuid(),
+  diary_entry_id uuid not null references site_diary_entries(id) on delete cascade,
+  user_id             uuid references users(id),            -- an employee
+  provider_company_id uuid references companies(id),         -- a subcontractor's crew
+  name    text,                                              -- free text when neither is known
+  role_id uuid references role_catalog(id),
+  headcount numeric(6,2) not null default 1,
+  hours     numeric(6,2),
+  time_log_id uuid references time_logs(id),                 -- links the diary to the timesheet
+  created_at timestamptz not null default now()
+);
+
+create table site_diary_locations (
+  diary_entry_id uuid not null references site_diary_entries(id) on delete cascade,
+  location_id    uuid not null references project_locations(id) on delete cascade,
+  primary key (diary_entry_id, location_id)
+);
+```
+
+**Behaviour**
+
+- **One entry per project per day per company.** A subcontractor keeps its own diary for the same day; the owner sees both on the project (subject to the one-hop rule), each attributed.
+- **Multiple updates during the day.** The entry is a live document while `OPEN`; edits do not create noise in the audit trail beyond a normal update record.
+- **Close Day** is a supervisor action (`diary.close` capability). It stamps `closed_by`/`closed_at` and freezes the entry.
+- **After close, edits are still possible but never silent.** Every post-close change writes a `record_revisions` row with before/after and a required reason, and the entry displays "amended N times — view history" wherever it appears, including in reports. This is the §30/§36 auditability requirement in its most-used form.
+- **Photos and documents attach** via `project_evidence.diary_entry_id` and a `site_diary_documents` join.
+- **Prefill:** opening today's entry pre-populates attendance from the schedule (§31) and approved/submitted time logs, and lists the day's asset movements, evidence uploads and expenses so the supervisor confirms rather than retypes.
+
+---
+
+## 24. Project documents
+
+Files with a category, a version and (where it matters) an expiry.
+
+```sql
+create table project_documents (
+  id         uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(id) on delete cascade,
+  company_id uuid not null references companies(id),
+  file_id    uuid not null references stored_files(id),
+  category text not null check (category in
+    ('RAMS','RISK_ASSESSMENT','METHOD_STATEMENT','INSURANCE','PURCHASE_ORDER','DRAWING',
+     'SITE_INSTRUCTION','WASTE_TRANSFER_NOTE','WEIGHBRIDGE_TICKET','RECYCLING_CERTIFICATE',
+     'DONATION_RECEIPT','DELIVERY_NOTE','COLLECTION_NOTE','CLIENT_SIGNOFF','INCIDENT','OTHER')),
+  title     text not null,
+  reference text,                                   -- WTN number, PO number, ticket number
+  version   int not null default 1,
+  supersedes_id uuid references project_documents(id),
+  issued_on  date,
+  expires_on date,
+  provider_company_id uuid references companies(id), -- the subcontractor it belongs to, if any
+  location_id uuid references project_locations(id),
+  client_visible boolean not null default false,
+  notes text,
+  uploaded_by_user_id uuid not null references users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index on project_documents (project_id, category);
+create index on project_documents (expires_on) where expires_on is not null;
+```
+
+Uploading a new version links `supersedes_id` and hides the old one by default without deleting it. Waste transfer notes, weighbridge tickets, recycling certificates and donation receipts are the documents that back weights (§25.3) and destinations (§25.4) — those links are what turn an estimate into a *documented* figure, so the asset and movement records point at document rows directly.
+
+---
+
+## 25. Assets & materials
+
+The heart of the expansion. Everything in §26–§29 is downstream of getting this record right.
+
+### 25.1 Asset types
+
+```sql
+create table asset_types (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid references companies(id) on delete cascade,   -- null = system catalog
+  code text not null,
+  name text not null,
+  category text not null check (category in
+    ('FURNITURE','IT','WEEE','APPLIANCE','TIMBER','METAL','PLASTIC','CARDBOARD',
+     'MIXED_WASTE','TEXTILE','GLASS','OTHER')),
+  default_unit_weight_kg numeric(14,3),        -- a starting estimate, always overridable
+  default_material_composition jsonb,          -- [{ "material": "STEEL", "pct": 62 }, ...]
+  sort_order int not null default 0,
+  active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create unique index on asset_types (company_id, code) where company_id is not null;
+create unique index on asset_types (code) where company_id is null;
+```
+
+Seeded system types: Operator Chair · Meeting Chair · Desk · Bench Desk · Pedestal · Cabinet · Locker · Table · Sofa · Monitor · Computer · Printer · Server · Networking Equipment · Appliance · Timber · Metal · Plastic · Cardboard · Mixed Waste · WEEE · Other. Companies add their own; a company row with the same `code` shadows the system one.
+
+> `default_unit_weight_kg` on system types ships **empty**. A shipped default weight is an invented number that silently becomes a reported tonne — see §41.1. Orgs populate their own defaults from their own weighing, and anything derived from a default is flagged `SYSTEM_ESTIMATE`.
+
+### 25.2 Asset lines
+
+```sql
+create table project_assets (
+  id         uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(id) on delete cascade,
+  company_id uuid not null references companies(id),
+  asset_type_id uuid not null references asset_types(id),
+  tracking_mode text not null default 'BULK' check (tracking_mode in ('BULK','ITEM')),
+  description text,
+  quantity    numeric(12,2) not null default 1,
+
+  -- Weight (§25.3)
+  weight_basis     text check (weight_basis in ('UNIT','TOTAL')),
+  unit_weight_kg   numeric(14,3),
+  total_weight_kg  numeric(14,3),
+  weight_source    text check (weight_source in
+     ('WEIGHED','WEIGHBRIDGE','TRANSFER_NOTE','SUPPLIER_DOC','PRODUCT_SPEC',
+      'USER_ESTIMATE','SYSTEM_ESTIMATE')),
+  weight_confidence text check (weight_confidence in
+     ('VERIFIED','DOCUMENTED','ESTIMATED','APPROXIMATE')),
+  weight_is_estimated boolean not null default true,
+  weight_document_id  uuid references project_documents(id),
+
+  -- Identity (mostly for ITEM mode / ITAD)
+  manufacturer text, model text, serial_number text, asset_tag text,
+  material_composition jsonb,
+  condition text check (condition in ('NEW','GOOD','FAIR','POOR','DAMAGED','SCRAP')),
+
+  origin_location_id uuid references project_locations(id),
+  outcome_state text not null default 'PENDING'
+                  check (outcome_state in ('PENDING','PARTIAL','IN_STORAGE','FINAL')),
+  notes text,
+  created_by_user_id uuid not null references users(id),
+  updated_by_user_id uuid references users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index on project_assets (project_id);
+create index on project_assets (project_id, outcome_state);
+create unique index on project_assets (company_id, serial_number)
+  where serial_number is not null and tracking_mode = 'ITEM';
+```
+
+**Bulk is the default.** The common entry is one line:
+
+```
+42 × Operator Chair · unit weight 16.5 kg · total 693 kg
+```
+
+Nobody registers 42 chairs individually. `tracking_mode = 'ITEM'` opts a line into per-unit rows (quantity 1, serial/asset tag required) for ITAD and high-value items where the client needs a certificate per serial number.
+
+**Weight entry:** the user enters *either* a unit weight or a total; `weight_basis` records which one they typed and the other is derived at write time. Editing quantity recomputes the derived side, never the entered side. A line with neither weight is valid — it just contributes nothing to mass metrics and drags down data completeness (§28.3), which is the correct incentive.
+
+### 25.3 Weight provenance
+
+Every weight carries where it came from and how much to trust it. Mass-based sustainability reporting is worthless without this, and it is what lets a report say "8.9 t recycled, of which 7.4 t is documented".
+
+| `weight_source` | Meaning | Default `weight_confidence` |
+|---|---|---|
+| `WEIGHED` | Actually weighed on site | `VERIFIED` |
+| `WEIGHBRIDGE` | Weighbridge ticket attached | `VERIFIED` |
+| `TRANSFER_NOTE` | From the waste transfer note | `DOCUMENTED` |
+| `SUPPLIER_DOC` | From a supplier/facility document | `DOCUMENTED` |
+| `PRODUCT_SPEC` | Known manufacturer product weight | `DOCUMENTED` |
+| `USER_ESTIMATE` | Someone on site estimated it | `ESTIMATED` |
+| `SYSTEM_ESTIMATE` | Derived from an asset-type default | `APPROXIMATE` |
+
+Defaults are suggestions, overridable downward but not upward: **`VERIFIED` and `DOCUMENTED` require an attached document** (`weight_document_id`) unless the source is `WEIGHED` with a recorded weigher. `weight_is_estimated` is derived (`ESTIMATED`/`APPROXIMATE` ⇒ true) and denormalized for fast filtering. Every change to a weight writes a `record_revisions` row (§36).
+
+Display: `< 1000 kg` shows kg to 1dp, `≥ 1000 kg` shows tonnes to 2dp, unless the org pins a unit in §39. Stored value is always kg at full precision.
+
+### 25.4 Destinations, the waste hierarchy, and movements
+
+**Destination types are data.** The eleven lifecycle destinations, their hierarchy tier and what they count as, live in a table an admin can inspect — not in a `switch` statement.
+
+```sql
+create table destination_types (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid references companies(id) on delete cascade,   -- null = system seed
+  code text not null,
+  name text not null,
+  hierarchy_tier int not null check (hierarchy_tier between 1 and 5),   -- §25.5
+  counts_as_retained_in_use boolean not null default false,
+  counts_as_reuse      boolean not null default false,
+  counts_as_recycling  boolean not null default false,
+  counts_as_recovery   boolean not null default false,
+  counts_as_landfill   boolean not null default false,
+  counts_as_diverted   boolean not null default false,
+  is_final_outcome     boolean not null default true,
+  displaces_replacement boolean not null default false,   -- eligible for avoided-emissions (§27.3)
+  ghg_treatment_key text,        -- maps to emission_factors.treatment for Scope 3 Cat 5
+  sort_order int not null default 0,
+  active boolean not null default true
+);
+```
+
+Seed:
+
+| # | code | Tier | retained | reuse | recycling | recovery | landfill | diverted | final | displaces |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | `RETAINED` (Retained by Client) | 1 | ✔ | | | | | ✔ | ✔ | — |
+| 2 | `RELOCATED` (Relocated / Redeployed) | 1 | ✔ | | | | | ✔ | ✔ | ✔ |
+| 3 | `REUSE` (Direct Reuse) | 2 | ✔ | ✔ | | | | ✔ | ✔ | ✔ |
+| 4 | `REFURBISHMENT` | 2 | ✔ | ✔ | | | | ✔ | ✔ | ✔ |
+| 5 | `DONATION` | 2 | ✔ | ✔ | | | | ✔ | ✔ | ✔ |
+| 6 | `RESALE` | 2 | ✔ | ✔ | | | | ✔ | ✔ | ✔ |
+| 7 | `STORAGE` | — | | | | | | | **✘** | — |
+| 8 | `RECYCLING` | 3 | | | ✔ | | | ✔ | ✔ | — |
+| 9 | `ENERGY_RECOVERY` | 4 | | | | ✔ | | ✔ | ✔ | — |
+| 10 | `LANDFILL` | 5 | | | | | ✔ | | ✔ | — |
+| 11 | `OTHER_DISPOSAL` | 5 | | | | | ✔ | | ✔ | — |
+
+**Storage has no tier and is not a final outcome.** That single row is the mechanism behind locked decision #18: an asset sitting in a warehouse is not a sustainability result, and CrewQuo will not report it as one until someone records where it actually went.
+
+**Destination organisations** — the charity, recycler, storage facility, reseller, waste contractor or other client site the material went to:
+
+```sql
+create table destination_organisations (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references companies(id) on delete cascade,
+  linked_company_id uuid references companies(id),    -- when the recipient is a CrewQuo company
+  name text not null,
+  kind text not null check (kind in
+    ('CHARITY','REUSE_ORG','RECYCLER','STORAGE','RESELLER','WASTE_CONTRACTOR',
+     'CLIENT_SITE','MANUFACTURER','OTHER')),
+  address text, contact_name text, contact_email text, contact_phone text,
+  licence_number text,          -- e.g. waste carrier / permit number
+  licence_expires_on date,
+  notes text,
+  active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+```
+
+**Movements are the ledger.** An asset line does not have "a destination" — it has a chain of transfers, and 42 chairs can split 30 donated / 12 recycled.
+
+```sql
+create table asset_movements (
+  id       uuid primary key default gen_random_uuid(),
+  asset_id uuid not null references project_assets(id) on delete cascade,
+  sequence int not null,
+  destination_type_id uuid not null references destination_types(id),
+  destination_org_id  uuid references destination_organisations(id),
+  destination_address text,                       -- when not a saved organisation
+  from_location_id uuid references project_locations(id),
+  quantity  numeric(12,2) not null,
+  weight_kg numeric(14,3),                        -- derived from the asset unless overridden
+  moved_on  date not null,
+  vehicle_id  uuid references vehicles(id),
+  distance_km numeric(12,3),
+  document_id uuid references project_documents(id),   -- WTN / weighbridge / donation receipt
+  notes text,
+  recorded_by_user_id uuid not null references users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (asset_id, sequence)
+);
+create index on asset_movements (asset_id);
+```
+
+Rules, enforced in the API and pinned by tests:
+
+1. `sum(movements.quantity) <= project_assets.quantity`. The remainder is **pending** and is reported as such.
+2. `outcome_state` is derived, never typed: `FINAL` when the full quantity has reached final-outcome destinations; `IN_STORAGE` when the latest movement is a non-final destination; `PARTIAL` when some quantity is allocated and some is not; `PENDING` when nothing is.
+3. **Metrics aggregate movements with `is_final_outcome = true`**, not asset lines. A storage movement contributes to no rate; when the material later leaves storage a *second* movement records the real outcome and the numbers move then.
+4. Movements are append-only in spirit: corrections are edits that write `record_revisions` rows, never silent overwrites (§36).
+
+### 25.5 Waste hierarchy
+
+`hierarchy_tier` implements the recognised hierarchy, best first:
+
+1. **Prevention / Retention** — the item never becomes waste (retained, redeployed)
+2. **Preparing for reuse / Reuse** — reuse, refurbishment, donation, resale
+3. **Recycling**
+4. **Other recovery** — energy recovery
+5. **Disposal** — landfill, other disposal
+
+Reuse ranks above recycling everywhere it is shown: sort order in tables, order of the mass-balance bars, order of the report sections. **Reuse and recycling are never merged into one "diverted" figure as if equivalent** — diversion is reported separately and explicitly as a different metric (§41.8).
+
+---
+
+## 26. Emission factor architecture
+
+The versioned reference-data layer. Built the way the rate engine was built, for the same reason: the numbers belong to the customer and to a point in time, not to a release of our code.
+
+### 26.1 Factor sets
+
+```sql
+create table emission_factor_sets (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid references companies(id) on delete cascade,   -- null = platform-wide set
+  name text not null,                       -- "UK Government GHG Conversion Factors 2027"
+  source_organisation text not null,        -- "UK Department for Energy Security and Net Zero"
+  source_document text,
+  source_url text,
+  reporting_year int not null,
+  version text not null,                    -- publisher's version, e.g. "v1.1"
+  published_on date,
+  valid_from date not null,
+  valid_to   date,                          -- null = open-ended
+  methodology text,
+  region text not null default 'GB',
+  active boolean not null default true,
+  imported_by_user_id uuid references users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (company_id, name, version)
+);
+
+create table emission_factors (
+  id uuid primary key default gen_random_uuid(),
+  factor_set_id uuid not null references emission_factor_sets(id) on delete cascade,
+  category  text not null,           -- "Freighting goods", "Waste disposal", "Fuels"
+  activity  text not null,           -- "HGV (all diesel) — rigid, >7.5t–17t"
+  material  text,                    -- for waste factors: "Wood", "Plasterboard"
+  treatment text,                    -- "Landfill", "Closed-loop", "Combustion", "Re-use"
+  vehicle_type text, fuel_type text,
+  unit text not null,                -- 'km' | 'mile' | 'litre' | 'kWh' | 'tonne' | 'tonne.km'
+  kg_co2e_per_unit numeric(18,9) not null,
+  kg_co2_per_unit  numeric(18,9),
+  kg_ch4_per_unit  numeric(18,9),
+  kg_n2o_per_unit  numeric(18,9),
+  wtt_kg_co2e_per_unit numeric(18,9),      -- well-to-tank, where the publisher separates it
+  scope text check (scope in ('SCOPE_1','SCOPE_2','SCOPE_3','OUT_OF_SCOPE')),
+  scope3_category int,                     -- 5 = waste generated in operations
+  source_reference text,                   -- sheet/row in the published workbook
+  notes text,
+  created_at timestamptz not null default now()
+);
+create index on emission_factors (factor_set_id, category, activity);
+create index on emission_factors (factor_set_id, material, treatment);
+```
+
+### 26.2 Sourcing
+
+- **UK projects default to the applicable annual *UK Government Greenhouse Gas Conversion Factors for Company Reporting*** for activity-based emissions: company vehicles, vans, HGVs, fuel, mileage, electricity, transport, freight, waste treatment and other operational activity.
+- **Factor sets are imported, not shipped.** Phase 9 delivers a CSV/XLSX importer (column mapping UI, dry-run diff, row-count and unit validation, an import report) plus admin CRUD — and **zero fabricated rows**. Bundling a dataset waits on confirmed redistribution terms (§45).
+- **Selection is by the project's reporting year**, resolved against `valid_from`/`valid_to` and `region`, defaulting from §39. A newer factor set is never applied retrospectively to a project that has already been calculated and reported (§41.3).
+- Multiple sets coexist. An org can hold 2025, 2026 and 2027 sets simultaneously, which is exactly what multi-year client reporting requires.
+
+### 26.3 Product carbon factors (embodied carbon)
+
+For reused furniture and IT, avoided-emissions maths needs the embodied carbon of the item that did *not* have to be manufactured. That is a different kind of number from an activity factor, so it gets its own admin-managed library.
+
+```sql
+create table product_carbon_factors (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid references companies(id) on delete cascade,   -- null = platform library
+  item_category text not null,               -- maps to asset_types.category or a type code
+  asset_type_id uuid references asset_types(id),
+  manufacturer text, product_model text,
+  kg_co2e_per_item numeric(18,6),
+  kg_co2e_per_kg   numeric(18,6),
+  lifecycle_boundary text not null check (lifecycle_boundary in
+    ('A1_A3','A1_A5','CRADLE_TO_GATE','CRADLE_TO_GRAVE','OTHER')),
+  source text not null, source_url text, publication_year int, region text,
+  verification_status text not null check (verification_status in
+    ('EPD_VERIFIED','MANUFACTURER','SECTOR_DATASET','ORG_SPECIFIC','GENERIC_ESTIMATE')),
+  is_estimate boolean not null default true,
+  notes text,
+  active boolean not null default true,
+  created_by_user_id uuid references users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  check (num_nonnulls(kg_co2e_per_item, kg_co2e_per_kg) = 1)
+);
+```
+
+**Preferred source order**, and the resolver walks it in this order:
+
+1. Product-specific verified EPD or manufacturer carbon data (`EPD_VERIFIED`, `MANUFACTURER`)
+2. Recognised sector or lifecycle dataset (`SECTOR_DATASET`)
+3. Approved organisation-specific factor (`ORG_SPECIFIC`)
+4. Approved generic estimate (`GENERIC_ESTIMATE`) — **only** when `sustainability_settings.allow_generic_product_factors` is on, and always surfaced as an estimate in the report
+
+**If no factor exists at any tier, no avoided-emissions figure is produced for that line.** The report says so, by name and quantity. Nothing is invented (§41.1).
+
+### 26.4 Recycling & resource datasets
+
+Admins may optionally maintain recognised lifecycle/resource treatment datasets (WRAP/Defra CarbonWARM-type) as an additional factor set with `category = 'RESOURCE_LIFECYCLE'`. Results from these are labelled **comparative lifecycle impact** and kept out of the formal Scope 1/2/3 inventory where the methodology requires separate reporting. The four labels are distinct everywhere and never mixed:
+
+- **Project emissions** (Scope 1/2/3 inventory)
+- **Waste treatment emissions** (Scope 3 Cat 5, part of the inventory)
+- **Comparative lifecycle impact** (outside the inventory)
+- **Avoided emissions** (outside the inventory)
+
+---
+
+## 27. Calculation service
+
+### 27.1 Shape
+
+`packages/shared/src/carbon-engine/` — pure functions over plain data, no DB imports, mirroring `rate-engine/`:
+
+```
+selectFactorSet(sets, { date, region, reportingYear })       → EmissionFactorSet | null
+resolveFactor(factors, query)                                 → EmissionFactor | null
+calculateActivityEmissions(activity, factor)                  → CarbonResult
+calculateWasteTreatmentEmissions(movement, factor)            → CarbonResult
+resolveProductFactor(factors, { assetType, manufacturer, model, allowGeneric })
+calculateAvoidedEmissions(input)                              → AvoidedResult
+rollUpProjectCarbon(results)                                  → { projectEmissions, avoided, byScope, byBucket }
+computeDataQuality(inputs, weights)                           → { pct, components, warnings }
+```
+
+Every function returns the inputs it used alongside the result, so the caller can persist a complete trace. Nothing returns a bare number.
+
+### 27.2 Persisted calculations
+
+```sql
+create table carbon_calculations (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(id) on delete cascade,
+  company_id uuid not null references companies(id),
+  bucket text not null check (bucket in
+    ('PROJECT_EMISSIONS','WASTE_TREATMENT','COMPARATIVE_LIFECYCLE','AVOIDED')),
+  scope text check (scope in ('SCOPE_1','SCOPE_2','SCOPE_3','OUT_OF_SCOPE')),
+  scope3_category int,
+  source_type text not null check (source_type in ('ACTIVITY','ASSET_MOVEMENT','MANUAL')),
+  source_id uuid,
+  factor_set_id     uuid references emission_factor_sets(id),
+  factor_id         uuid references emission_factors(id),
+  product_factor_id uuid references product_carbon_factors(id),
+  factor_set_name    text not null,       -- denormalized: survives a factor-set edit or delete
+  factor_set_version text not null,
+  factor_reporting_year int,
+  factor_kg_co2e_per_unit numeric(18,9),
+  quantity numeric(18,6) not null,
+  unit     text not null,
+  kg_co2e  numeric(18,6) not null,
+  method   text not null check (method in
+    ('ACTIVITY_X_FACTOR','MASS_X_TREATMENT_FACTOR','DISPLACEMENT','MANUAL')),
+  inputs jsonb not null,                  -- the exact numbers that produced the result
+  is_estimate boolean not null default false,
+  confidence text check (confidence in ('VERIFIED','DOCUMENTED','ESTIMATED','APPROXIMATE')),
+  calculated_at timestamptz not null default now(),
+  calculated_by_user_id uuid references users(id),
+  superseded_by uuid references carbon_calculations(id),
+  created_at timestamptz not null default now()
+);
+create index on carbon_calculations (project_id, bucket) where superseded_by is null;
+```
+
+**`bucket` is the firewall.** Sums are always taken within a bucket. There is no query, no type and no UI component in the system that adds `AVOIDED` to anything else — locked decision #17.
+
+Recalculation (a corrected weight, a re-imported factor set) writes **new** rows and stamps `superseded_by` on the old ones. Nothing is updated in place, so a report generated last quarter can still be reconstructed exactly.
+
+### 27.3 What gets calculated
+
+**Operational emissions — `PROJECT_EMISSIONS`**
+
+```sql
+create table project_activities (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(id) on delete cascade,
+  company_id uuid not null references companies(id),
+  kind text not null check (kind in
+    ('VEHICLE_DISTANCE','FUEL','ELECTRICITY','FREIGHT','PLANT','OTHER')),
+  activity_date date not null,
+  vehicle_id uuid references vehicles(id),
+  vehicle_category text, fuel_type text,
+  distance_km numeric(12,3),
+  litres numeric(12,3),
+  kwh    numeric(14,3),
+  tonne_km numeric(14,3),
+  journeys int,
+  entered_value numeric(14,3), entered_unit text,   -- what the user actually typed
+  purpose text check (purpose in
+    ('COLLECTION','DELIVERY','WASTE_TRANSPORT','ASSET_TRANSPORT','CREW_TRAVEL','PLANT','OTHER')),
+  provider_company_id uuid references companies(id),      -- subcontractor transport
+  asset_movement_id   uuid references asset_movements(id),
+  source text not null default 'ESTIMATED'
+           check (source in ('MEASURED','DOCUMENTED','ESTIMATED')),
+  document_id uuid references project_documents(id),
+  notes text,
+  created_by_user_id uuid not null references users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index on project_activities (project_id, kind, activity_date);
+```
+
+- **Vehicle / transport:** `distance × factor(vehicle category, fuel)`, or `tonne.km × freight factor`. Covers collections, deliveries, waste transport, asset transport, crew travel and subcontractor transport. Scope 1 for own vehicles, Scope 3 for subcontracted.
+- **Fuel:** `litres × fuel factor` (Scope 1).
+- **Electricity:** `kWh × grid factor` for the reporting year and region (Scope 2, with the WTT/T&D component reported where the publisher separates it).
+- **Waste treatment (Scope 3 Cat 5) — `WASTE_TREATMENT`:** `mass × treatment factor`, where `destination_types.ghg_treatment_key` selects the treatment. Treatments supported: reuse (where a factor exists), recycling, landfill, combustion/incineration, energy recovery, other. **Where no suitable factor exists, nothing is produced and the gap is disclosed** — an absent factor is not a zero.
+
+**Avoided emissions — `AVOIDED` (§27.4)** are calculated from `asset_movements` whose destination has `displaces_replacement = true`.
+
+### 27.4 Avoided emissions
+
+A comparative estimate of climate impact. **Not** negative project emissions, and never deducted from any inventory scope.
+
+```
+avoided = (quantity × displacement_pct × baseline_embodied_carbon) − enabling_emissions
+```
+
+where *enabling emissions* are the additional emissions required to make the reuse happen: refurbishment, cleaning, transport, storage, processing — quantified from `project_activities` and `carbon_calculations` linked to the same movement, where the approved methodology requires their deduction.
+
+Worked example — 100 chairs reused, 80% displacement assumption, 75 kgCO₂e embodied per equivalent chair:
+
+```
+baseline   = 100 × 0.80 × 75 kgCO₂e   = 6,000 kgCO₂e
+enabling   = transport + refurbishment =   340 kgCO₂e
+avoided    =                              5,660 kgCO₂e
+```
+
+```sql
+create table avoided_emissions_claims (
+  id uuid primary key default gen_random_uuid(),
+  calculation_id uuid not null references carbon_calculations(id) on delete cascade,
+  asset_movement_id uuid references asset_movements(id),
+  baseline_scenario    text not null,     -- "equivalent new operator chair manufactured"
+  alternative_scenario text not null,     -- "existing chair cleaned and redeployed"
+  displacement_pct numeric(5,2),          -- null when basis = UNKNOWN → no claim is made
+  displacement_basis text not null check (displacement_basis in
+    ('ASSUMED_FULL','USER_DEFINED','UNKNOWN')),
+  baseline_kg_co2e   numeric(18,6) not null,
+  enabling_kg_co2e   numeric(18,6) not null default 0,
+  net_avoided_kg_co2e numeric(18,6) not null,
+  system_boundary text not null,          -- from the product factor's lifecycle_boundary
+  reporting_period_start date, reporting_period_end date,
+  assumptions text not null,
+  uncertainty text,
+  methodology text not null,
+  created_at timestamptz not null default now()
+);
+```
+
+**Replacement displacement assumption** is explicit per line: `100%`, a user-defined %, or `unknown`. **`UNKNOWN` produces no claim** — it is counted as a data-quality gap, not silently treated as 100%. The org default lives in §39, never in code.
+
+Every claim records baseline scenario, alternative scenario, factor source, system boundary, reporting period, assumptions, quantity, uncertainty and methodology — all of which surface in the report (§29.3). A methodology warning is shown **wherever an avoided figure appears**, in the UI and in the report, not only in an appendix.
+
+### 27.5 GHG Protocol alignment
+
+Calculations are structured so results can be reported consistently with the GHG Protocol: Scope 1 (own vehicles, own fuel), Scope 2 (purchased electricity), Scope 3 (subcontracted transport, freight, and **Category 5 — Waste Generated in Operations**). Scope and Scope 3 category ride on both the factor and the calculation row, so the inventory view is a `group by`.
+
+What CrewQuo must never do, and what §41 enforces:
+
+- Represent avoided emissions as a reduction of Scope 1, 2 or 3.
+- Present a single "net" headline that combines emissions and avoided emissions.
+- Describe a report as independently verified, ISO-certified or GHG-Protocol-certified. Referencing a methodology is not certification (§29.5).
+
+---
+
+## 28. Sustainability metrics & data quality
+
+### 28.1 Mass balance
+
+Every project's Sustainability section leads with the mass it handled, then where it went — reuse first.
+
+```
+TOTAL MATERIAL HANDLED      21.72 t
+
+Reused              8.24 t
+Refurbished         2.10 t
+Donated             1.04 t
+Recycled            8.90 t
+Energy recovery     0.82 t
+Landfill            0.62 t
+```
+
+### 28.2 Definitions (implement exactly)
+
+Let **allocated mass** = Σ mass of movements whose destination is a final outcome. Let **pending mass** = asset mass not yet allocated, plus mass whose latest movement is `STORAGE`.
+
+| Metric | Definition |
+|---|---|
+| Total material handled | allocated + pending |
+| Reuse rate | Σ mass where `counts_as_reuse` ÷ allocated |
+| Recycling rate | Σ mass where `counts_as_recycling` ÷ allocated |
+| Recovery rate | Σ mass where `counts_as_recovery` ÷ allocated |
+| Landfill rate | Σ mass where `counts_as_landfill` ÷ allocated |
+| Diversion from landfill | Σ mass where `counts_as_diverted` ÷ allocated |
+| Circularity / retained in use | Σ mass where `counts_as_retained_in_use` ÷ allocated |
+| Project GHG emissions | Σ `kg_co2e` where bucket ∈ (`PROJECT_EMISSIONS`, `WASTE_TREATMENT`), current rows only |
+| Estimated avoided emissions | Σ `kg_co2e` where bucket = `AVOIDED`, current rows only |
+| Data completeness | §28.3 |
+
+**Rates are over allocated mass, and pending mass is always shown next to them** — "21.72 t handled, 1.34 t awaiting a final destination". Hiding pending mass in a denominator is how a diversion rate becomes a lie.
+
+### 28.3 Data quality
+
+A single percentage, computed from five weighted components (weights configurable in §39, defaults below):
+
+| Component | Measured over | Default weight |
+|---|---|---|
+| Asset lines with a weight | line count | 0.25 |
+| Mass with a known final destination | mass | 0.25 |
+| Mass whose weight is `VERIFIED` or `DOCUMENTED` | mass | 0.20 |
+| Asset lines with at least one evidence item or document | line count | 0.15 |
+| Avoided-emissions mass using a product-specific (non-generic) factor | mass | 0.15 |
+
+```
+Sustainability Data Completeness: 92%
+```
+
+Alongside the number, the specific gaps — in plain language, with quantities:
+
+- "18% of project weight is estimated."
+- "Carbon benefit for 34 chairs uses a generic product factor."
+- "Final destination for 420 kg of stored furniture is currently unknown."
+- "No waste-treatment factor exists for plasterboard in the 2027 factor set — 1.2 t excluded from treatment emissions."
+
+These warnings are generated data, not hand-written copy, and they appear in the UI *and* in the report. A report that quietly omits its own gaps is the failure mode this whole section exists to prevent.
+
+### 28.4 Presentation
+
+Two headline carbon figures, side by side, never netted:
+
+```
+PROJECT GHG EMISSIONS              ESTIMATED AVOIDED EMISSIONS
+3.84 tCO₂e                         27.42 tCO₂e
+                                   ⚠ comparative estimate — see methodology
+```
+
+---
+
+## 29. Reporting engine
+
+Builds on Phase 4's server-side PDF/XLSX exports in `apps/api` — one rendering path for web and mobile, one place where numbers are formatted.
+
+### 29.1 Project Sustainability & Completion Report
+
+Generated from actual project data, exported to PDF. May carry the contractor's logo, the client's logo, project name, reference, site and reporting period.
+
+Structure:
+
+1. **Cover** — project name · client · site · reporting period · contractor
+2. **Executive summary** — a factual summary of scope, work completed, material handled, reuse, recycling, waste and carbon results. Assembled from recorded data; **no invented narrative**.
+3. **Project overview** — dates · scope · project manager · supervisor · workforce · subcontractors · site
+4. **Sustainability highlights** — e.g. 21.72 t managed · 62.4% kept in use · 91.8% diverted from landfill · 3.84 tCO₂e project emissions · 27.42 tCO₂e estimated avoided emissions
+5. **Asset outcomes** — retained · redeployed · reused · refurbished · donated · sold · recycled · recovered · landfill · storage/pending, as table + chart
+6. **Material breakdown** — furniture · metal · timber · plastic · WEEE · cardboard · mixed waste · other
+7. **Reuse / donation** — items · quantities · weights · recipient · supporting evidence · selected photos
+8. **Recycling & waste** — material · weight · treatment · supplier/facility · evidence · transfer documentation
+9. **Carbon summary** — **Project GHG emissions** (vehicles, fuel, electricity, waste treatment, other) and **Estimated avoided emissions** (reuse, refurbishment, redeployment, recycling where separately assessed) as two separate subsections. Never netted by default.
+10. **Carbon methodology** — auto-generated: factor set name · factor year · calculation methodology · data sources · baseline assumptions · lifecycle boundaries · estimation methodology · limitations · data-quality statement
+11. **Evidence** — selected before/during/after photographs
+12. **Project completion** — client comments · client sign-off · completion date
+
+### 29.2 Evidence / completion pack
+
+`GENERATE PROJECT EVIDENCE PACK` — the operational counterpart: project details · work completed · site diary · crew · hours · before/during/after photos · assets removed · destination records · waste transfer notes · recycling documentation · donation evidence · variations · incidents (only where client-visible) · client sign-off.
+
+Sections are toggled before generation, and the chosen set is stored on the generated report so a regeneration reproduces the same document.
+
+### 29.3 Disclaimer & claims
+
+A configurable methodology statement (default text in §39, editable per company), similar in meaning to:
+
+> "Greenhouse gas emissions are calculated using activity data recorded for this project and the emission factors identified in this report. Avoided emissions are comparative estimates and are reported separately from Scope 1, Scope 2 and Scope 3 inventory emissions. Results may include estimates where measured activity, asset weight or product-specific lifecycle data was unavailable. Assumptions and data sources are disclosed within this report."
+
+**Never** describe a report as independently verified unless it is, and never claim ISO or GHG Protocol certification because the methodology references those standards.
+
+### 29.4 Reproducibility
+
+```sql
+create table generated_reports (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references companies(id) on delete cascade,
+  project_id uuid references projects(id) on delete cascade,     -- null for client-period reports
+  client_company_id uuid references companies(id),
+  kind text not null check (kind in ('SUSTAINABILITY','EVIDENCE_PACK','CLIENT_PERIOD')),
+  title text not null,
+  period_start date, period_end date,
+  sections jsonb not null,          -- which sections were included, in order
+  snapshot jsonb not null,          -- every number, factor-set id+version, and source record id
+  content_hash text not null,       -- sha256 of the canonicalized snapshot
+  factor_set_ids uuid[] not null default '{}',
+  disclaimer text not null,         -- the exact text used, frozen
+  file_id uuid references stored_files(id),      -- the rendered PDF
+  status text not null default 'GENERATED'
+           check (status in ('GENERATED','SUPERSEDED','VOID')),
+  supersedes_id uuid references generated_reports(id),
+  client_visible boolean not null default false,
+  generated_by_user_id uuid not null references users(id),
+  generated_at timestamptz not null default now()
+);
+```
+
+**Re-rendering a report reads the snapshot; it never recalculates.** A 2026 report opened in 2028, after two new factor sets have been imported and three weights corrected, produces byte-identical numbers. Regenerating *with current data* is an explicit action that creates a new row and marks the old one `SUPERSEDED` — both remain retrievable.
+
+### 29.5 Charts
+
+Report and dashboard charts are generated server-side into the PDF and client-side in the app from the same snapshot. Keep them plain: mass balance as a stacked bar in hierarchy order, outcomes as a horizontal bar, carbon as two separate figures. No 3-D, no donuts-with-a-number-in-the-middle for anything that is not a single share of a whole.
+
+---
+
+## 30. Variations & commercial performance
+
+### 30.1 Variations / extra works
+
+```sql
+create table variations (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(id) on delete cascade,
+  company_id uuid not null references companies(id),
+  engagement_id uuid references engagements(id),
+  reference text,
+  description text not null,
+  reason      text,
+  requested_by text,                     -- client-side person who asked
+  requested_on date not null,
+  status text not null default 'DRAFT' check (status in
+    ('DRAFT','SUBMITTED','APPROVED','REJECTED','COMPLETED','INVOICED')),
+  sell_total_cents int not null default 0,
+  cost_total_cents int not null default 0,
+  client_approved_by text,
+  client_approved_at timestamptz,
+  approval_evidence_file_id uuid references stored_files(id),
+  reviewed_by_user_id uuid references users(id),
+  reviewed_at timestamptz,
+  reject_reason text,
+  invoice_id uuid references invoices(id),
+  created_by_user_id uuid not null references users(id),
+  updated_by_user_id uuid references users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table variation_lines (
+  id uuid primary key default gen_random_uuid(),
+  variation_id uuid not null references variations(id) on delete cascade,
+  kind text not null check (kind in
+    ('LABOUR','VEHICLE','MATERIAL','WASTE','SUBCONTRACTOR','OTHER')),
+  description text not null,
+  quantity numeric(12,2) not null default 1,
+  unit_cost_cents int not null default 0,
+  unit_sell_cents int not null default 0,
+  cost_cents int not null default 0,
+  sell_cents int not null default 0,
+  role_id  uuid references role_catalog(id),      -- LABOUR lines price off the rate engine
+  asset_id uuid references project_assets(id),
+  created_at timestamptz not null default now()
+);
+```
+
+The status machine mirrors the work workflow (§3.4) deliberately — same shape, same guards, plus `COMPLETED`/`INVOICED`. Labour lines resolve their default cost and sell from the existing rate engine, so a variation is priced the same way everything else is. **Approved variations feed project revenue and profitability** through `computeProjectSummary`, not through a second calculator. Every status change and price edit is audited (§36).
+
+### 30.2 Planned vs actual
+
+```sql
+create table project_budgets (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(id) on delete cascade unique,
+  company_id uuid not null references companies(id),
+  currency text not null,
+  revenue_cents       int not null default 0,
+  labour_cents        int not null default 0,
+  subcontractor_cents int not null default 0,
+  vehicle_cents       int not null default 0,
+  mileage_cents       int not null default 0,
+  waste_cents         int not null default 0,
+  materials_cents     int not null default 0,
+  purchases_cents     int not null default 0,
+  expenses_cents      int not null default 0,
+  other_cents         int not null default 0,
+  notes text,
+  created_by_user_id uuid not null references users(id),
+  updated_by_user_id uuid references users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+```
+
+**Actuals are computed, never stored** — from approved time logs (labour, via the frozen PAY snapshots), approved expenses, asset movements and activities (vehicles, mileage, waste), and approved variations (revenue). Storing them would create two sources of truth that drift.
+
+Variance is shown per category, absolute and percentage, with direction:
+
+```
+Labour     Budget £8,200   Actual £9,040   Variance +£840 / +10.2%
+```
+
+Colour communicates direction only (over/under), on the number — not a coloured card per row (§40).
+
+---
+
+## 31. Crew scheduling
+
+```sql
+create table vehicles (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references companies(id) on delete cascade,
+  name text not null,
+  registration text,
+  category text,                       -- "Van (class III)", "HGV rigid 7.5–17t"
+  fuel_type text,
+  emission_factor_activity text,       -- the factor `activity` an admin mapped it to (§26)
+  capacity_note text,
+  active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create unique index on vehicles (company_id, registration) where registration is not null;
+
+create table schedule_assignments (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references companies(id) on delete cascade,
+  project_id uuid not null references projects(id) on delete cascade,
+  resource_type text not null check (resource_type in ('USER','PROVIDER','VEHICLE')),
+  user_id             uuid references users(id),
+  provider_company_id uuid references companies(id),
+  vehicle_id          uuid references vehicles(id),
+  role_id uuid references role_catalog(id),
+  is_supervisor boolean not null default false,
+  headcount int not null default 1,             -- for PROVIDER rows: "4 crew from Pashe"
+  starts_at timestamptz not null,
+  ends_at   timestamptz not null,
+  location_id uuid references project_locations(id),
+  status text not null default 'PLANNED' check (status in ('PLANNED','CONFIRMED','CANCELLED')),
+  notes text,
+  created_by_user_id uuid not null references users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  check (ends_at > starts_at)
+);
+create index on schedule_assignments (company_id, starts_at);
+create index on schedule_assignments (project_id, starts_at);
+```
+
+- **Views:** day, week and month. Resource rows down, time across. Drag-and-drop on web where it is genuinely faster than a form; mobile is read-plus-confirm, not drag.
+- **Conflict detection is a warning, not a block** — overlapping assignments for the same user or vehicle are surfaced at save time with the clash named. `CANCELLED` rows never conflict. Deliberate double-booking of a subcontractor's *company* is normal and only warns when headcount exceeds a stated availability.
+- **Availability & requirements:** per-user availability windows and per-project role requirements ("2 × Rigger, 1 × Supervisor, Mon–Wed") drive an unfilled-requirement indicator. Requirements live on the project, not the schedule.
+- **Connects to existing time/rate calculations:** an assignment pre-fills the log-time screen (project, role, date, shift), and planned labour cost resolves through the rate engine for §30.2's budget line.
+- **Compliance flags** (§33) show on the assignment row where the subcontractor has an expired or expiring document — visible, never automatically blocking unless configured.
+
+---
+
+## 32. Supervisor mobile experience
+
+A separate, simplified project screen for supervisors — **not** the desktop admin UI shrunk down. New expo-router group `apps/mobile/app/(app)/site/`.
+
+```
+TODAY
+  Project · Site · Time
+
+  [ Start Shift ]
+
+  Crew            Tasks           Add Photo
+  Site Diary      Assets Removed  Waste / Reuse
+  Add Expense     Report Issue    Add Variation
+  Client Sign-Off                 Complete Day
+```
+
+- Large touch targets — the user is wearing gloves in a loading bay.
+- **One screen, one job.** Each action opens a focused flow with the project, date and (where known) location pre-filled.
+- **Add Photo** is reachable in one tap from the site screen and defaults to camera capture.
+- **Complete Day** closes the diary (§23) and prompts for anything obviously missing: no photos today, assets with no destination, unsubmitted time.
+- Everything posts to the **same endpoints** the web app uses. No mobile-only write path, no divergent validation.
+- Offline capture is Phase 6 and is a real gap for basements and lifts — flagged in §45.
+
+---
+
+## 33. Subcontractor compliance
+
+Extends the company/engagement model rather than adding a subcontractor record type.
+
+```sql
+create table compliance_documents (
+  id uuid primary key default gen_random_uuid(),
+  subject_company_id uuid not null references companies(id) on delete cascade,  -- who it covers
+  owner_company_id   uuid not null references companies(id) on delete cascade,  -- who tracks it
+  engagement_id uuid references engagements(id),
+  kind text not null check (kind in
+    ('PUBLIC_LIABILITY','EMPLOYERS_LIABILITY','PROFESSIONAL_INDEMNITY','RAMS',
+     'TRAINING','QUALIFICATION','LICENCE','CERTIFICATE','OTHER')),
+  title text not null,
+  reference text,
+  insurer text, cover_amount_cents bigint,     -- for insurance kinds
+  file_id uuid references stored_files(id),
+  issued_on date, expires_on date,
+  status text not null default 'VALID'
+           check (status in ('VALID','EXPIRING','EXPIRED','MISSING','REJECTED')),
+  verified_by_user_id uuid references users(id),
+  verified_at timestamptz,
+  notes text,
+  uploaded_by_user_id uuid references users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index on compliance_documents (owner_company_id, expires_on);
+
+create table compliance_alerts (
+  id uuid primary key default gen_random_uuid(),
+  document_id uuid not null references compliance_documents(id) on delete cascade,
+  threshold_days int not null check (threshold_days in (90,60,30,14,7)),
+  sent_at timestamptz not null default now(),
+  unique (document_id, threshold_days)
+);
+```
+
+- **Alerts at 90 / 60 / 30 / 14 / 7 days** before expiry, once per threshold, to the tracking company's managers (and to the subcontractor where they are a CrewQuo company). Delivered by the same nightly job that purges audit rows.
+- `status` is recomputed nightly and on write.
+- **Work is never blocked automatically.** `sustainability_settings`-adjacent company config carries `enforce_compliance` (default `false`); only when an org turns it on does an expired mandatory document prevent scheduling or submission — and even then it warns loudly rather than failing silently.
+- A subcontractor uploads its own documents once and they are visible to each company that engages it, per the one-hop rule — no re-upload per client.
+
+---
+
+## 34. Client sign-off
+
+```sql
+create table client_signoffs (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(id) on delete cascade,
+  company_id uuid not null references companies(id),          -- the contractor capturing it
+  engagement_id uuid references engagements(id),
+  phase text,                                                  -- null = whole project
+  signer_name text not null,
+  signer_company text,
+  signer_role text,
+  signer_email text,
+  signature_file_id uuid references stored_files(id),          -- drawn signature image
+  completion_statement text not null,
+  comments text,
+  signed_at timestamptz not null,
+  signed_ip inet, signed_user_agent text,
+  evidence_snapshot jsonb not null,     -- the exact state signed for
+  content_hash text not null,
+  supersedes_id uuid references client_signoffs(id),
+  captured_by_user_id uuid not null references users(id),
+  created_at timestamptz not null default now()
+);
+```
+
+Captured on-site on a phone or tablet at project or phase completion. The `evidence_snapshot` freezes what was signed for — the completion statement, the work summary, the asset outcomes and the evidence set as they stood at that moment — and `content_hash` makes tampering detectable. Rows are **append-only**: a later amendment is a new row pointing at the one it supersedes, and both are retained with their signatures. This is the immutable-evidence-plus-audit-history requirement.
+
+---
+
+## 35. Project timeline
+
+An automatic chronology assembled from records that already exist — no new writes, one read model:
+
+project creation · crew assignments · diary entries · time entries · photos · asset movements · waste records · document uploads · variations · approvals · incidents · client sign-offs · completion.
+
+`GET /v1/projects/:id/timeline?from&to&types[]&cursor` — a UNION over the source tables ordered by event time, keyset-paginated like every other list (§7). Each item carries type, timestamp, actor, a one-line description and a link to the record. Filters by type and date; the client-portal variant returns only client-visible items.
+
+Someone who was not on site should be able to read the timeline and understand what happened.
+
+---
+
+## 36. Auditability
+
+`audit_logs` + `recordAudit` (§3.6) already capture *that* something happened, on every Phase 3/4 mutation. Commercial and sustainability records additionally need *what changed*.
+
+```sql
+create table record_revisions (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references companies(id) on delete cascade,
+  entity_type text not null,          -- 'project_asset', 'asset_movement', 'variation', ...
+  entity_id   uuid not null,
+  revision    int not null,
+  action text not null check (action in ('CREATE','UPDATE','DELETE')),
+  before jsonb, after jsonb,
+  changed_fields text[] not null default '{}',
+  reason text,
+  changed_by_user_id uuid references users(id),
+  changed_at timestamptz not null default now(),
+  unique (entity_type, entity_id, revision)
+);
+create index on record_revisions (entity_type, entity_id, revision desc);
+```
+
+Revision-tracked, with a **required reason** on the starred ones:
+
+weights ★ · destinations and movements ★ · emission factors and factor sets · carbon calculations (via supersession, §27.2) · approved time and rates ★ · variations ★ · client sign-off (via supersession, §34) · sustainability classifications · closed diary entries ★ (§23).
+
+Every such table also carries `created_by_user_id` / `created_at` / `updated_by_user_id` / `updated_at`. Like `recordAudit`, revision writes **never throw** into the caller — a broken trail must not fail an approval; failures are logged. Retention follows the existing `audit_retention_days` entitlement, except that revisions attached to a generated report are retained as long as the report is.
+
+---
+
+## 37. Permissions & capabilities
+
+**The four membership roles do not change.** `OWNER`/`ADMIN`/`MANAGER`/`MEMBER` keep their current meaning and every existing check keeps working. Job functions are a capability layer on top — which is how a Supervisor can write the diary without being able to see margin, and a Finance user can see margin without being able to close a day.
+
+```sql
+create table capabilities (
+  key text primary key, name text not null, description text, category text not null
+);
+create table capability_bundles (
+  key text primary key, name text not null, description text,
+  company_id uuid references companies(id) on delete cascade,   -- null = system bundle
+  is_system boolean not null default true
+);
+create table capability_bundle_items (
+  bundle_key text not null references capability_bundles(key) on delete cascade,
+  capability_key text not null references capabilities(key),
+  primary key (bundle_key, capability_key)
+);
+alter table memberships add column bundle_key text references capability_bundles(key);  -- null ⇒ derive from role
+create table membership_capability_overrides (
+  membership_id uuid not null references memberships(id) on delete cascade,
+  capability_key text not null references capabilities(key),
+  granted boolean not null,
+  note text,
+  primary key (membership_id, capability_key)
+);
+```
+
+**Capability keys** (the enforcement surface):
+
+`project.read` · `project.manage` · `schedule.manage` · `crew.manage` · `time.log.own` · `time.review` · `expense.log` · `expense.review` · `diary.write` · `diary.close` · `evidence.upload` · `evidence.manage` · `evidence.publish` · `document.upload` · `document.manage` · `asset.write` · `asset.destination.set` · `asset.weight.verify` · `sustainability.read` · `sustainability.factors.manage` · `sustainability.settings.manage` · `variation.create` · `variation.approve` · `commercial.read` · `commercial.manage` · `invoice.manage` · `signoff.capture` · `report.generate` · `compliance.manage`
+
+**System bundles:**
+
+| Bundle | Grants |
+|---|---|
+| **Admin** | everything |
+| **Project Manager** | project ops, assets, evidence, sustainability read/write, commercial read/manage, variations, reports, schedule, crew |
+| **Supervisor** | diary (write + close), evidence upload, crew read, assets, asset destinations, issues, expenses, variation create, signoff capture — **no** `commercial.read` |
+| **Worker** | `time.log.own`, `expense.log`, `evidence.upload` (own uploads), `project.read` on assigned projects |
+| **Finance** | `commercial.read/manage`, `invoice.manage`, `expense.review`, `time.review`, `variation.approve`, reports |
+| **Sustainability / Compliance** | assets, destinations, weights, `sustainability.*`, `document.manage`, `compliance.manage`, `report.generate` |
+
+**Backward compatibility (essential).** `bundle_key` is null on every existing membership, and a null bundle derives from the role: `OWNER`/`ADMIN` → Admin, `MANAGER` → Project Manager, `MEMBER` → Worker. Nothing changes for a company that never opens the screen.
+
+**Resolution** mirrors `resolveEntitlements`: `resolveCapabilities(membershipId)` = bundle ⊕ overrides, cached with the same TTL and invalidated on the same events. A route requires **both** `hasFeature(companyId, …)` (does the plan sell it?) **and** `hasCapability(ctx, …)` (may this person do it?), and both live in `policies.ts`/`guards.ts` beside the existing checks. **A capability never widens company scope or the one-hop rule** — those are checked first and independently.
+
+**Client** remains an engagement position with the existing restricted portal (§3.6), never a user role. Locked decision #7 is unchanged.
+
+---
+
+## 38. Dashboards & client-level reporting
+
+### 38.1 Organisation dashboard
+
+The existing commercial dashboard stays. Sustainability metrics are added alongside, not in place of it: total tonnes handled · reused · refurbished · donated · recycled · landfill · diversion from landfill % · retained-in-use % · project emissions tCO₂e · **separately** reported avoided emissions tCO₂e.
+
+Filters: date range · client · project · project manager · site · destination · asset category.
+
+**No vanity metrics.** Every figure is clickable through to the records behind it, and any figure whose data completeness is below a configurable threshold is shown with its completeness percentage attached rather than presented as fact.
+
+### 38.2 Client-level aggregation
+
+Multiple projects for the same client roll up into a client report over a period:
+
+```
+PwC · December 2026 – November 2027
+Projects 32 · Total material managed 184.6 t
+Reused 74.8 t · Recycled 92.1 t · Landfill 3.7 t · Other 14.0 t
+Retained in use 48.3% · Diversion from landfill 98.0%
+Project operational emissions X tCO₂e · Estimated avoided emissions Y tCO₂e
+```
+
+Aggregation runs over `client_company_id` (following `claimed_by_company_id` tombstones so a placeholder that later signed up still aggregates with its own history) and reuses the project metric definitions in §28.2 — summed, never re-derived by a second code path. **Mixed factor years are disclosed**: a period spanning two factor sets says so.
+
+**Build the data architecture now** even though the full client-reporting UI is Phase 12: the `CLIENT_PERIOD` report kind, the aggregation query and the period fields exist from Phase 10 so nothing has to be reshaped later. Quarterly and annual client sustainability reporting is the destination.
+
+---
+
+## 39. Admin: sustainability settings
+
+Assumptions live in a settings screen, not in source code.
+
+```sql
+create table sustainability_settings (
+  company_id uuid primary key references companies(id) on delete cascade,
+  default_country text not null default 'GB',
+  default_factor_set_id uuid references emission_factor_sets(id),
+  reporting_year int,
+  weight_unit   text not null default 'AUTO'  check (weight_unit in ('KG','TONNE','AUTO')),
+  distance_unit text not null default 'KM'    check (distance_unit in ('KM','MILE')),
+  carbon_display_unit text not null default 'AUTO'
+                       check (carbon_display_unit in ('KGCO2E','TCO2E','AUTO')),
+  default_displacement_pct numeric(5,2) not null default 100,
+  allow_generic_product_factors boolean not null default true,
+  require_document_for_verified_weight boolean not null default true,
+  capture_gps_on_evidence boolean not null default false,
+  data_quality_weights jsonb not null,           -- §28.3 defaults
+  data_quality_warn_below int not null default 80,
+  report_disclaimer text not null,               -- §29.3 default text
+  report_logo_file_id uuid references stored_files(id),
+  report_accent_hex text,
+  enforce_compliance boolean not null default false,
+  updated_by_user_id uuid references users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+```
+
+Also configurable from this area: default waste classifications, asset categories and custom asset types (§25.1), destination types and their counts-as flags (§25.4), destination organisations, approved product carbon factors (§26.3) and factor-set imports (§26.2).
+
+---
+
+## 40. Design requirements
+
+Preserve CrewQuo branding. The product must look like **serious commercial operations software** — the kind of tool a project manager keeps open all day.
+
+**Avoid** — these read as machine-generated and waste the screen:
+
+excessive rounded cards · `rounded-3xl` everywhere · gradients · glassmorphism · glowing buttons · oversized headings · decorative blobs · cards inside cards · unnecessary icons · huge empty spaces · excessive pill badges.
+
+**Prioritise:** tables · lists · clear typography · structured forms · compact metrics · side panels · filters · timelines · evidence galleries · understandable charts · strong information hierarchy.
+
+**Specifics that follow from the above:**
+
+- **Density.** A project's asset list is a table with sortable columns and inline editing, not a feed of cards. Aim for 20+ rows visible on a laptop screen.
+- **One elevation level.** Panels sit on the page. Panels do not sit inside panels.
+- **Numbers are typographic, not decorative.** Tabular figures, right-aligned, consistent decimal places, units stated once in the column header.
+- **Colour carries meaning only.** Over/under budget, expired/expiring, verified/estimated, hierarchy tier. **The sustainability module must not be green everywhere** — a green wash makes every number look like good news, including the landfill one. Use the same neutral surface as the rest of the app and let the data colour itself.
+- **Warnings are inline and specific.** "18% of project weight is estimated" next to the figure it qualifies, not a banner at the top of the page.
+- **Mobile is a different design, not a narrower one** (§32).
+
+Existing tokens live in `packages/ui`. The owner has frontend work happening via Codex (§17) — these constraints apply to that work too.
+
+---
+
+## 41. Calculation principles (non-negotiable)
+
+1. **Never invent emissions factors.** No factor, no number — say so instead.
+2. **Every carbon result traces back to** activity data → factor → factor version → methodology. If a result cannot name all four, it does not ship.
+3. **Historical reports remain reproducible.** New factor sets never change old reports (§29.4).
+4. **Avoided emissions stay separate** from Scope 1/2/3 inventory emissions, in the schema, the API and every screen (§27.4).
+5. **Reuse is distinguished from recycling** everywhere, and ranked above it (§25.5).
+6. **Measured data is distinguished from estimated data**, at the row level and in every total (§25.3).
+7. **Asset storage does not count as reuse** — or as any outcome — until a final destination is recorded (§25.4).
+8. **"Diverted from landfill" is not "reused."** They are different metrics with different definitions and are never presented as interchangeable.
+9. **Full precision internally, sensible rounding for display.** Never round mid-calculation; never display more precision than the input justifies.
+10. **Every generated report discloses its methodology and material assumptions** (§29.1 §10, §29.3).
+
+When a product decision and one of these principles conflict, the principle wins — and the conflict goes to the user, not into the code.
+
+---
+
+## 42. Delivery roadmap — Phases 7–12
+
+Same discipline as Phases 0–4: one phase at a time, each independently demoable, each verified end-to-end against live Postgres before the next begins. The phase numbering continues the existing roadmap (§11); the mapping to the brief's own numbering is given for reference.
+
+**Sequencing against the existing roadmap.** Finish Phase 4's **export engine** first — §29 is built on it. Phase 5 (billing/invoicing) is independent of everything here and can land whenever revenue requires it, with one dependency: §30.1 links variations to `invoices`, so that FK arrives with Phase 5 or is added when it does.
+
+### Phase 7 — Evidence foundations *(brief Phase 1)*
+- **7.0 Storage service** (§22.1): `stored_files`, R2 presign/complete, `sharp` derivatives, download authorization, `storage_gb` metering. Retro-fit expense receipt upload, which Phase 3 deferred.
+- **7.1 Capability layer** (§37): `capabilities`, bundles, overrides, `resolveCapabilities`, `hasCapability`, role-derived defaults. Ship before the modules that need Supervisor ≠ Manager.
+- **7.2 Project locations** (§21).
+- **7.3 Project evidence** (§22): records, batch upload, camera capture, gallery/timeline/filters, selection.
+- **7.4 Project documents** (§24).
+- **7.5 Site diary** (§23) with attendance, Close Day and post-close revisions.
+- **7.6** Web: the project section shell (§20) with these five sections. Mobile: Add Photo + Site Diary.
+- *Milestone: a supervisor photographs a floor from a phone, writes the day's diary, closes the day — and it is all on the project, attributed, dated and located.*
+
+### Phase 8 — Assets & materials *(brief Phase 2)*
+- `asset_types` (seeded, no invented weights), `project_assets` with bulk lines and weight provenance (§25.2, §25.3).
+- `destination_types` (seeded per §25.4), `destination_organisations`, `asset_movements` with partial splits and derived `outcome_state`.
+- Mass roll-ups and the pending/allocated split (§28.2, mass only — no carbon yet).
+- Evidence and document linkage to assets and movements.
+- Web: asset table with inline editing and bulk entry. Mobile: Assets Removed + Waste/Reuse flows.
+- *Milestone: 42 chairs in, 30 donated and 12 recycled out, with weights, evidence and a destination organisation on each — and the project reports the tonnage split correctly.*
+
+### Phase 9 — Sustainability engine *(brief Phase 3)*
+- `emission_factor_sets` / `emission_factors` + the importer and admin UI (§26.1, §26.2).
+- `product_carbon_factors` + the preferred-source resolver (§26.3).
+- `packages/shared/src/carbon-engine/` with exhaustive tests (§27.1).
+- `project_activities` (§27.3), `carbon_calculations` with supersession (§27.2), `avoided_emissions_claims` (§27.4).
+- Project Sustainability section: mass balance, rates, two separate carbon figures, data quality with named gaps (§28).
+- Organisation sustainability dashboard (§38.1).
+- `sustainability_settings` (§39).
+- *Milestone: a project shows 3.84 tCO₂e emissions and 27.42 tCO₂e avoided, side by side, every number traceable to a factor and a factor-set version.*
+
+### Phase 10 — Reporting & sign-off *(brief Phase 4)*
+- Sustainability & Completion report (§29.1) with snapshots and reproducible re-render (§29.4).
+- Evidence pack with section selection (§29.2).
+- Disclaimer configuration and claim guards (§29.3).
+- Client sign-off with signature capture and immutable snapshots (§34).
+- `CLIENT_PERIOD` report kind + the aggregation query shipped now, UI later (§38.2).
+- *Milestone: a client-ready PDF generated from real project data, regenerable byte-identical a year later.*
+
+### Phase 11 — Commercial & field operations *(brief Phase 5)*
+- Variations with pricing, approval and revenue feed-through (§30.1).
+- `project_budgets` + computed actuals + variance (§30.2).
+- Scheduling with day/week/month, conflicts and requirements (§31).
+- Supervisor mobile experience (§32).
+- Project timeline (§35).
+- *Milestone: budget vs actual with approved variations included, and a supervisor running the day from the site screen.*
+
+### Phase 12 — Compliance & analytics *(brief Phase 6)*
+- Subcontractor compliance documents, statuses and the 90/60/30/14/7 alert ladder (§33).
+- Client aggregated reporting UI, quarterly and annual (§38.2).
+- Advanced analytics and cross-project comparison.
+- *Milestone: a year of PwC projects aggregated into one client sustainability report.*
+
+**Throughout every phase:** `record_revisions` on the tables §36 lists, `recordAudit` on every mutation, entitlement keys registered (§43), tests written with the code (§44), and no regression in what Phases 0–4 already do.
+
+---
+
+## 43. Entitlements additions
+
+New keys for the existing engine (§5B) — the mechanism is unchanged, these are rows.
+
+**Features:** `project_evidence` · `site_diary` · `project_documents` · `asset_tracking` · `sustainability` · `carbon_engine` · `sustainability_reports` · `evidence_pack` · `client_signoff` · `variations` · `scheduling` · `compliance_tracking` · `client_reporting` · `custom_factors` (import your own factor sets)
+
+**Limits:** `storage_gb` · `evidence_uploads_per_month` · `active_projects` · `factor_sets`
+
+Suggested placement against the seed plans (§5B) — final packaging is an owner decision (§45):
+
+| | Crew | Starter | Pro | Business | Enterprise |
+|---|---|---|---|---|---|
+| evidence / diary / documents | upload only | ✔ | ✔ | ✔ | ✔ |
+| asset tracking | — | ✔ | ✔ | ✔ | ✔ |
+| sustainability + carbon engine | — | — | ✔ | ✔ | ✔ |
+| sustainability reports / evidence pack | — | — | ✔ | ✔ | ✔ |
+| variations / scheduling | — | ✔ | ✔ | ✔ | ✔ |
+| compliance tracking | — | — | ✔ | ✔ | ✔ |
+| client reporting / custom factors | — | — | — | ✔ | ✔ |
+| `storage_gb` | 1 | 25 | 200 | 1000 | unlimited |
+
+`storage_gb` is the one genuinely metered new axis, and it needs usage wired into `usage.ts` alongside `active_subcontractors` and `clients`.
+
+---
+
+## 44. Testing additions
+
+Extends §13; same gates, same CI.
+
+- **`packages/shared/src/carbon-engine/` — exhaustive unit tests, written before anything renders a number.** Every branch of factor selection (year, region, validity window, missing factor), every unit conversion, every rounding boundary, and every avoided-emissions path including `UNKNOWN` displacement and the no-factor case. This is the rate engine lesson applied: the pure core is where correctness is cheap.
+- **Metric definition tests** (§28.2) over fixture projects: pending mass excluded from rates, storage never counted, partial movement splits, diversion ≠ reuse, empty project returns nulls not zeros.
+- **Reproducibility test:** generate a report, import a new factor set, correct a weight, re-render the report — assert byte-identical numbers and an unchanged `content_hash`; then regenerate-with-current-data and assert a new row plus `SUPERSEDED` on the old.
+- **The firewall test:** assert that no API response ever returns a total mixing the `AVOIDED` bucket with any other, and that no persisted `carbon_calculations` sum crosses buckets.
+- **Authorization tests per capability** (§37), following the existing one-test-per-rule discipline: Supervisor cannot read margin; Worker cannot set a destination; Finance cannot close a diary; a capability never widens company scope or the one-hop rule.
+- **Storage tests:** presign rejects oversize and wrong content type; complete verifies checksum; downloads 403 without the owning record's authorization; derivative failure leaves the original intact.
+- **Backward-compatibility suite:** the Phase 0–4 end-to-end scripts re-run unchanged at the end of every new phase. Existing endpoint response shapes are snapshot-tested so an additive change cannot silently become a breaking one.
+
+---
+
+## 45. Open items for Part II (ask before building the affected phase)
+
+- **Emission factor dataset redistribution.** Confirm the licensing terms for the UK Government GHG Conversion Factors (and any WRAP/Defra resource dataset) before bundling one into the seed or a platform-wide factor set. Until confirmed, Phase 9 ships the importer and orgs upload their own. *(Phase 9)*
+- **Feature packaging for the new modules** — the §43 table is a proposal. Which tier sells sustainability? Is asset tracking a Starter feature or the Pro hook? *(Phase 7, before the first gate is written)*
+- **Enabling-emissions policy for avoided claims** — deduct refurbishment/transport/storage always, or only when the org's methodology requires it? Default matters because it changes headline numbers. *(Phase 9)*
+- **Default displacement assumption** — ship at 100% or at "unknown, ask"? 100% is the industry-common default and the more flattering one. *(Phase 9)*
+- **Offline capture for supervisors** — currently Phase 6. Basements, lifts and loading bays have no signal, and §32 is the flagship mobile experience. Promote it into Phase 11? *(Phase 11)*
+- **Client visibility defaults for evidence** — every new evidence/document/report row defaults to `client_visible = false`. Confirm that is right for photos, which clients most want to see. *(Phase 7)*
+- **GPS capture** — off by default (§39). Confirm; it is worker-location data and some organisations will not want it recorded at all. *(Phase 7)*
+- **Retention for evidence and originals** — audit rows expire on the plan's `audit_retention_days`; photos and originals currently do not expire at all, which is a growing storage bill. Lifecycle policy? *(Phase 7)*
+- **Report branding** — contractor logo and client logo are specified (§29.1). Confirm where the client logo comes from: uploaded per client company, or per project? *(Phase 10)*
+
+---
+
+## 46. API contract additions
+
+Extends §7 — same conventions throughout, no exceptions: `Authorization: Bearer` + `X-Company-Id`, shared Zod schemas in `packages/shared` typing both sides, `{ data, nextCursor }` keyset lists, the `{ error: { code, message, details? } }` envelope, and `Idempotency-Key` on create/submit/approve. `CRUD` below means the usual five verbs.
+
+```
+# Files & storage (§22.1)
+POST   /v1/files/presign                    -- validates type/size/storage_gb; returns presigned PUT + PENDING row
+POST   /v1/files/:id/complete               -- verifies checksum/size, READY, enqueues derivatives
+GET    /v1/files/:id/download               -- authorized short-lived presigned GET (?variant=ORIGINAL|WEB|THUMB)
+DELETE /v1/files/:id
+
+# Locations, evidence, documents, diary (§21–§24)
+CRUD   /v1/projects/:id/locations
+POST   /v1/projects/:id/locations/apply-template
+CRUD   /v1/projects/:id/evidence            -- filters: category, from, to, uploaderId, locationId, assetId, clientVisible
+PATCH  /v1/projects/:id/evidence/batch      -- apply category/date/location/visibility to a selection
+CRUD   /v1/projects/:id/documents
+CRUD   /v1/projects/:id/diary               -- one entry per project/company/date
+POST   /v1/projects/:id/diary/:entryId/close
+GET    /v1/projects/:id/diary/:entryId/revisions
+CRUD   /v1/projects/:id/incidents
+
+# Assets & materials (§25)
+CRUD   /v1/asset-types                       -- company rows shadow system rows
+CRUD   /v1/destination-types                 -- hierarchy tier + counts-as flags (feature: sustainability)
+CRUD   /v1/destination-organisations
+CRUD   /v1/projects/:id/assets
+POST   /v1/projects/:id/assets/bulk          -- paste/import many lines at once
+CRUD   /v1/assets/:assetId/movements         -- quantity splits; outcome_state derived server-side
+GET    /v1/projects/:id/materials/summary    -- mass balance, allocated vs pending (§28.2)
+
+# Sustainability & carbon (§26–§28)
+CRUD   /v1/emission-factor-sets              (capability: sustainability.factors.manage)
+POST   /v1/emission-factor-sets/:id/import   -- CSV/XLSX; ?dryRun=true returns the diff, never writes
+GET    /v1/emission-factors                  -- search: category, activity, material, treatment, unit
+CRUD   /v1/product-carbon-factors
+CRUD   /v1/projects/:id/activities           -- vehicle distance / fuel / electricity / freight
+POST   /v1/projects/:id/carbon/calculate     -- (re)calculates; writes new rows + supersedes old (§27.2)
+GET    /v1/projects/:id/carbon               -- rows grouped by bucket & scope; never a cross-bucket total
+GET    /v1/projects/:id/sustainability       -- metrics + data quality + named gaps (§28)
+GET/PUT /v1/sustainability-settings          (capability: sustainability.settings.manage)
+
+# Reporting & sign-off (§29, §34)
+POST   /v1/projects/:id/reports              -- { kind, sections, periodStart?, periodEnd? } → snapshot + render
+GET    /v1/reports                           -- list; filters: projectId, kind, status
+GET    /v1/reports/:id                       -- the frozen snapshot
+GET    /v1/reports/:id/download.pdf          -- re-renders FROM the snapshot (§29.4)
+POST   /v1/reports/:id/regenerate            -- recalculates: new row, old marked SUPERSEDED
+CRUD   /v1/projects/:id/signoffs             -- append-only; PATCH creates a superseding row
+
+# Commercial & operations (§30–§32, §35)
+CRUD   /v1/projects/:id/variations  /v1/variations/:id/lines
+POST   /v1/variations/:id/submit | /approve | /reject | /complete
+GET/PUT /v1/projects/:id/budget
+GET    /v1/projects/:id/performance          -- planned vs actual vs variance by category (§30.2)
+CRUD   /v1/vehicles
+CRUD   /v1/schedule-assignments              -- ?from&to&resourceType&projectId
+GET    /v1/schedule/conflicts?from&to        -- warnings, never a block
+GET    /v1/projects/:id/timeline             -- ?from&to&types[]&cursor (§35)
+
+# Compliance, capabilities, dashboards (§33, §37, §38)
+CRUD   /v1/compliance-documents              -- ?subjectCompanyId&status&expiringWithinDays
+GET    /v1/compliance/summary                -- expiry ladder across all engaged providers
+GET    /v1/capabilities                      -- catalog + this membership's resolved set
+CRUD   /v1/capability-bundles                (OWNER/ADMIN)
+PUT    /v1/members/:membershipId/capabilities -- bundle + overrides
+GET    /v1/dashboard/sustainability          -- ?from&to&clientId&projectManagerId&siteId&destination&assetCategory
+GET    /v1/clients/:clientCompanyId/sustainability -- period aggregation (§38.2)
+```
+
+**Gating.** Every route above is guarded by `hasFeature` (does the plan sell it? §43) **and** `hasCapability` (may this person do it? §37), after the existing company-scope and one-hop checks — which are unchanged and always run first. Client-portal reads of any new resource go through the existing `/v1/portal/*` surface and return only `client_visible` rows; no new endpoint exposes a counterparty's data directly.
+
+---
+
+## 47. Brief → specification map
+
+Every section of the implementation brief, and where it is specified here.
+
+| Brief | Topic | Plan |
+|---|---|---|
+| intro | Scope, customers, lifecycle, extend-don't-rebuild | §19, §0, decision #12 |
+| 1 | Project structure | §20 |
+| 2 | Project photos & evidence | §22 (storage §22.1) |
+| 3 | Site diary | §23 |
+| 4 | Project locations | §21 |
+| 5 | Asset & material tracking | §25.1, §25.2 |
+| 6 | Asset destinations | §25.4 |
+| 7 | Waste hierarchy | §25.4, §25.5 |
+| 8 | Weight tracking | §25.3, decision #14 |
+| 9 | Sustainability module | §28 |
+| 10 | Carbon / CO₂e engine | §26.1, §27.1, §27.2 |
+| 11 | UK Government GHG factors | §26.2 |
+| 12 | GHG Protocol alignment | §27.5 |
+| 13 | Project operational emissions | §27.3 |
+| 14 | Avoided emissions | §27.4 |
+| 15 | Embodied carbon / product factors | §26.3 |
+| 16 | Reuse calculations | §27.4 |
+| 17 | Recycling & resource carbon metrics | §26.4 |
+| 18 | Sustainability data quality | §28.3 |
+| 19 | Variations / extra works | §30.1 |
+| 20 | Planned vs actual | §30.2 |
+| 21 | Crew scheduling | §31 |
+| 22 | Supervisor mobile experience | §32 |
+| 23 | Project documents | §24 |
+| 24 | Subcontractor compliance | §33 |
+| 25 | Client sign-off | §34 |
+| 26 | Project sustainability report | §29.1 |
+| 27 | Report disclaimer | §29.3 |
+| 28 | Evidence / completion pack | §29.2 |
+| 29 | Project timeline | §35 |
+| 30 | Auditability | §36 |
+| 31 | Permissions | §37 |
+| 32 | Dashboard | §38.1 |
+| 33 | Client-level reporting | §38.2 |
+| 34 | Admin sustainability settings | §39 |
+| 35 | Design requirements | §40 |
+| 36 | Calculation principles | §41 |
+| 37 | Implementation approach | §0 (rules), §19.3 (existing entities extended), §42 (phases + migrations), §46 (API changes), §37 (permissions), §22.1 (file storage), §26 (factor architecture), §27 (calculation service), §29 (reporting engine), §20/§32 (UI + mobile), §44 (testing), §0.2 + §44 (backward compatibility) |

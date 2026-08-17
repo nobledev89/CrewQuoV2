@@ -6,6 +6,8 @@ Living checklist for the build. Full detail for every item is in **[CREWQUO_V2_P
 
 Last updated: 2026-08-17 · Current phase: **Phase 4 (audit + portal landed; exports & web screens next)** · Phase 3 shipped
 
+> **Scope expanded 2026-08-17.** Phases 7–12 (project evidence, site diary, locations, asset & material tracking, the sustainability/carbon engine, reporting, variations, scheduling, supervisor mobile, compliance) are now specified in **Part II of the plan (§19–§47)**. Everything below Phase 6 is new work; Phases 0–4 are unaffected and must not regress.
+
 ---
 
 ## ✅ Phase 0 — Foundations (DONE — commit `78220a3`)
@@ -120,9 +122,76 @@ Last updated: 2026-08-17 · Current phase: **Phase 4 (audit + portal landed; exp
 
 ## Phase 6 — Deferred
 
-- [ ] Offline draft capture (mobile)
+- [ ] Offline draft capture (mobile) — *see the §45 open item: §32's supervisor experience may need this promoted into Phase 11*
 - [ ] Real-time updates
 - [ ] Optional v1 → v2 per-customer data importer (§12)
+
+---
+
+# v2.1 — Field Operations, Evidence & Sustainability (plan Part II, §19–§47)
+
+Not started. Sequencing: finish Phase 4's **export engine** first (§29 builds on it); Phase 5 billing is independent and can land whenever revenue requires it. Full roadmap in plan §42.
+
+**Non-negotiable throughout:** the ten calculation principles (§41), `record_revisions` + `recordAudit` on every new mutation (§36), entitlement keys registered (§43), tests written with the code (§44), and the Phase 0–4 end-to-end scripts re-run green at the end of every phase.
+
+## Phase 7 — Evidence foundations — plan §21–§24, §37
+
+- [ ] **7.0 Storage service** (§22.1): `stored_files`, R2 presign → PUT → complete, `sharp` WEB/THUMB derivatives, originals retained, authorized presigned downloads, `storage_gb` metering. **Retro-fits the Phase 3 deferred expense receipt upload.**
+- [ ] **7.1 Capability layer** (§37): `capabilities`, bundles, per-membership overrides, `resolveCapabilities`, `hasCapability`. Null bundle derives from the existing role — zero behaviour change for existing companies
+- [ ] **7.2 Project locations** (§21): tree, depth cap 4, cycle rejection
+- [ ] **7.3 Project evidence** (§22): 14 categories, batch upload + camera + drag-drop, batch metadata, three distinct timestamps, gallery/timeline/filters, sticky report selection
+- [ ] **7.4 Project documents** (§24): 16 categories, versioning via `supersedes_id`, expiry
+- [ ] **7.5 Site diary** (§23): structured attendance, Close Day, post-close revisions with required reason + "amended N times" everywhere it appears
+- [ ] **7.6 UI:** web project section shell (§20); mobile Add Photo + Site Diary
+- [ ] **Milestone:** a supervisor photographs a floor from a phone, writes the day's diary and closes the day — attributed, dated, located
+
+## Phase 8 — Assets & materials — plan §25
+
+- [ ] `asset_types` seeded (**no invented default weights** — §41.1) + custom types
+- [ ] `project_assets`: bulk lines by default, item-level opt-in, weight basis UNIT/TOTAL with derived counterpart
+- [ ] Weight provenance: 7 sources → 4 confidence levels; `VERIFIED`/`DOCUMENTED` require a document
+- [ ] `destination_types` seeded with the 11 destinations, hierarchy tiers and counts-as flags (**storage is not a final outcome**)
+- [ ] `destination_organisations`; `asset_movements` with partial splits, derived `outcome_state`, evidence/document links
+- [ ] Mass roll-ups with the allocated/pending split (§28.2) — mass only, no carbon yet
+- [ ] Web asset table (inline edit, bulk entry); mobile Assets Removed + Waste/Reuse
+- [ ] **Milestone:** 42 chairs in, 30 donated / 12 recycled out, tonnage split reported correctly
+
+## Phase 9 — Sustainability engine — plan §26–§28, §39
+
+- [ ] `emission_factor_sets` + `emission_factors` + **importer** (column mapping, dry-run diff, validation) and admin UI — ships **zero fabricated rows** (§26.2)
+- [ ] `product_carbon_factors` + preferred-source resolver (EPD → sector → org → generic); no factor ⇒ no claim (§26.3)
+- [ ] `packages/shared/src/carbon-engine/` — pure functions, exhaustive tests **before** anything renders a number (§27.1, §44)
+- [ ] `project_activities` (vehicle/fuel/electricity/freight); `carbon_calculations` with buckets + supersession; `avoided_emissions_claims` (§27)
+- [ ] Project Sustainability section: mass balance, rates over allocated mass with pending shown, two separate carbon headlines, data completeness with named gaps (§28)
+- [ ] Organisation sustainability dashboard (§38.1) — every figure click-through to its records
+- [ ] `sustainability_settings` (§39)
+- [ ] **Milestone:** 3.84 tCO₂e emissions and 27.42 tCO₂e avoided, side by side, every number traceable to a factor + version
+
+## Phase 10 — Reporting & sign-off — plan §29, §34, §38.2
+
+- [ ] Sustainability & Completion report, 12 sections (§29.1)
+- [ ] `generated_reports` snapshots + `content_hash`; **re-render reads the snapshot, never recalculates** (§29.4)
+- [ ] Evidence pack with section toggles (§29.2)
+- [ ] Configurable disclaimer + claim guards — no "verified"/"certified" language (§29.3)
+- [ ] Client sign-off: signature capture, evidence snapshot, append-only supersession (§34)
+- [ ] `CLIENT_PERIOD` report kind + aggregation query shipped now, UI in Phase 12 (§38.2)
+- [ ] **Milestone:** a client-ready PDF from real data, regenerable byte-identical a year later
+
+## Phase 11 — Commercial & field operations — plan §30–§32, §35
+
+- [ ] Variations + lines, `DRAFT→…→INVOICED`, labour priced off the rate engine, approved variations feed `computeProjectSummary` (§30.1)
+- [ ] `project_budgets` + **computed** actuals + per-category variance (§30.2)
+- [ ] `vehicles`, `schedule_assignments`, day/week/month, conflicts as warnings, availability + role requirements (§31)
+- [ ] Supervisor mobile experience — same endpoints, different design (§32)
+- [ ] Project timeline read model (§35)
+- [ ] **Milestone:** budget vs actual including approved variations; a supervisor running the day from the site screen
+
+## Phase 12 — Compliance & analytics — plan §33, §38.2
+
+- [ ] `compliance_documents` + statuses + 90/60/30/14/7 alert ladder on the existing nightly job; **never auto-blocks unless `enforce_compliance`** (§33)
+- [ ] Client aggregated reporting UI, quarterly + annual, mixed factor years disclosed (§38.2)
+- [ ] Advanced analytics / cross-project comparison
+- [ ] **Milestone:** a year of one client's projects aggregated into a single sustainability report
 
 ---
 
@@ -137,5 +206,17 @@ Last updated: 2026-08-17 · Current phase: **Phase 4 (audit + portal landed; exp
 ### Still open
 
 - [ ] **Per-rate-card currency?** Company-level currency can't express "pay crew in PHP, bill a US client in USD" — but mixing currencies inside one company means `calculateMargin` (BILL − PAY) is subtracting different units, so it needs a stored FX rate per project. Company-level is what ships today. Decide before multi-currency clients are real.
-- [ ] **Where is the Codex frontend?** Not in this repo — `apps/web` contains only the Phase 2 console (login + rates screens), last touched by commit `02579c8`.
+- [ ] **Where is the Codex frontend?** Not in this repo — `apps/web` contains only the Phase 2 console (login + rates screens), last touched by commit `02579c8`. Note that plan §40 now sets design constraints that apply to that work too.
 - [ ] **Real per-currency pricing numbers** (USD anchors exist; confirm the actual amounts) — Phase 5
+
+### Open for v2.1 (full detail in plan §45)
+
+- [ ] **Emission factor dataset redistribution terms** — confirm licensing before bundling UK Gov GHG (or WRAP/Defra) factors; until then orgs import their own — Phase 9
+- [ ] **Feature packaging** for the new modules — the §43 tier table is a proposal, not a decision — Phase 7
+- [ ] **Enabling-emissions policy** — always deduct refurb/transport/storage from avoided claims, or only when the methodology requires it? Changes headline numbers — Phase 9
+- [ ] **Default displacement assumption** — 100% (industry-common, more flattering) or "unknown, ask"? — Phase 9
+- [ ] **Promote offline capture into Phase 11?** — basements and loading bays have no signal and §32 is the flagship mobile screen
+- [ ] **Client-visibility default for evidence** — everything defaults to `client_visible = false`; confirm that's right for photos — Phase 7
+- [ ] **GPS on evidence** — off by default; it's worker-location data — Phase 7
+- [ ] **Retention/lifecycle for photo originals** — currently they never expire — Phase 7
+- [ ] **Client logo source** for report branding — per client company or per project? — Phase 10
