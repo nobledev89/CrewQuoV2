@@ -2,11 +2,15 @@ import Constants from 'expo-constants';
 import type {
   AuthResponse,
   CreateCompanyRequest,
+  CreateTimeLog,
   EntitlementsResponse,
   LoginRequest,
   MembershipsResponse,
   MeResponse,
   RegisterRequest,
+  TimeLogView,
+  WorkContext,
+  WorkStatus,
 } from '@crewquo/shared';
 
 const API_URL: string =
@@ -69,4 +73,40 @@ export const api = {
 
   entitlements: (accessToken: string, companyId: string) =>
     request<EntitlementsResponse>('GET', '/v1/entitlements', { accessToken, companyId }),
+
+  // ── Phase 3: work loop ──────────────────────────────────────────────────────
+  workContext: (accessToken: string, companyId: string) =>
+    request<WorkContext>('GET', '/v1/work-context', { accessToken, companyId }),
+
+  timeLogs: (accessToken: string, companyId: string, status?: WorkStatus) =>
+    request<{ data: TimeLogView[] }>(
+      'GET',
+      `/v1/time-logs${status ? `?status=${status}` : ''}`,
+      { accessToken, companyId }
+    ),
+
+  createTimeLog: (accessToken: string, companyId: string, body: CreateTimeLog) =>
+    request<{ timeLog: TimeLogView }>('POST', '/v1/time-logs', { accessToken, companyId, body }),
+
+  submitTimeLog: (accessToken: string, companyId: string, id: string) =>
+    request<{ timeLog: TimeLogView }>('POST', `/v1/time-logs/${id}/submit`, {
+      accessToken,
+      companyId,
+    }),
+
+  approveTimeLog: (accessToken: string, companyId: string, id: string) =>
+    request<{ timeLog: TimeLogView }>('POST', `/v1/time-logs/${id}/approve`, {
+      accessToken,
+      companyId,
+    }),
+
+  rejectTimeLog: (accessToken: string, companyId: string, id: string, reason?: string) =>
+    request<{ timeLog: TimeLogView }>('POST', `/v1/time-logs/${id}/reject`, {
+      accessToken,
+      companyId,
+      body: { reason },
+    }),
+
+  registerPushToken: (accessToken: string, token: string, platform?: string) =>
+    request<void>('POST', '/v1/push/tokens', { accessToken, body: { token, platform } }),
 };

@@ -6,7 +6,7 @@ The full specification lives in **[`CREWQUO_V2_PLAN.md`](./CREWQUO_V2_PLAN.md)**
 
 ## Status
 
-**Phase 2 — Rate engine + catalog (shipped).** On top of Phase 0 (foundations) and Phase 1 (identity, auth, entitlements): a pure-TS rate engine, PAY/BILL rate cards + role catalog + templates with a resolve endpoint, and a Next.js web console to manage them. Phase 3 (the core work loop) is next. See [`PROGRESS.md`](./PROGRESS.md).
+**Phase 3 — The core work loop (shipped).** On top of Phases 0–2 (foundations, identity/auth/entitlements, rate engine + catalog + web console): engagements & the relationship graph, providers/members/invite-accept, projects + assignments, the `DRAFT → SUBMITTED → APPROVED/REJECTED` work workflow with server-computed project summaries (cost + margin), and the mobile log-time → approvals flow with Expo push. Phase 4 (client portal + exports + audit) is next. See [`PROGRESS.md`](./PROGRESS.md).
 
 ## Prerequisites
 

@@ -3,11 +3,13 @@ import { Link } from 'expo-router';
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-native';
 import { api } from '@/api/client';
 import { useAuth } from '@/auth/AuthProvider';
+import { usePushRegistration } from '@/push/register';
 import { styles } from '@/ui/theme';
 
 export default function HomeScreen() {
   const { user, memberships, accessToken, activeCompanyId, signOut } = useAuth();
   const activeMembership = memberships.find((m) => m.companyId === activeCompanyId);
+  usePushRegistration(accessToken);
 
   const entitlements = useQuery({
     queryKey: ['entitlements', activeCompanyId],
@@ -37,6 +39,20 @@ export default function HomeScreen() {
           <Text style={styles.subtitle}>Create one from the switcher to get started.</Text>
         )}
       </View>
+
+      {activeCompanyId ? (
+        <View style={styles.card}>
+          <Text style={styles.subtitle}>Work</Text>
+          <View style={{ flexDirection: 'row', gap: 10, marginTop: 4 }}>
+            <Link href="/(app)/log-time" style={[styles.button, { flex: 1, textAlign: 'center', color: '#fff', paddingVertical: 12 }]}>
+              Log time
+            </Link>
+            <Link href="/(app)/approvals" style={[styles.button, { flex: 1, textAlign: 'center', color: '#fff', paddingVertical: 12, backgroundColor: '#0f172a' }]}>
+              Approvals
+            </Link>
+          </View>
+        </View>
+      ) : null}
 
       {activeCompanyId ? (
         <View style={styles.card}>

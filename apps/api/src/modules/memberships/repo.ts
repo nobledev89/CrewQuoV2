@@ -40,6 +40,24 @@ export function listMembershipSummaries(
   );
 }
 
+/** Members of a company with their user profile (§7 GET /members). */
+export function listMembers(companyId: string, runner?: Queryable) {
+  return query<{
+    userId: string;
+    name: string;
+    email: string;
+    role: MembershipRole;
+    status: MembershipStatus;
+  }>(
+    `select u.id as "userId", u.name as name, u.email as email, m.role as role, m.status as status
+       from memberships m join users u on u.id = m.user_id
+      where m.company_id = $1
+      order by u.name asc`,
+    [companyId],
+    runner
+  );
+}
+
 export async function insertMembership(
   input: { userId: string; companyId: string; role: MembershipRole },
   runner?: Queryable

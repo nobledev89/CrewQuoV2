@@ -9,9 +9,12 @@
     "newArchEnabled": true,
     "ios": { "supportsTablet": true, "bundleIdentifier": "com.crewquo.app" },
     "android": { "package": "com.crewquo.app" },
-    "plugins": ["expo-router", "expo-secure-store"],
+    "plugins": ["expo-router", "expo-secure-store", "expo-notifications"],
     "extra": {
-      "apiUrl": "http://localhost:4000"
+      "apiUrl": "http://localhost:4000",
+      "eas": {
+        "projectId": "f8344de3-7e88-4034-af97-6eb4c87cab41"
+      }
     }
   }
 }

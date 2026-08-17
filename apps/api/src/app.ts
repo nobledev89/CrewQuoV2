@@ -14,6 +14,20 @@ import {
   ratesRouter,
   roleCatalogRouter,
 } from './modules/rates/routes';
+import {
+  engagementsRouter,
+  membersRouter,
+  providersRouter,
+} from './modules/engagements/routes';
+import { invitesRouter } from './modules/invites/routes';
+import { projectsRouter } from './modules/projects/routes';
+import {
+  expensesRouter,
+  submissionsRouter,
+  timeLogsRouter,
+  workContextRouter,
+} from './modules/work/routes';
+import { pushRouter } from './modules/push/routes';
 
 /** Build the Express app. Kept separate from listen() so tests can import it. */
 export function buildApp(): Express {
@@ -47,6 +61,18 @@ export function buildApp(): Express {
   app.use('/v1/rate-card-templates', requireAuth, rateCardTemplateRouter);
   app.use('/v1/rate-cards', requireAuth, rateCardRouter);
   app.use('/v1/rates', requireAuth, ratesRouter);
+
+  // Core work loop (§3.2, §3.4). Public invite GET + authed accept live inside.
+  app.use('/v1/engagements', requireAuth, engagementsRouter);
+  app.use('/v1/providers', requireAuth, providersRouter);
+  app.use('/v1/members', requireAuth, membersRouter);
+  app.use('/v1/invites', invitesRouter);
+  app.use('/v1/projects', requireAuth, projectsRouter);
+  app.use('/v1/work-context', requireAuth, workContextRouter);
+  app.use('/v1/time-logs', requireAuth, timeLogsRouter);
+  app.use('/v1/expenses', requireAuth, expensesRouter);
+  app.use('/v1/project-submissions', requireAuth, submissionsRouter);
+  app.use('/v1/push', requireAuth, pushRouter);
 
   app.use('/v1/admin', requireAuth, requireSuperAdmin, adminRouter);
 

@@ -64,6 +64,14 @@ export const INVOICE_STATUSES = ['DRAFT', 'ISSUED', 'PAID', 'VOID'] as const;
 export const invoiceStatusSchema = z.enum(INVOICE_STATUSES);
 export type InvoiceStatus = z.infer<typeof invoiceStatusSchema>;
 
+export const INVITE_KINDS = ['MEMBER', 'ENGAGEMENT', 'CLIENT_PORTAL'] as const;
+export const inviteKindSchema = z.enum(INVITE_KINDS);
+export type InviteKind = z.infer<typeof inviteKindSchema>;
+
+export const INVITE_STATUSES = ['PENDING', 'ACCEPTED', 'REVOKED', 'EXPIRED'] as const;
+export const inviteStatusSchema = z.enum(INVITE_STATUSES);
+export type InviteStatus = z.infer<typeof inviteStatusSchema>;
+
 /**
  * Rate engine: maps a logged shift type to the rate-card label used for lookup.
  * Ported from v1 functions/src/rates.ts (see CREWQUO_V2_PLAN.md §6).

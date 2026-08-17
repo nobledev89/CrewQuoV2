@@ -6,3 +6,6 @@ export * from './me';
 export * from './admin';
 export * from './rates';
 export * from './rate-engine';
+export * from './engagements';
+export * from './projects';
+export * from './work';

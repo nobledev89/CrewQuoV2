@@ -4,7 +4,7 @@ Living checklist for the build. Full detail for every item is in **[CREWQUO_V2_P
 
 **Legend:** `[x]` done · `[~]` in progress · `[ ]` not started
 
-Last updated: 2026-07-21 · Current phase: **Phase 3 (not started)** · Phase 2 shipped
+Last updated: 2026-07-21 · Current phase: **Phase 4 (not started)** · Phase 3 shipped
 
 ---
 
@@ -66,16 +66,22 @@ Last updated: 2026-07-21 · Current phase: **Phase 3 (not started)** · Phase 2 
 
 > **Note on `FRI_SAT_NIGHT` (owner decision #4, §17):** a NIGHT shift on a Friday/Saturday resolves to `FRI_SAT_NIGHT`; all other labels are date-independent. This override was **reconstructed from the plan spec**, not v1 `rates.ts` (unavailable in this workspace). Verify against v1 before relying on it for real billing — it's isolated in `resolveRateLabel` and its tests, so a correction is a one-function change.
 >
-> **BILL-visibility scope:** `/v1/rate-cards` only ever returns the active company's *own* cards (PAY and BILL), so nothing leaks here. The provider-never-reads-client-BILL rule (§4) bites when reading an engagement's *counterparty* cards — that's a Phase 3 (projects/engagements) concern.
+> **BILL-visibility scope:** `/v1/rate-cards` only ever returns the active company's *own* cards (PAY and BILL), so nothing leaks here. The provider-never-reads-client-BILL rule (§4) is realised in Phase 3: a project summary computes BILL/margin only for the *owner* (client) side; the provider only ever sees its frozen PAY snapshot.
 
-## Phase 3 — The core loop (mobile-first) — plan §3.2, §3.4
+## ✅ Phase 3 — The core loop (mobile-first) (DONE) — plan §3.2, §3.4
 
-- [ ] Migrations: `engagements`, `projects`, `project_assignments`, `time_logs`, `expenses`, `project_submissions`, `invites`
-- [ ] Providers + members + invite accept flow (public token endpoints)
-- [ ] Work workflow: `DRAFT → SUBMITTED → APPROVED/REJECTED` (provider submits, client approves)
-- [ ] `GET /v1/projects/:id/summary` (server-computed costs/margins)
-- [ ] Mobile: log time → submit; approvals inbox (swipe approve/reject); push notifications
-- [ ] **Milestone:** a subcontractor logs time on a phone and an admin approves it
+- [x] Migration `0004_core_loop.sql`: `engagements`, `projects`, `project_assignments`, `time_logs`, `expenses`, `project_submissions`, `invites`, `push_tokens`
+- [x] Engagements: `GET/POST/PATCH /v1/engagements` (create-as-client needs `operates_downstream` + `withinLimit active_subcontractors`); one-hop visibility enforced
+- [x] Providers + members + invites: `GET/POST /v1/providers` (placeholder company + engagement + invite, atomic), `GET /v1/members` + `POST /v1/members/invite`, public `GET /v1/invites/:token` + authed `POST /v1/invites/:token/accept` (MEMBER joins; ENGAGEMENT → OWNER of placeholder + edge goes ACTIVE)
+- [x] Projects + assignments: CRUD `/v1/projects`, `POST /v1/projects/:id/assignments` (engagement derived), `GET /v1/projects/:id/summary` (server-computed labor cost from rate snapshots + best-effort BILL/margin)
+- [x] Work workflow: `time_logs` / `expenses` / `project_submissions` — `DRAFT → SUBMITTED → APPROVED/REJECTED`, provider edits DRAFT/REJECTED & drives DRAFT→SUBMITTED, client reviews (reuses Phase 1 `policies.ts`). PAY rate snapshot frozen at submit (§6). `GET /v1/work-context` feeds the mobile log-time screen.
+- [x] Live usage meters wired: `active_subcontractors`, `clients`
+- [x] Mobile (Expo): **Log time** screen (assigned project → client role → shift/date/hours → submit) and **Approvals** inbox (approve/reject); home nav
+- [x] Push: `apps/mobile` bound to EAS project `f8344de3-…`, `expo-notifications` device-token registration → `POST /v1/push/tokens`; API sends Expo push on submit (→ client managers) and approve/reject (→ the logger)
+- [x] **Verified end-to-end** vs live Postgres: two companies via invite accept → role + PAY card → project + assignment → provider logs time → submit (snapshot **40000¢ = 8h×5000**) → client approves; workflow guards (provider-approve 403, re-submit 409), one-hop (outsider sees 0), and summary margin (bill **64000¢**, margin **24000¢**, **37.5%**) all correct. 70 tests green, all 5 packages type-check.
+- [x] **Milestone:** a subcontractor logs time on a phone and an admin approves it ✅
+
+> **Deferred (non-blocking):** expense **receipt upload** (`receipt_url` stays null — needs R2/object storage); `CLIENT_PORTAL` invite kind (arrives with the Phase 4 portal). **One-time human step for push:** run `eas login` locally then a dev/prod build — `eas`/`getExpoPushTokenAsync` need your Expo account and a physical device (simulator is a no-op). Expo push tokens can't be minted from CI here.
 
 ## Phase 4 — Client portal + exports + audit — plan §3.6
 

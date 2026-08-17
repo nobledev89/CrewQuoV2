@@ -1,6 +1,7 @@
 import type { LimitKey, LimitUsage } from '@crewquo/shared';
 import { LIMIT_KEYS } from '@crewquo/shared';
 import { queryOne } from '../../db';
+import { countActiveSubcontractors, countClients } from '../engagements/repo';
 
 /**
  * Live usage per limit key. Some meters depend on tables introduced in later
@@ -19,9 +20,11 @@ export async function getUsage(companyId: string, key: LimitKey): Promise<number
   switch (key) {
     case 'internal_seats':
       return countInternalSeats(companyId);
-    // Introduced with engagements in Phase 3.
     case 'active_subcontractors':
+      return countActiveSubcontractors(companyId);
     case 'clients':
+      return countClients(companyId);
+    // audit_retention_days is a config value, not a meter.
     case 'audit_retention_days':
       return 0;
   }
