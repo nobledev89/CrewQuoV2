@@ -4,7 +4,7 @@ Living checklist for the build. Full detail for every item is in **[CREWQUO_V2_P
 
 **Legend:** `[x]` done · `[~]` in progress · `[ ]` not started
 
-Last updated: 2026-08-17 · Current phase: **Phase 4 (audit slice landed; portal/exports next)** · Phase 3 shipped
+Last updated: 2026-08-17 · Current phase: **Phase 4 (audit + portal landed; exports & web screens next)** · Phase 3 shipped
 
 ---
 
@@ -64,7 +64,13 @@ Last updated: 2026-08-17 · Current phase: **Phase 4 (audit slice landed; portal
 - [x] Web console (`apps/web`, Next.js 14 app-router) to manage roles, rate cards & templates + a resolve tester — auth/company-switcher, typed API client, `packages/ui` neutral design system
 - [x] **Milestone:** rates resolve for a date+shift with correct margins ✅
 
-> **Note on `FRI_SAT_NIGHT` (owner decision #4, §17):** a NIGHT shift on a Friday/Saturday resolves to `FRI_SAT_NIGHT`; all other labels are date-independent. This override was **reconstructed from the plan spec**, not v1 `rates.ts` (unavailable in this workspace). Verify against v1 before relying on it for real billing — it's isolated in `resolveRateLabel` and its tests, so a correction is a one-function change.
+**Phase 2 follow-up — de-hardcode the rate-label rules (owner decision, 2026-08-17):**
+
+- [ ] Move the `FRI_SAT_NIGHT` override out of `resolveRateLabel` ([engine.ts:45-52](packages/shared/src/rate-engine/engine.ts#L45-L52)) into per-company `rate_card_templates` data — which days/times map to which label is a company setting, not product logic
+- [ ] Migration: default `companies.currency` to `'USD'` (currently `'GBP'`, `0001_init.sql:21`) + a settings endpoint to change it. **Two** places hardcode GBP — the column default and `auth/service.ts:74`, which stamps it on every company created at registration
+- [ ] Web UI for editing the label rules; keep existing cards working (labels are stored per card, so shipped data is unaffected)
+
+> **Superseded note on `FRI_SAT_NIGHT`:** a NIGHT shift on a Friday/Saturday resolves to `FRI_SAT_NIGHT`; all other labels are date-independent. This was **reconstructed from the plan spec**, not v1 `rates.ts`. It is no longer a "verify against v1" item — per the owner, no rate rule may be hardcoded at all, so the branch gets replaced by company config rather than corrected.
 >
 > **BILL-visibility scope:** `/v1/rate-cards` only ever returns the active company's *own* cards (PAY and BILL), so nothing leaks here. The provider-never-reads-client-BILL rule (§4) is realised in Phase 3: a project summary computes BILL/margin only for the *owner* (client) side; the provider only ever sees its frozen PAY snapshot.
 
@@ -91,12 +97,14 @@ Last updated: 2026-08-17 · Current phase: **Phase 4 (audit slice landed; portal
 - [x] Retention: `expires_at` stamped from `audit_retention_days` (`'infinity'` when unlimited; retention 0 ⇒ nothing written) + nightly purge (in-process daily timer, or `pnpm --filter @crewquo/api purge-audit`)
 - [x] 78 tests green (8 new: retention mapping + portal-visibility policies), all 5 packages type-check
 - [x] **Verified end-to-end** vs live Postgres (30 checks): invite→accept→role→PAY card→project→assignment→submit→approve, then submit/approve both recorded on the right side of the edge, `expires_at` = 90d on `pro`, internal events never client-visible, counterparty read **403 until the provider flips `show_audit_trail`** then returns only its client-visible rows, client side can't change portal settings (403), outsider 404s on the engagement, Crew plan refused the trail (403) and writes **zero** rows, purge deletes expired rows and keeps `'infinity'` ones
-- [ ] Client portal (client-side of engagements; `projects.client_visible`) — `GET /v1/portal/projects[/:id]`
-- [ ] `line_item_notes` CRUD (table exists; routes gated on `client_portal_notes`)
-- [ ] `CLIENT_PORTAL` invite kind (currently 422s in the accept flow)
+- [x] Client portal: `GET /v1/portal/projects[/:id]` — client side of the edge, `projects.client_visible`, gated on the **owner's** `client_portal` feature (a free-plan client can still be shown a portal by a provider who pays for one). Line items are priced **BILL-side** via the new shared `projects/billing.ts` (also now used by the owner's summary, so the two can't disagree)
+- [x] `line_item_notes` CRUD (`/v1/line-item-notes`) — write gated on the owner's `client_portal_notes` + that engagement's `client_can_comment`; body edits are the author's alone, `resolved` is shared. Anchors validated against the engagement so a note can't be pinned to another edge's line item
+- [x] `CLIENT_PORTAL` invite kind + `GET/POST /v1/clients` (placeholder client company + engagement + invite, atomic) — the mirror of `/v1/providers` and the only origin of a CLIENT_PORTAL invite; meters against `clients`
+- [x] Placeholder → linked company **merge flow**: **auto-merge** on accept, no prompt (owner decision 2026-08-17). Re-points engagement, assignments, time logs, expenses, submissions and rate-card counterparties, then leaves the placeholder as a tombstone (`claimed_by_company_id`) so old ids still resolve
+- [x] 89 tests green (11 new: portal read, note-write matrix, merge decision), all 5 packages type-check
+- [x] **Verified end-to-end** vs live Postgres (**55 checks**): client invited → claims placeholder → work logged/approved by the owner → portal shows the line at **BILL 64000¢** while the PAY snapshot stays **40000¢**, with no PAY figure, rate snapshot, or subcontractor identity anywhere in the payload; notes honour `client_can_comment` (client 403s, owner unaffected); outsider/owner/unpublished all 404; Crew plan can't add a portal client (403); auto-merge re-points the edge and creates **no** placeholder membership; a colliding second merge **declines** and claims instead, leaving the first merge untouched
 - [ ] Server-side PDF/XLSX exports (`jspdf`/`xlsx` in the API)
-- [ ] Web portal screens in `apps/web`
-- [ ] Placeholder → linked company **merge flow** — blocked on the owner decision below
+- [ ] Web portal screens in `apps/web` (Codex's redesign covers the Phase 2 console only — no `/portal` route yet)
 - [ ] **Milestone:** a client logs in, sees only granted projects + visible audit trail, downloads an export
 
 > **Audit design notes.** `audit_logs.company_id` is *whose activity* it is (the actor's active company) and `visible_to_client` says whether the company that hired them may see the row — so exposure is opt-in three times over: the row's flag, the provider's `audit_visibility` feature, and that engagement's `show_audit_trail`. Descriptions never name a counterparty, so a visible row can't leak who a subcontractor is. `recordAudit` never throws: a broken trail must not fail an approval, so failures are logged instead. Starter plans retain 30 days but can't *read* the trail until Pro — that's the seed's intent (§5B), not a bug.
@@ -104,7 +112,7 @@ Last updated: 2026-08-17 · Current phase: **Phase 4 (audit slice landed; portal
 ## Phase 5 — Billing, invoicing, notifications, polish — plan §3.5, §5B
 
 - [ ] Migrations: `invoices`, `invoice_items`
-- [ ] Merchant-of-Record billing (Lemon Squeezy / Paddle): checkout, webhooks, trial→paid, entitlement snapshots
+- [ ] Merchant-of-Record billing via **Gumroad** (decided 2026-08-17): checkout, webhooks, trial→paid, entitlement snapshots
 - [ ] Super-admin price editor + subscription management
 - [ ] Push + email notifications (Resend)
 - [ ] Reports; EAS store submission
@@ -118,12 +126,16 @@ Last updated: 2026-08-17 · Current phase: **Phase 4 (audit slice landed; portal
 
 ---
 
-## ⚠️ Decisions still needed from the owner (plan §17)
+## ✅ Owner decisions — answered 2026-08-17 (plan §17)
 
-Ask before building the affected phase — do not guess:
+- [x] **Placeholder→linked merge policy → AUTO-MERGE.** On invite accept, if the invitee already owns a real company, the placeholder is claimed automatically (`companies.claimed_by_company_id`) and the engagement re-points to the real company — no confirmation prompt on either side. *Owner chose auto over the manual/two-sided-confirm recommendation; proceed as decided.* Open implementation assumption: if the accepting user owns **several** companies, merge into the one they're acting as (active company), falling back to their sole company when there's only one.
+- [x] **Rate rules are per-company — nothing about rates may be hardcoded.** Rate *amounts* were already user-owned (`rate_cards`), but the **`FRI_SAT_NIGHT` label rule is a hardcoded branch** in `resolveRateLabel` and must become company-configurable data (`rate_card_templates` already exists as its home). See the Phase 2 follow-up item below. This supersedes the old "verify against v1" decision — the rule doesn't get verified, it gets removed.
+- [x] **Currency → USD default, user-changeable.** `companies.currency` currently defaults to **`'GBP'`** (`0001_init.sql:21`) — must change to `'USD'`. Per-rate-card currency is **open**, see the question below.
+- [x] **MoR → Gumroad** (replaces the Lemon Squeezy vs Paddle choice) — Phase 5. Confirm PH payout method and verify Gumroad's subscription-webhook coverage before building against it.
+- [x] **Visual design system → not needed from Claude.** Owner has frontend work done via Codex; skip brand-token selection. *Blocked on locating that codebase — see below.*
 
-- [ ] **Real per-currency pricing numbers** (USD anchors exist; confirm values + which currencies) — Phase 1/5
-- [ ] **Placeholder→linked merge policy** (auto vs manual; re-pointing engagements) — Phase 4
-- [ ] **Final MoR choice** (Lemon Squeezy vs Paddle) + confirmed PH payout method — Phase 5
-- [ ] **`FRI_SAT_NIGHT` rate-label date logic** — verify against v1 `rates.ts` when porting — Phase 2
-- [~] **Visual design system** (brand colors/typography for `packages/ui`) — a neutral placeholder ships in `packages/ui` (system font, neutral grays + one accent, light/dark). Swap the `:root` tokens in `packages/ui/src/styles.css` to rebrand. Confirm the real brand before external-facing UI (Phase 4 client portal / Phase 5 marketing).
+### Still open
+
+- [ ] **Per-rate-card currency?** Company-level currency can't express "pay crew in PHP, bill a US client in USD" — but mixing currencies inside one company means `calculateMargin` (BILL − PAY) is subtracting different units, so it needs a stored FX rate per project. Company-level is what ships today. Decide before multi-currency clients are real.
+- [ ] **Where is the Codex frontend?** Not in this repo — `apps/web` contains only the Phase 2 console (login + rates screens), last touched by commit `02579c8`.
+- [ ] **Real per-currency pricing numbers** (USD anchors exist; confirm the actual amounts) — Phase 5

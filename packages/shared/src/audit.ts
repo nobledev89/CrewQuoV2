@@ -33,6 +33,10 @@ export const AUDIT_ACTIONS = [
   'invite.created',
   'invite.accepted',
   'audit_settings.updated',
+  'note.created',
+  'note.updated',
+  'note.deleted',
+  'company.merged',
 ] as const;
 export const auditActionSchema = z.enum(AUDIT_ACTIONS);
 export type AuditAction = z.infer<typeof auditActionSchema>;
@@ -45,6 +49,8 @@ export const AUDIT_ENTITY_TYPES = [
   'ASSIGNMENT',
   'ENGAGEMENT',
   'INVITE',
+  'NOTE',
+  'COMPANY',
 ] as const;
 export const auditEntityTypeSchema = z.enum(AUDIT_ENTITY_TYPES);
 export type AuditEntityType = z.infer<typeof auditEntityTypeSchema>;

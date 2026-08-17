@@ -76,6 +76,42 @@ export const createProviderResponseSchema = z.object({
 });
 export type CreateProviderResponse = z.infer<typeof createProviderResponseSchema>;
 
+// ── Clients (provider side of my engagements) ──────────────────────────────────
+
+/** The mirror of ProviderView: an engagement seen from the provider's side. */
+export const clientViewSchema = z.object({
+  engagementId: z.string().uuid(),
+  clientCompanyId: z.string().uuid(),
+  name: z.string(),
+  currency: z.string(),
+  isPlaceholder: z.boolean(),
+  status: engagementStatusSchema,
+});
+export type ClientView = z.infer<typeof clientViewSchema>;
+
+/**
+ * Create a client: placeholder company + engagement (active company = provider)
+ * + CLIENT_PORTAL invite. The counterpart to `createProviderSchema`, and the only
+ * origin of a CLIENT_PORTAL invite.
+ */
+export const createClientSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  email: z.string().trim().toLowerCase().email(),
+  currency: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .regex(/^[A-Z]{3}$/)
+    .optional(),
+});
+export type CreateClient = z.infer<typeof createClientSchema>;
+
+export const createClientResponseSchema = z.object({
+  client: clientViewSchema,
+  inviteToken: z.string(),
+});
+export type CreateClientResponse = z.infer<typeof createClientResponseSchema>;
+
 // ── Members ─────────────────────────────────────────────────────────────────────
 
 export const memberViewSchema = z.object({
@@ -109,8 +145,33 @@ export const inviteViewSchema = z.object({
 });
 export type InviteView = z.infer<typeof inviteViewSchema>;
 
+/**
+ * What accepting an ENGAGEMENT/CLIENT_PORTAL invite did with the placeholder
+ * company that was standing in for the invitee (owner decision, 2026-08-17:
+ * auto-merge, no confirmation prompt).
+ *
+ *  - `CLAIMED`  — the invitee had no company of their own, so they simply became
+ *                 OWNER of the placeholder and it is now their real company.
+ *  - `MERGED`   — the invitee already ran a company; the placeholder was marked
+ *                 claimed and the edge (plus its assignments and work) re-pointed
+ *                 at the real one.
+ *  - `SKIPPED`  — a merge was possible in principle but would have collided with
+ *                 an existing edge, assignment, or the client company itself.
+ *                 Nothing was re-pointed; the invitee claimed the placeholder
+ *                 instead and `reason` says why. Never silently destructive.
+ */
+export const mergeOutcomeSchema = z.object({
+  outcome: z.enum(['CLAIMED', 'MERGED', 'SKIPPED']),
+  placeholderCompanyId: z.string().uuid(),
+  mergedIntoCompanyId: z.string().uuid().nullable(),
+  reason: z.string().nullable(),
+});
+export type MergeOutcome = z.infer<typeof mergeOutcomeSchema>;
+
 export const acceptInviteResponseSchema = z.object({
   companyId: z.string().uuid(),
   role: membershipRoleSchema,
+  /** Present only for ENGAGEMENT / CLIENT_PORTAL invites. */
+  merge: mergeOutcomeSchema.optional(),
 });
 export type AcceptInviteResponse = z.infer<typeof acceptInviteResponseSchema>;

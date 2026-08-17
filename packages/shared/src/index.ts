@@ -10,3 +10,4 @@ export * from './engagements';
 export * from './projects';
 export * from './work';
 export * from './audit';
+export * from './portal';

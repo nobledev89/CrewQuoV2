@@ -1,9 +1,12 @@
 import { Router } from 'express';
 import {
+  createClientSchema,
   createEngagementSchema,
   createProviderSchema,
   inviteMemberSchema,
   updateEngagementSchema,
+  type ClientView,
+  type CreateClientResponse,
   type CreateProviderResponse,
   type ProviderView,
 } from '@crewquo/shared';
@@ -14,7 +17,7 @@ import { param } from '../../http/params';
 import { requireRole } from '../../http/middleware/auth';
 import { withTransaction } from '../../db';
 import { canManage, isEngagementParticipant } from '../../authorization/policies';
-import { assertWithinLimit, operatesDownstream } from '../entitlements/guards';
+import { assertWithinLimit, hasFeature, operatesDownstream } from '../entitlements/guards';
 import { findCompanyById, insertCompany } from '../companies/repo';
 import { listMembers } from '../memberships/repo';
 import { insertInvite } from '../invites/repo';
@@ -23,6 +26,7 @@ import {
   findEngagementEdge,
   getEngagementView,
   insertEngagement,
+  listClients,
   listEngagements,
   listProviders,
   updateEngagementStatus,
@@ -185,6 +189,95 @@ providersRouter.post(
     });
 
     const body: CreateProviderResponse = { provider, inviteToken };
+    res.status(201).json(body);
+  })
+);
+
+// ── /v1/clients ──────────────────────────────────────────────────────────────────
+
+export const clientsRouter = Router();
+
+clientsRouter.get(
+  '/',
+  asyncHandler(async (req, res) => {
+    const ctx = getCompanyCtx(req);
+    res.json({ data: await listClients(ctx.companyId) });
+  })
+);
+
+/**
+ * Create a client: placeholder company + engagement (active company = provider)
+ * + CLIENT_PORTAL invite, atomically. The mirror of POST /v1/providers, and the
+ * only origin of a CLIENT_PORTAL invite.
+ *
+ * Gated on `client_portal` rather than `operates_downstream`: adding a client is
+ * about being *hired*, which every plan permits — but only a plan that sells a
+ * portal has anywhere to send them. Meters against `clients` (§5B: real portal
+ * logins are the billable ones).
+ */
+clientsRouter.post(
+  '/',
+  asyncHandler(async (req, res) => {
+    const ctx = getCompanyCtx(req);
+    if (!canManage(ctx.role)) throw new AppError('FORBIDDEN', 'Requires a manager role');
+    const input = createClientSchema.parse(req.body);
+
+    if (!(await hasFeature(ctx.companyId, 'client_portal'))) {
+      throw new AppError('FORBIDDEN', 'Your plan does not include: client_portal', {
+        feature: 'client_portal',
+      });
+    }
+    await assertWithinLimit(ctx.companyId, 'clients');
+
+    const me = await findCompanyById(ctx.companyId);
+    const currency = input.currency ?? me?.currency ?? 'USD';
+
+    const { client: created, inviteToken } = await withTransaction(async (tx) => {
+      const placeholder = await insertCompany(
+        { name: input.name, currency, isPlaceholder: true },
+        tx
+      );
+      const edge = await insertEngagement(
+        {
+          clientCompanyId: placeholder.id,
+          providerCompanyId: ctx.companyId,
+          createdByCompanyId: ctx.companyId,
+          status: 'PENDING',
+        },
+        tx
+      );
+      const invite = await insertInvite(
+        {
+          kind: 'CLIENT_PORTAL',
+          targetCompanyId: placeholder.id,
+          email: input.email,
+          engagementId: edge.id,
+          invitedByUserId: ctx.userId,
+        },
+        tx
+      );
+      const view: ClientView = {
+        engagementId: edge.id,
+        clientCompanyId: placeholder.id,
+        name: placeholder.name,
+        currency: placeholder.currency,
+        isPlaceholder: true,
+        status: 'PENDING',
+      };
+      return { client: view, inviteToken: invite.invite_token };
+    });
+
+    await recordAudit({
+      companyId: ctx.companyId,
+      actorUserId: ctx.userId,
+      action: 'invite.created',
+      entityType: 'INVITE',
+      entityId: created.engagementId,
+      changes: { kind: 'CLIENT_PORTAL', email: input.email },
+      description: `Client "${input.name}" invited to the portal`,
+    });
+
+    const body: CreateClientResponse = { client: created, inviteToken };
     res.status(201).json(body);
   })
 );

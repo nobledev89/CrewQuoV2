@@ -104,3 +104,101 @@ export function canManageAuditSettings(
 ): boolean {
   return isEngagementProviderSide(companyId, edge) && canManage(role);
 }
+
+/**
+ * Portal read (§3.6): only the client side of an edge has a portal, and only
+ * when the provider's plan sells one. The per-project `client_visible` flag is
+ * applied in the query — this gates the surface as a whole.
+ */
+export function canReadPortal(args: {
+  companyId: string;
+  edge: EngagementEdge;
+  providerHasClientPortal: boolean;
+}): boolean {
+  return isEngagementClientSide(args.companyId, args.edge) && args.providerHasClientPortal;
+}
+
+/**
+ * Note write (§3.6). `client_portal_notes` is the *provider's* feature — they're
+ * the one selling the portal — so it gates both sides. The client additionally
+ * needs `audit_settings.client_can_comment`; the provider can always annotate
+ * its own work.
+ */
+export function canWriteLineItemNote(args: {
+  companyId: string;
+  role: MembershipRole;
+  edge: EngagementEdge;
+  providerHasNotes: boolean;
+  clientCanComment: boolean;
+}): boolean {
+  if (!args.providerHasNotes) return false;
+  if (!isEngagementParticipant(args.companyId, args.edge)) return false;
+  if (args.role === 'MEMBER') return false;
+  return isEngagementClientSide(args.companyId, args.edge)
+    ? args.clientCanComment
+    : true;
+}
+
+/**
+ * A note's body belongs to whoever wrote it; `resolved` is a shared workflow flag
+ * either side may toggle. Split so the route can allow a resolve without allowing
+ * an edit of someone else's words.
+ */
+export function canEditLineItemNoteBody(userId: string, note: { authorUserId: string }): boolean {
+  return userId === note.authorUserId;
+}
+
+export function canResolveLineItemNote(companyId: string, edge: EngagementEdge): boolean {
+  return isEngagementParticipant(companyId, edge);
+}
+
+// ── Placeholder → real company merge (owner decision, 2026-08-17) ──────────────
+
+/**
+ * Decide what accepting an ENGAGEMENT/CLIENT_PORTAL invite should do with the
+ * placeholder company the inviter created as a stand-in.
+ *
+ * Auto-merge is the owner's chosen policy, but it must never be *destructive*:
+ * the DB holds `unique (client_company_id, provider_company_id)` on engagements,
+ * `unique (project_id, provider_company_id)` on assignments and a
+ * `client <> provider` check. When re-pointing would trip any of those, two real
+ * histories are being asked to occupy one slot — merging would have to discard
+ * one. We decline and claim the placeholder instead, so nothing is lost and the
+ * conflict is visible in the response and the audit trail.
+ *
+ * Pure so every branch is unit-testable; the caller supplies the collision facts.
+ */
+export function decideMerge(args: {
+  /** The invitee's existing real company, if we could identify exactly one. */
+  targetCompanyId: string | null;
+  placeholderCompanyId: string;
+  /** The other endpoint of the edge being accepted. */
+  counterpartyCompanyId: string;
+  /** An edge between counterparty and target already exists. */
+  edgeExists: boolean;
+  /** The target is already assigned to a project the placeholder is on. */
+  assignmentClash: boolean;
+}): { outcome: 'CLAIMED' | 'MERGED' | 'SKIPPED'; reason: string | null } {
+  if (args.targetCompanyId === null) {
+    return { outcome: 'CLAIMED', reason: null };
+  }
+  if (args.targetCompanyId === args.placeholderCompanyId) {
+    return { outcome: 'CLAIMED', reason: null };
+  }
+  if (args.targetCompanyId === args.counterpartyCompanyId) {
+    return { outcome: 'SKIPPED', reason: 'A company cannot engage itself' };
+  }
+  if (args.edgeExists) {
+    return {
+      outcome: 'SKIPPED',
+      reason: 'An engagement between these two companies already exists',
+    };
+  }
+  if (args.assignmentClash) {
+    return {
+      outcome: 'SKIPPED',
+      reason: 'That company is already assigned to one of these projects',
+    };
+  }
+  return { outcome: 'MERGED', reason: null };
+}

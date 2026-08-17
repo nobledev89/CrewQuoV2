@@ -15,6 +15,7 @@ import {
   roleCatalogRouter,
 } from './modules/rates/routes';
 import {
+  clientsRouter,
   engagementsRouter,
   membersRouter,
   providersRouter,
@@ -29,6 +30,8 @@ import {
 } from './modules/work/routes';
 import { pushRouter } from './modules/push/routes';
 import { auditLogsRouter, auditSettingsRouter } from './modules/audit/routes';
+import { portalRouter } from './modules/portal/routes';
+import { lineItemNotesRouter } from './modules/notes/routes';
 
 /** Build the Express app. Kept separate from listen() so tests can import it. */
 export function buildApp(): Express {
@@ -66,6 +69,7 @@ export function buildApp(): Express {
   // Core work loop (§3.2, §3.4). Public invite GET + authed accept live inside.
   app.use('/v1/engagements', requireAuth, engagementsRouter);
   app.use('/v1/providers', requireAuth, providersRouter);
+  app.use('/v1/clients', requireAuth, clientsRouter);
   app.use('/v1/members', requireAuth, membersRouter);
   app.use('/v1/invites', invitesRouter);
   app.use('/v1/projects', requireAuth, projectsRouter);
@@ -76,6 +80,8 @@ export function buildApp(): Express {
   app.use('/v1/push', requireAuth, pushRouter);
 
   // Client portal & audit (§3.6).
+  app.use('/v1/portal', requireAuth, portalRouter);
+  app.use('/v1/line-item-notes', requireAuth, lineItemNotesRouter);
   app.use('/v1/audit-logs', requireAuth, auditLogsRouter);
   app.use('/v1/audit-settings', requireAuth, auditSettingsRouter);
 

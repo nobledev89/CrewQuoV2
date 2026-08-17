@@ -1,15 +1,12 @@
 import {
-  calculateCost,
   calculateMargin,
-  resolveRateLabel,
   type ProjectSummary,
   type ProviderRollup,
   type ResolvedRateSnapshot,
   type ShiftType,
 } from '@crewquo/shared';
 import { query } from '../../db';
-import { listResolveCandidates } from '../rates/repo';
-import { pickEffectiveCard } from '../rates/resolve';
+import { resolveBillCentsForLog } from './billing';
 
 /**
  * Server-computed project summary (CREWQUO_V2_PLAN.md §3.4, §6). Labor cost is
@@ -81,24 +78,19 @@ export async function computeProjectSummary(project: {
 
     // Bill side: what the owner charges its client for this labor.
     if (billResolvable && project.clientCompanyId) {
-      const label = resolveRateLabel(log.shift_type, log.work_date);
-      const candidates = await listResolveCandidates({
-        companyId: project.ownerCompanyId,
-        kind: 'BILL',
+      const bill = await resolveBillCentsForLog({
+        ownerCompanyId: project.ownerCompanyId,
+        clientCompanyId: project.clientCompanyId,
         roleId: log.role_id,
-        label,
-        date: log.work_date,
-        counterpartyId: project.clientCompanyId,
+        shiftType: log.shift_type,
+        workDate: log.work_date,
+        hoursRegular: Number(log.hours_regular),
+        hoursOt: Number(log.hours_ot),
       });
-      const card = pickEffectiveCard(candidates, log.work_date, project.clientCompanyId);
-      if (card) {
-        billCents += calculateCost({
-          card,
-          quantity: Number(log.hours_regular),
-          otHours: Number(log.hours_ot),
-        });
-      } else {
+      if (bill === null) {
         billResolvable = false; // a gap in BILL cards makes the total meaningless
+      } else {
+        billCents += bill;
       }
     }
   }

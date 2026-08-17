@@ -1,4 +1,9 @@
-import type { EngagementStatus, EngagementView, ProviderView } from '@crewquo/shared';
+import type {
+  ClientView,
+  EngagementStatus,
+  EngagementView,
+  ProviderView,
+} from '@crewquo/shared';
 import { query, queryOne, type Queryable } from '../../db';
 
 /**
@@ -149,6 +154,20 @@ export async function countClients(companyId: string): Promise<number> {
     [companyId]
   );
   return row?.n ?? 0;
+}
+
+/** Clients = the provider side of the active company's engagements (§7 GET /clients). */
+export async function listClients(activeCompanyId: string): Promise<ClientView[]> {
+  return query<ClientView>(
+    `select e.id as "engagementId", e.client_company_id as "clientCompanyId",
+            cc.name as name, cc.currency as currency, cc.is_placeholder as "isPlaceholder",
+            e.status as status
+       from engagements e
+       join companies cc on cc.id = e.client_company_id
+      where e.provider_company_id = $1
+      order by cc.name asc`,
+    [activeCompanyId]
+  );
 }
 
 /** Providers = the client side of the active company's engagements (§7 GET /providers). */
