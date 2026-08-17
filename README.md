@@ -122,12 +122,25 @@ Create the project from this repo, then in **Settings → General**:
 | Framework Preset | Next.js |
 | Build / Install Command | leave as the defaults |
 
-Both matter. Left at the repo root, Vercel builds the monorepo through turbo and
-then fails with `No entrypoint found. Searched for: app.*, index.*, server.*` —
-that is Vercel's *Node server* builder hunting for something to run, because the
-preset is "Other" and it never recognised this as a Next.js app. `apps/web/vercel.json`
-declares `"framework": "nextjs"` so the preset is correct once the Root Directory
-points at it.
+Root Directory is the one that matters; Vercel detects Next.js on its own once it
+points at `apps/web`. Left at the repo root, Vercel builds the monorepo through
+turbo and then fails with `No entrypoint found. Searched for: app.*, index.*,
+server.*` — that is Vercel's *Node server* builder hunting for something to run,
+having never recognised this as a Next.js app.
+
+Two settings-page gotchas, both of which cost us a round trip:
+
+- Changing Root Directory does **not** rebuild anything. Production keeps serving
+  the last *successful* deployment, so a fixed setting can sit behind a months-old
+  broken build. Deployments → ⋯ → **Redeploy**, cache off.
+- **Skip deployments when there are no changes to the root directory** means a push
+  touching only `README.md`, `render.yaml` or `apps/api` never triggers a web build
+  at all.
+
+The app is entirely client components with no server-side fetching, so every route
+prerenders static and is served from the CDN. If you ever see
+`FUNCTION_INVOCATION_FAILED` on this project, it is not this app — it is a stale
+deployment from some earlier configuration.
 
 And in **Settings → Environment Variables**:
 
