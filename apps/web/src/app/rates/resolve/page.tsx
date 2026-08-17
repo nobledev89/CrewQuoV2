@@ -7,7 +7,7 @@ import {
   type ResolveRateResponse,
   type RoleCatalogView,
 } from '@crewquo/shared';
-import { Badge, Button, Card, ErrorText, Field, Input, Select, Stack } from '@crewquo/ui';
+import { Badge, Button, Card, ErrorText, Field, Input, PageHeader, Section, Select, Stack } from '@crewquo/ui';
 import { Shell } from '@/components/Shell';
 import { api, ApiError } from '@/api/client';
 import { useSessionCtx } from '@/auth/AuthProvider';
@@ -59,16 +59,13 @@ function Resolve() {
   }
 
   return (
-    <Stack style={{ paddingTop: 24 }}>
-      <h1 className="cq-h1">Resolve a rate</h1>
-      <p className="cq-muted" style={{ marginTop: -8 }}>
-        Which card wins for a role, date and shift — the same logic the API uses when costing work.
-      </p>
+    <Stack>
+      <PageHeader eyebrow="Rate management" title="Rate resolver" description="Verify the exact pay or bill rate the costing engine will select for a dated shift." />
 
-      <Card>
+      <Section title="Resolution criteria" description="Choose the operational context used to match an effective rate card.">
         <form onSubmit={resolve}>
           <Stack>
-            <div style={{ display: 'grid', gap: 14, gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))' }}>
+            <div className="cq-form-grid">
               <Field label="Role">
                 <Select value={roleId} onChange={(e) => setRoleId(e.target.value)} required>
                   <option value="" disabled>
@@ -108,7 +105,7 @@ function Resolve() {
             </Button>
           </Stack>
         </form>
-      </Card>
+      </Section>
 
       {error ? <ErrorText>{error}</ErrorText> : null}
 
@@ -117,7 +114,8 @@ function Resolve() {
           <Stack>
             <div className="cq-row" style={{ gap: 10 }}>
               <h2 className="cq-h2">Resolved</h2>
-              <Badge accent>{result.label}</Badge>
+              <Badge tone="success">Matched</Badge>
+              <Badge tone="accent">{result.label}</Badge>
               <Badge>{result.rateMode}</Badge>
             </div>
             <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))' }}>
@@ -136,7 +134,7 @@ function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div>
       <div className="cq-label">{label}</div>
-      <div style={{ fontSize: 20, fontWeight: 650 }}>{value}</div>
+      <div className="cq-numeric" style={{ fontSize: 20, fontWeight: 650 }}>{value}</div>
     </div>
   );
 }

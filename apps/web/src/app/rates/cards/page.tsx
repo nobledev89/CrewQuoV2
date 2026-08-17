@@ -9,11 +9,12 @@ import {
   type RateCardView,
   type RoleCatalogView,
 } from '@crewquo/shared';
-import { Badge, Button, Card, ErrorText, Field, Input, Row, Select, Stack, Table } from '@crewquo/ui';
+import { Badge, Button, EmptyState, ErrorText, Field, Input, PageHeader, Row, SearchInput, Section, Select, Stack, Table } from '@crewquo/ui';
 import { Shell } from '@/components/Shell';
 import { api, ApiError } from '@/api/client';
 import { useSessionCtx } from '@/auth/AuthProvider';
 import { useAsyncList } from '@/lib/useAsyncList';
+import { useUrlQuery } from '@/lib/useUrlQuery';
 import { formatCents, inputToCents } from '@/lib/format';
 
 export default function RateCardsPage() {
@@ -69,9 +70,14 @@ function RateCards() {
   }, [roles.items]);
 
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  const [query, setQuery] = useUrlQuery();
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const set = (patch: Partial<FormState>) => setForm((f) => ({ ...f, ...patch }));
+  const filteredCards = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return cards.items.filter((card) => !needle || [card.kind, card.rateLabel, card.rateMode, roleName(card.roleId)].some((value) => value.toLowerCase().includes(needle)));
+  }, [cards.items, query, roleName]);
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
@@ -107,7 +113,7 @@ function RateCards() {
   }
 
   async function remove(id: string) {
-    if (!ctx) return;
+    if (!ctx || !window.confirm('Delete this rate card? This action cannot be undone.')) return;
     try {
       await api.deleteRateCard(ctx.accessToken, ctx.companyId, id);
       cards.reload();
@@ -119,18 +125,18 @@ function RateCards() {
   const noRoles = !roles.loading && roles.items.length === 0;
 
   return (
-    <Stack style={{ paddingTop: 24 }}>
-      <h1 className="cq-h1">Rate cards</h1>
+    <Stack>
+      <PageHeader eyebrow="Rate management" title="Rate cards" description="Maintain effective-dated contractor costs and client charges with financially precise rate rules." />
 
       {noRoles ? (
         <div className="cq-notice">
           Add a role first — rate cards attach to a role.
         </div>
       ) : (
-        <Card>
+        <Section title="Add rate card" description="Define one pay or bill rule for a role, timeframe and rate mode.">
           <form onSubmit={create}>
             <Stack>
-              <div style={{ display: 'grid', gap: 14, gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))' }}>
+              <div className="cq-form-grid">
                 <Field label="Kind">
                   <Select value={form.kind} onChange={(e) => set({ kind: e.target.value })}>
                     {RATE_KINDS.map((k) => (
@@ -214,42 +220,47 @@ function RateCards() {
               </Row>
             </Stack>
           </form>
-        </Card>
+        </Section>
       )}
 
+      <Section title="Rate card register" description="Current and scheduled pay and bill rules" className="cq-section--table">
+        <div className="cq-table-toolbar">
+          <SearchInput value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search rate cards…" aria-label="Search rate cards" />
+          <span className="cq-table-toolbar__meta cq-numeric">{filteredCards.length} of {cards.items.length}</span>
+        </div>
       {cards.loading ? (
         <p className="cq-muted">Loading…</p>
       ) : cards.error ? (
         <ErrorText>{cards.error}</ErrorText>
-      ) : cards.items.length === 0 ? (
-        <div className="cq-notice">No rate cards yet.</div>
+      ) : filteredCards.length === 0 ? (
+        <EmptyState title={cards.items.length === 0 ? 'No rate cards yet' : 'No rate cards found'}>{cards.items.length === 0 ? 'Add your first rate card above.' : 'Try a different search term.'}</EmptyState>
       ) : (
-        <Table>
+        <Table label="Rate card register">
           <thead>
             <tr>
-              <th>Kind</th>
-              <th>Role</th>
-              <th>Label</th>
-              <th>Mode</th>
-              <th>Rate</th>
-              <th>Effective</th>
-              <th aria-label="actions" />
+              <th scope="col">Kind</th>
+              <th scope="col">Role</th>
+              <th scope="col">Label</th>
+              <th scope="col">Mode</th>
+              <th scope="col">Rate</th>
+              <th scope="col">Effective</th>
+              <th scope="col" className="cq-table__actions">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {cards.items.map((c) => (
+            {filteredCards.map((c) => (
               <tr key={c.id}>
                 <td>
-                  <Badge accent={c.kind === 'BILL'}>{c.kind}</Badge>
+                  <Badge tone={c.kind === 'BILL' ? 'accent' : 'neutral'}>{c.kind}</Badge>
                 </td>
                 <td>{roleName(c.roleId)}</td>
                 <td>{c.rateLabel}</td>
                 <td>{c.rateMode}</td>
-                <td>{formatCents(rateForMode(c))}</td>
+                <td className="cq-numeric">{formatCents(rateForMode(c))}</td>
                 <td className="cq-muted">
                   {c.effectiveFrom} → {c.effectiveTo ?? '∞'}
                 </td>
-                <td style={{ textAlign: 'right' }}>
+                <td className="cq-table__actions">
                   <Button variant="danger" size="sm" onClick={() => void remove(c.id)}>
                     Delete
                   </Button>
@@ -259,6 +270,7 @@ function RateCards() {
           </tbody>
         </Table>
       )}
+      </Section>
     </Stack>
   );
 }

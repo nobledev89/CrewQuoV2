@@ -1,12 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { RateCardTemplateCreate, RateCardTemplateView } from '@crewquo/shared';
-import { Button, Card, ErrorText, Field, Input, Row, Stack, Table } from '@crewquo/ui';
+import { Button, EmptyState, ErrorText, Field, Input, PageHeader, Row, SearchInput, Section, Stack, Table } from '@crewquo/ui';
 import { Shell } from '@/components/Shell';
 import { api, ApiError } from '@/api/client';
 import { useSessionCtx } from '@/auth/AuthProvider';
 import { useAsyncList } from '@/lib/useAsyncList';
+import { useUrlQuery } from '@/lib/useUrlQuery';
 
 export default function TemplatesPage() {
   return (
@@ -26,8 +27,10 @@ function Templates() {
   const [name, setName] = useState('');
   const [dates, setDates] = useState('');
   const [multiplier, setMultiplier] = useState('2');
+  const [query, setQuery] = useUrlQuery();
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const filteredItems = useMemo(() => items.filter((template) => template.name.toLowerCase().includes(query.trim().toLowerCase())), [items, query]);
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
@@ -58,7 +61,7 @@ function Templates() {
   }
 
   async function remove(id: string) {
-    if (!ctx) return;
+    if (!ctx || !window.confirm('Delete this template? This action cannot be undone.')) return;
     try {
       await api.deleteTemplate(ctx.accessToken, ctx.companyId, id);
       reload();
@@ -68,25 +71,22 @@ function Templates() {
   }
 
   return (
-    <Stack style={{ paddingTop: 24 }}>
-      <h1 className="cq-h1">Rate card templates</h1>
-      <p className="cq-muted" style={{ marginTop: -8 }}>
-        Holiday timeframes multiply resolved rates on the listed dates.
-      </p>
+    <Stack>
+      <PageHeader eyebrow="Rate management" title="Templates" description="Define holiday calendars and multipliers used when the rate engine resolves a shift." />
 
-      <Card>
+      <Section title="Add template" description="Create a named holiday schedule with one consistent rate multiplier.">
         <form onSubmit={create}>
           <Stack>
-            <div style={{ display: 'grid', gap: 14, gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))' }}>
+            <div className="cq-form-grid">
               <Field label="Template name">
-                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. 2026 PH Holidays" required />
+                <Input name="template-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. 2026 PH holidays…" required />
               </Field>
               <Field label="Holiday multiplier">
-                <Input value={multiplier} onChange={(e) => setMultiplier(e.target.value)} inputMode="decimal" />
+                <Input name="holiday-multiplier" value={multiplier} onChange={(e) => setMultiplier(e.target.value)} inputMode="decimal" />
               </Field>
             </div>
             <Field label="Holiday dates (comma or space separated, YYYY-MM-DD)">
-              <Input value={dates} onChange={(e) => setDates(e.target.value)} placeholder="2026-12-25, 2026-01-01" />
+              <Input name="holiday-dates" value={dates} onChange={(e) => setDates(e.target.value)} placeholder="2026-12-25, 2026-01-01…" />
             </Field>
             <Row>
               <Button type="submit" disabled={busy || name.trim() === ''}>
@@ -96,26 +96,31 @@ function Templates() {
             </Row>
           </Stack>
         </form>
-      </Card>
+      </Section>
 
+      <Section title="Template register" description="Holiday adjustments available to the rate engine" className="cq-section--table">
+        <div className="cq-table-toolbar">
+          <SearchInput value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search templates…" aria-label="Search templates" />
+          <span className="cq-table-toolbar__meta cq-numeric">{filteredItems.length} of {items.length}</span>
+        </div>
       {loading ? (
         <p className="cq-muted">Loading…</p>
       ) : error ? (
         <ErrorText>{error}</ErrorText>
-      ) : items.length === 0 ? (
-        <div className="cq-notice">No templates yet.</div>
+      ) : filteredItems.length === 0 ? (
+        <EmptyState title={items.length === 0 ? 'No templates yet' : 'No templates found'}>{items.length === 0 ? 'Add a template when holiday pricing applies.' : 'Try a different search term.'}</EmptyState>
       ) : (
-        <Table>
+        <Table label="Rate card template register">
           <thead>
             <tr>
-              <th>Name</th>
-              <th>Holiday dates</th>
-              <th>Multiplier</th>
-              <th aria-label="actions" />
+              <th scope="col">Name</th>
+              <th scope="col">Holiday dates</th>
+              <th scope="col">Multiplier</th>
+              <th scope="col" className="cq-table__actions">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {items.map((t) => {
+            {filteredItems.map((t) => {
               const holiday = t.timeframeDefinitions.find((d) => d.type === 'holiday');
               return (
                 <tr key={t.id}>
@@ -135,6 +140,7 @@ function Templates() {
           </tbody>
         </Table>
       )}
+      </Section>
     </Stack>
   );
 }
