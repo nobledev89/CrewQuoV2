@@ -8,6 +8,10 @@ const here = dirname(fileURLToPath(import.meta.url)); // apps/api/src
 config({ path: resolve(here, '../../../.env') });
 
 const isProd = process.env.NODE_ENV === 'production';
+// vitest sets NODE_ENV=test. Unit tests import modules that pull in this file
+// transitively (tokens.ts needs the JWT secrets), so the schema has to be
+// satisfiable without a populated .env — CI has none.
+const isTest = process.env.NODE_ENV === 'test';
 
 // In dev/test we fall back to fixed non-secret values so the API boots without a
 // fully populated .env. In production these MUST be provided or the app exits.
@@ -17,7 +21,13 @@ const secret = (key: string) =>
     : z.string().min(1).default(`dev-insecure-${key.toLowerCase()}`);
 
 const EnvSchema = z.object({
-  DATABASE_URL: z.string().url(),
+  // Nothing under `vitest run` opens a connection — the suites are pure units —
+  // so a placeholder keeps a JWT test from depending on local database setup.
+  // Dev still fails loudly with the hint below, which is where a missing
+  // DATABASE_URL is a real mistake worth catching early.
+  DATABASE_URL: isTest
+    ? z.string().url().default('postgres://test:test@127.0.0.1:5432/test')
+    : z.string().url(),
   PORT: z.coerce.number().int().positive().default(4000),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 
@@ -46,6 +56,9 @@ if (!parsed.success) {
   console.error('[api] Invalid environment configuration:');
   console.error(parsed.error.flatten().fieldErrors);
   console.error('Hint: copy .env.example to .env at the repo root and fill it in.');
+  // Exiting inside a test runner kills the worker and surfaces as "process.exit
+  // unexpectedly called with 1", which buries the field that was actually wrong.
+  if (isTest) throw new Error('Invalid environment configuration');
   process.exit(1);
 }
 
