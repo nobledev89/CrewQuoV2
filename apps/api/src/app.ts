@@ -6,6 +6,7 @@ import { errorHandler, notFoundHandler } from './http/errorHandler';
 import { requireAuth, requireSuperAdmin } from './http/middleware/auth';
 import { authRouter } from './modules/auth/routes';
 import { meRouter } from './modules/me/routes';
+import { companiesRouter } from './modules/companies/routes';
 import { entitlementsRouter } from './modules/entitlements/routes';
 import { adminRouter } from './modules/admin/routes';
 import {
@@ -58,6 +59,7 @@ export function buildApp(): Express {
 
   // Authenticated routes.
   app.use('/v1/me', requireAuth, meRouter);
+  app.use('/v1/companies', requireAuth, companiesRouter);
   app.use('/v1/entitlements', requireAuth, entitlementsRouter);
 
   // Rate engine & catalog (§6). Company-scoped — active company via X-Company-Id.

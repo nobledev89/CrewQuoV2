@@ -20,6 +20,10 @@ const NAV = [
       { href: '/rates/resolve', label: 'Rate resolver', icon: 'resolve' },
     ],
   },
+  {
+    label: 'Company',
+    items: [{ href: '/settings', label: 'Settings', icon: 'settings' }],
+  },
 ];
 
 const PAGE_NAMES: Record<string, string> = {
@@ -28,6 +32,7 @@ const PAGE_NAMES: Record<string, string> = {
   '/rates/cards': 'Rate cards',
   '/rates/templates': 'Templates',
   '/rates/resolve': 'Rate resolver',
+  '/settings': 'Settings',
 };
 
 export function Shell({ children }: { children: ReactNode }) {
@@ -133,5 +138,6 @@ function NavIcon({ name }: { name: string }) {
   if (name === 'people') return <svg {...common}><circle cx="8" cy="7" r="2.5" stroke="currentColor" strokeWidth="1.5"/><path d="M3.8 15.5c.35-2.6 1.75-4 4.2-4s3.85 1.4 4.2 4M12.5 5.2a2.4 2.4 0 0 1 0 4.6M14 11.6c1.4.5 2.2 1.8 2.4 3.9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>;
   if (name === 'card') return <svg {...common}><rect x="3" y="4.5" width="14" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.5"/><path d="M3 8h14M6 12h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>;
   if (name === 'template') return <svg {...common}><path d="M5 3.5h7l3 3v10H5z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"/><path d="M12 3.5v3h3M8 10h4M8 13h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>;
+  if (name === 'settings') return <svg {...common}><circle cx="10" cy="10" r="2.5" stroke="currentColor" strokeWidth="1.5"/><path d="M10 3v2m0 10v2m-4.95-9.95 1.4 1.4m5.1 5.1 1.4 1.4M3 10h2m10 0h2M5.05 14.95l1.4-1.4m5.1-5.1 1.4-1.4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>;
   return <svg {...common}><path d="M4 6h12M4 14h12M7 3v6M13 11v6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><circle cx="7" cy="6" r="1.5" fill="currentColor"/><circle cx="13" cy="14" r="1.5" fill="currentColor"/></svg>;
 }

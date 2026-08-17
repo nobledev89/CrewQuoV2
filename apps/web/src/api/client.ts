@@ -1,9 +1,11 @@
 import type {
   AuthResponse,
+  CompanySummary,
   LoginRequest,
   MembershipSummary,
   RateCardCreate,
   RateCardTemplateCreate,
+  RateCardTemplateUpdate,
   RateCardTemplateView,
   RateCardUpdate,
   RateCardView,
@@ -11,6 +13,7 @@ import type {
   ResolveRateResponse,
   RoleCatalogCreate,
   RoleCatalogView,
+  UpdateCompany,
 } from '@crewquo/shared';
 
 const API_URL: string = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
@@ -77,6 +80,19 @@ export const api = {
   memberships: (accessToken: string) =>
     request<{ memberships: MembershipSummary[] }>('GET', '/v1/me/memberships', { accessToken }),
 
+  // Company settings (§7) — OWNER/ADMIN may change the currency.
+  getCompany: (t: string, c: string) =>
+    request<{ company: CompanySummary }>('GET', `/v1/companies/${c}`, {
+      accessToken: t,
+      companyId: c,
+    }),
+  updateCompany: (t: string, c: string, body: UpdateCompany) =>
+    request<{ company: CompanySummary }>('PATCH', `/v1/companies/${c}`, {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+
   // Role catalog
   listRoles: (t: string, c: string) =>
     request<ListResponse<RoleCatalogView>>('GET', '/v1/role-catalog', {
@@ -100,6 +116,12 @@ export const api = {
     }),
   createTemplate: (t: string, c: string, body: RateCardTemplateCreate) =>
     request<{ template: RateCardTemplateView }>('POST', '/v1/rate-card-templates', {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+  updateTemplate: (t: string, c: string, id: string, body: RateCardTemplateUpdate) =>
+    request<{ template: RateCardTemplateView }>('PATCH', `/v1/rate-card-templates/${id}`, {
       accessToken: t,
       companyId: c,
       body,

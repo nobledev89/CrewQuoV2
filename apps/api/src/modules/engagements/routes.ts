@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import {
+  DEFAULT_CURRENCY,
   createClientSchema,
   createEngagementSchema,
   createProviderSchema,
@@ -140,7 +141,7 @@ providersRouter.post(
     await assertWithinLimit(ctx.companyId, 'active_subcontractors');
 
     const me = await findCompanyById(ctx.companyId);
-    const currency = input.currency ?? me?.currency ?? 'USD';
+    const currency = input.currency ?? me?.currency ?? DEFAULT_CURRENCY;
 
     const { provider, inviteToken } = await withTransaction(async (client) => {
       const placeholder = await insertCompany(
@@ -230,7 +231,7 @@ clientsRouter.post(
     await assertWithinLimit(ctx.companyId, 'clients');
 
     const me = await findCompanyById(ctx.companyId);
-    const currency = input.currency ?? me?.currency ?? 'USD';
+    const currency = input.currency ?? me?.currency ?? DEFAULT_CURRENCY;
 
     const { client: created, inviteToken } = await withTransaction(async (tx) => {
       const placeholder = await insertCompany(

@@ -8,6 +8,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { DEFAULT_CURRENCY } from '@crewquo/shared';
 import { api, ApiError } from '@/api/client';
 import { useAuth } from '@/auth/AuthProvider';
 import { styles } from '@/ui/theme';
@@ -33,7 +34,7 @@ export default function SwitcherScreen() {
     try {
       const { company } = await api.createCompany(accessToken, {
         name: newName.trim(),
-        currency: 'GBP',
+        currency: DEFAULT_CURRENCY,
       });
       await refreshMemberships();
       await setActiveCompany(company.id);

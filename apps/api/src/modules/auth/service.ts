@@ -1,9 +1,10 @@
-import type {
-  AuthResponse,
-  AuthTokens,
-  GoogleRequest,
-  LoginRequest,
-  RegisterRequest,
+import {
+  DEFAULT_CURRENCY,
+  type AuthResponse,
+  type AuthTokens,
+  type GoogleRequest,
+  type LoginRequest,
+  type RegisterRequest,
 } from '@crewquo/shared';
 import { env } from '../../env';
 import { withTransaction } from '../../db';
@@ -71,7 +72,10 @@ export async function register(input: RegisterRequest): Promise<AuthResponse> {
       client
     );
     if (input.companyName) {
-      const company = await insertCompany({ name: input.companyName, currency: 'GBP' }, client);
+      const company = await insertCompany(
+        { name: input.companyName, currency: DEFAULT_CURRENCY },
+        client
+      );
       await insertMembership({ userId: created.id, companyId: company.id, role: 'OWNER' }, client);
     }
     return created;

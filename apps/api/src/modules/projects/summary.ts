@@ -6,6 +6,7 @@ import {
   type ShiftType,
 } from '@crewquo/shared';
 import { query } from '../../db';
+import { getEffectiveTimeframeDefinitions } from '../rates/repo';
 import { resolveBillCentsForLog } from './billing';
 
 /**
@@ -69,6 +70,9 @@ export async function computeProjectSummary(project: {
   let billCents = 0;
   let billResolvable = project.clientCompanyId !== null;
 
+  // The owner's label rules — loaded once for the whole summary, not per log.
+  const labelRules = await getEffectiveTimeframeDefinitions(project.ownerCompanyId);
+
   for (const log of logs) {
     const r = rollup(log.provider_company_id, log.provider_company_name);
     r.approvedTimeLogs += 1;
@@ -86,6 +90,7 @@ export async function computeProjectSummary(project: {
         workDate: log.work_date,
         hoursRegular: Number(log.hours_regular),
         hoursOt: Number(log.hours_ot),
+        labelRules,
       });
       if (bill === null) {
         billResolvable = false; // a gap in BILL cards makes the total meaningless

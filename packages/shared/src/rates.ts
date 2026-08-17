@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { rateKindSchema, rateLabelSchema, rateModeSchema, shiftTypeSchema } from './enums';
+import type { LabelRuleTimeframe } from './rate-engine/types';
 
 /**
  * Rate engine & catalog API contracts (CREWQUO_V2_PLAN.md §3.3, §6, §7).
@@ -24,31 +25,84 @@ export const roleCatalogViewSchema = z.object({
 });
 export type RoleCatalogView = z.infer<typeof roleCatalogViewSchema>;
 
-// ── Rate card templates (holiday / timeframe definitions) ─────────────────────
+// ── Rate card templates (holiday / label-rule timeframe definitions) ──────────
 
 export const holidayTimeframeSchema = z.object({
   type: z.literal('holiday'),
   holidayDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).default([]),
   holidayMultiplier: z.number().positive(),
 });
-export const timeframeDefinitionSchema = holidayTimeframeSchema; // discriminated union point
+
+/**
+ * A company-owned (shift type + weekday) → rate label rule. Nothing about rate
+ * resolution is hardcoded, so this is where a company says "a night shift on a
+ * Friday or Saturday is FRI_SAT_NIGHT" (owner decision, 2026-08-17).
+ */
+export const labelRuleTimeframeSchema = z.object({
+  type: z.literal('label_rule'),
+  shiftType: shiftTypeSchema,
+  /** 0=Sunday … 6=Saturday; empty means every day. Deduped, so [5,5] is [5]. */
+  daysOfWeek: z
+    .array(z.number().int().min(0).max(6))
+    .max(7)
+    .default([])
+    .transform((days) => [...new Set(days)].sort((a, b) => a - b)),
+  label: rateLabelSchema,
+});
+
+export const timeframeDefinitionSchema = z.discriminatedUnion('type', [
+  holidayTimeframeSchema,
+  labelRuleTimeframeSchema,
+]);
 export type TimeframeDefinitionInput = z.infer<typeof timeframeDefinitionSchema>;
 
-export const rateCardTemplateCreateSchema = z.object({
+const templateFieldsSchema = z.object({
   name: z.string().trim().min(1).max(120),
   timeframeDefinitions: z.array(timeframeDefinitionSchema).default([]),
+  /**
+   * The one template whose definitions the engine reads when resolving a label or
+   * a holiday for this company. At most one per company; setting it here clears
+   * the flag on the previous default.
+   */
+  isDefault: z.boolean().default(false),
+});
+
+export const rateCardTemplateCreateSchema = templateFieldsSchema.superRefine((v, ctx) => {
+  // Two rules matching the same shift type on the same weekday means the array
+  // order silently decides the price. Reject it at the edge instead.
+  const seen = new Map<string, number[]>();
+  v.timeframeDefinitions.forEach((def, i) => {
+    if (def.type !== 'label_rule') return;
+    const days = def.daysOfWeek.length > 0 ? def.daysOfWeek : [0, 1, 2, 3, 4, 5, 6];
+    const claimed = seen.get(def.shiftType) ?? [];
+    const clash = days.filter((d) => claimed.includes(d));
+    if (clash.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['timeframeDefinitions', i],
+        message: `Another label rule already covers ${def.shiftType} on day ${clash.join(', ')}`,
+      });
+    }
+    seen.set(def.shiftType, [...claimed, ...days]);
+  });
 });
 export type RateCardTemplateCreate = z.infer<typeof rateCardTemplateCreateSchema>;
 
-export const rateCardTemplateUpdateSchema = rateCardTemplateCreateSchema.partial();
+export const rateCardTemplateUpdateSchema = templateFieldsSchema.partial();
 export type RateCardTemplateUpdate = z.infer<typeof rateCardTemplateUpdateSchema>;
 
-export const rateCardTemplateViewSchema = rateCardTemplateCreateSchema.extend({
+export const rateCardTemplateViewSchema = templateFieldsSchema.extend({
   id: z.string().uuid(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
 export type RateCardTemplateView = z.infer<typeof rateCardTemplateViewSchema>;
+
+/**
+ * The label rules a company has in force — the default template's, or none.
+ * Typed narrower than `TimeframeDefinition[]` where only labels matter.
+ */
+export type LabelRule = LabelRuleTimeframe;
 
 // ── Rate cards (PAY / BILL) ───────────────────────────────────────────────────
 

@@ -27,6 +27,7 @@ export const AUDIT_ACTIONS = [
   'project.created',
   'project.updated',
   'project.deleted',
+  'project.exported',
   'assignment.created',
   'engagement.created',
   'engagement.updated',
@@ -37,6 +38,7 @@ export const AUDIT_ACTIONS = [
   'note.updated',
   'note.deleted',
   'company.merged',
+  'company.updated',
 ] as const;
 export const auditActionSchema = z.enum(AUDIT_ACTIONS);
 export type AuditAction = z.infer<typeof auditActionSchema>;

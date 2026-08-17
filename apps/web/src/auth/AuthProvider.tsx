@@ -32,6 +32,12 @@ interface AuthState {
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   setCompanyId: (companyId: string) => void;
+  /**
+   * Re-read `/v1/me/memberships` into the session. Company name and currency are
+   * cached in the membership list, so a screen that changes either must call this
+   * or the switcher and every money label keep showing the old value.
+   */
+  refreshMemberships: () => Promise<void>;
 }
 
 const STORAGE_KEY = 'crewquo.session';
@@ -100,6 +106,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [setCompanyId]
   );
 
+  const refreshMemberships = useCallback(async () => {
+    if (!session) return;
+    const { memberships } = await api.memberships(session.accessToken);
+    const next = { ...session, memberships };
+    setSession(next);
+    persist(next);
+  }, [session]);
+
   const logout = useCallback(async () => {
     if (session) await api.logout(session.refreshToken).catch(() => undefined);
     setSession(null);
@@ -111,8 +125,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const value = useMemo<AuthState>(() => {
     const activeMembership =
       session?.memberships.find((m) => m.companyId === companyId) ?? null;
-    return { ready, session, companyId, activeMembership, login, logout, setCompanyId };
-  }, [ready, session, companyId, login, logout, setCompanyId]);
+    return {
+      ready,
+      session,
+      companyId,
+      activeMembership,
+      login,
+      logout,
+      setCompanyId,
+      refreshMemberships,
+    };
+  }, [ready, session, companyId, login, logout, setCompanyId, refreshMemberships]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

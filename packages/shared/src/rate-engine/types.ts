@@ -1,4 +1,4 @@
-import type { RateKind, RateLabel, RateMode } from '../enums';
+import type { RateKind, RateLabel, RateMode, ShiftType } from '../enums';
 
 /**
  * Rate engine data shapes (CREWQUO_V2_PLAN.md §6). These are plain data — the
@@ -25,15 +25,37 @@ export interface RateCardInput {
 
 /**
  * A timeframe definition from `rate_card_templates.timeframe_definitions`
- * (§3.3 / §6). Only `holiday` is defined today; the discriminated `type`
- * leaves room for future kinds.
+ * (§3.3 / §6) — the per-company data that drives the engine. Discriminated on
+ * `type` so new kinds are additive.
  */
 export interface HolidayTimeframe {
   type: 'holiday';
   holidayDates: string[]; // YYYY-MM-DD
   holidayMultiplier: number; // e.g. 2 for double-time
 }
-export type TimeframeDefinition = HolidayTimeframe;
+
+/**
+ * Which calendar days send a shift type to a different rate label
+ * (owner decision, 2026-08-17: **no rate rule may be hardcoded**).
+ *
+ * The classic case is a night shift that prices differently at the weekend:
+ * `{ shiftType: 'NIGHT', daysOfWeek: [5, 6], label: 'FRI_SAT_NIGHT' }`. Until
+ * this existed that rule was a branch in `resolveRateLabel`; it is now a row a
+ * company owns, edits and can delete.
+ *
+ * Time of day is carried by `shiftType` itself (DAY vs NIGHT vs SHIFT), because
+ * `time_logs` records hours worked and not clock times — there is no start time
+ * to compare an hour range against.
+ */
+export interface LabelRuleTimeframe {
+  type: 'label_rule';
+  shiftType: ShiftType;
+  /** 0=Sunday … 6=Saturday. Empty means every day. */
+  daysOfWeek: number[];
+  label: RateLabel;
+}
+
+export type TimeframeDefinition = HolidayTimeframe | LabelRuleTimeframe;
 
 /** Per-mode rate extracted from a card: a base unit rate and (HOURLY only) an OT rate. */
 export interface ExtractedRate {

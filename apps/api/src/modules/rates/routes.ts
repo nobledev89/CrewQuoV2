@@ -23,6 +23,7 @@ import {
   deleteRateCard,
   deleteRole,
   deleteTemplate,
+  getEffectiveTimeframeDefinitions,
   getRateCard,
   getRole,
   getTemplate,
@@ -208,9 +209,10 @@ ratesRouter.get(
     const ctx = getCompanyCtx(req);
     const q = resolveRateQuerySchema.parse(req.query);
 
-    // Date-sensitive label (NIGHT on Fri/Sat → FRI_SAT_NIGHT), then the effective
-    // card, preferring a counterparty-specific card over the default (§6).
-    const label = resolveRateLabel(q.shiftType, q.date);
+    // Label from the company's own rules (§6 — no date rule is hardcoded), then
+    // the effective card, preferring a counterparty-specific card over the default.
+    const rules = await getEffectiveTimeframeDefinitions(ctx.companyId);
+    const label = resolveRateLabel(q.shiftType, q.date, rules);
     const candidates = await listResolveCandidates({
       companyId: ctx.companyId,
       kind: q.kind,

@@ -1,4 +1,9 @@
-import { calculateCost, resolveRateLabel, type ShiftType } from '@crewquo/shared';
+import {
+  calculateCost,
+  resolveRateLabel,
+  type ShiftType,
+  type TimeframeDefinition,
+} from '@crewquo/shared';
 import { listResolveCandidates } from '../rates/repo';
 import { pickEffectiveCard } from '../rates/resolve';
 
@@ -7,8 +12,13 @@ import { pickEffectiveCard } from '../rates/resolve';
  * owner charges its client for that labour, as opposed to the frozen PAY snapshot
  * on the log itself.
  *
- * Shared by the owner's project summary and the client portal so the two can
- * never disagree about a number the client is being shown.
+ * Shared by the owner's project summary, the client portal and the export engine
+ * so they can never disagree about a number the client is being shown.
+ *
+ * `labelRules` is the owner's own timeframe definitions and is deliberately a
+ * required argument: callers price a whole project's worth of lines, and loading
+ * the rules per line would turn one query into one per log. Load once with
+ * `getEffectiveTimeframeDefinitions`, pass it in.
  *
  * Returns null when no BILL card covers the line. Callers must surface that as
  * an incomplete total rather than folding it in as zero: a missing card means
@@ -22,8 +32,9 @@ export async function resolveBillCentsForLog(args: {
   workDate: string;
   hoursRegular: number;
   hoursOt: number;
+  labelRules: readonly TimeframeDefinition[];
 }): Promise<number | null> {
-  const label = resolveRateLabel(args.shiftType, args.workDate);
+  const label = resolveRateLabel(args.shiftType, args.workDate, args.labelRules);
   const candidates = await listResolveCandidates({
     companyId: args.ownerCompanyId,
     kind: 'BILL',

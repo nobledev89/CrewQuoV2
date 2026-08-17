@@ -1,5 +1,9 @@
 import { Router } from 'express';
-import type { PortalProjectDetail, PortalProjectView } from '@crewquo/shared';
+import {
+  DEFAULT_CURRENCY,
+  type PortalProjectDetail,
+  type PortalProjectView,
+} from '@crewquo/shared';
 import { asyncHandler } from '../../http/asyncHandler';
 import { getCompanyCtx } from '../../http/context';
 import { AppError } from '../../http/errors';
@@ -84,7 +88,7 @@ portalRouter.get(
 
     const body: PortalProjectDetail = {
       project,
-      currency: owner?.currency ?? 'USD',
+      currency: owner?.currency ?? DEFAULT_CURRENCY,
       lineItems,
       timeTotalCents,
       expenseTotalCents,

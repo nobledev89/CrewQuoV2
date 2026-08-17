@@ -3,6 +3,7 @@ import {
   applyMinHours,
   calculateCost,
   calculateMargin,
+  dayOfWeek,
   extractRate,
   getHolidayInfo,
   resolveRate,
@@ -42,23 +43,79 @@ describe('shiftTypeToRateLabel', () => {
   });
 });
 
-describe('resolveRateLabel — FRI_SAT_NIGHT date logic', () => {
-  // 2026-07-20 is a Monday; the week runs Mon..Sun through 2026-07-26.
-  it('keeps a weekday NIGHT on MON_THU_NIGHT (Thursday)', () => {
-    expect(resolveRateLabel('NIGHT', '2026-07-23')).toBe('MON_THU_NIGHT'); // Thu
+describe('dayOfWeek', () => {
+  it('reads the weekday in UTC, so a date is never shifted by the host TZ', () => {
+    // 2026-07-20 is a Monday; the week runs Mon..Sun through 2026-07-26.
+    expect(dayOfWeek('2026-07-20')).toBe(1);
+    expect(dayOfWeek('2026-07-24')).toBe(5); // Fri
+    expect(dayOfWeek('2026-07-25')).toBe(6); // Sat
+    expect(dayOfWeek('2026-07-26')).toBe(0); // Sun
   });
-  it('promotes a Friday NIGHT to FRI_SAT_NIGHT', () => {
-    expect(resolveRateLabel('NIGHT', '2026-07-24')).toBe('FRI_SAT_NIGHT'); // Fri
+});
+
+describe('resolveRateLabel — no rule is hardcoded', () => {
+  /**
+   * The weekend-night rule as a company now holds it (migration 0007 wrote this
+   * shape for every company that had a FRI_SAT_NIGHT card).
+   */
+  const weekendNight: TimeframeDefinition[] = [
+    { type: 'label_rule', shiftType: 'NIGHT', daysOfWeek: [5, 6], label: 'FRI_SAT_NIGHT' },
+  ];
+
+  it('falls back to the baseline mapping when the company has no rules', () => {
+    // The old hardcoded Fri/Sat promotion is *gone* — a Friday night is just NIGHT.
+    expect(resolveRateLabel('NIGHT', '2026-07-24', [])).toBe('MON_THU_NIGHT'); // Fri
+    expect(resolveRateLabel('NIGHT', '2026-07-25', [])).toBe('MON_THU_NIGHT'); // Sat
+    expect(resolveRateLabel('WEEKDAY_DAY', '2026-07-24', [])).toBe('MON_FRI_DAY');
+    expect(resolveRateLabel('SUNDAY', '2026-07-26', [])).toBe('SUNDAY');
   });
-  it('promotes a Saturday NIGHT to FRI_SAT_NIGHT', () => {
-    expect(resolveRateLabel('NIGHT', '2026-07-25')).toBe('FRI_SAT_NIGHT'); // Sat
+
+  it('applies a matching rule on the days it names', () => {
+    expect(resolveRateLabel('NIGHT', '2026-07-24', weekendNight)).toBe('FRI_SAT_NIGHT'); // Fri
+    expect(resolveRateLabel('NIGHT', '2026-07-25', weekendNight)).toBe('FRI_SAT_NIGHT'); // Sat
   });
-  it('keeps a Sunday NIGHT on MON_THU_NIGHT (not a Fri/Sat)', () => {
-    expect(resolveRateLabel('NIGHT', '2026-07-26')).toBe('MON_THU_NIGHT'); // Sun
+
+  it('leaves days the rule does not name on the baseline', () => {
+    expect(resolveRateLabel('NIGHT', '2026-07-23', weekendNight)).toBe('MON_THU_NIGHT'); // Thu
+    expect(resolveRateLabel('NIGHT', '2026-07-26', weekendNight)).toBe('MON_THU_NIGHT'); // Sun
   });
-  it('never promotes a non-NIGHT shift regardless of weekday', () => {
-    expect(resolveRateLabel('WEEKDAY_DAY', '2026-07-24')).toBe('MON_FRI_DAY'); // Fri
-    expect(resolveRateLabel('SUNDAY', '2026-07-25')).toBe('SUNDAY'); // Sat
+
+  it('only matches the shift type the rule names', () => {
+    expect(resolveRateLabel('WEEKDAY_DAY', '2026-07-24', weekendNight)).toBe('MON_FRI_DAY');
+    expect(resolveRateLabel('SUNDAY', '2026-07-25', weekendNight)).toBe('SUNDAY');
+  });
+
+  it('treats an empty daysOfWeek as every day', () => {
+    const always: TimeframeDefinition[] = [
+      { type: 'label_rule', shiftType: 'NIGHT', daysOfWeek: [], label: 'FRI_SAT_NIGHT' },
+    ];
+    for (const date of ['2026-07-20', '2026-07-23', '2026-07-25', '2026-07-26']) {
+      expect(resolveRateLabel('NIGHT', date, always)).toBe('FRI_SAT_NIGHT');
+    }
+  });
+
+  it('lets a company invert the shipped default — Sunday nights, not weekend nights', () => {
+    const sundayNights: TimeframeDefinition[] = [
+      { type: 'label_rule', shiftType: 'NIGHT', daysOfWeek: [0], label: 'FRI_SAT_NIGHT' },
+    ];
+    expect(resolveRateLabel('NIGHT', '2026-07-26', sundayNights)).toBe('FRI_SAT_NIGHT'); // Sun
+    expect(resolveRateLabel('NIGHT', '2026-07-24', sundayNights)).toBe('MON_THU_NIGHT'); // Fri
+  });
+
+  it('takes the first matching rule, so array order is the precedence list', () => {
+    const ordered: TimeframeDefinition[] = [
+      { type: 'label_rule', shiftType: 'NIGHT', daysOfWeek: [5], label: 'SUNDAY' },
+      { type: 'label_rule', shiftType: 'NIGHT', daysOfWeek: [5], label: 'FRI_SAT_NIGHT' },
+    ];
+    expect(resolveRateLabel('NIGHT', '2026-07-24', ordered)).toBe('SUNDAY');
+  });
+
+  it('ignores holiday definitions sharing the same array', () => {
+    const mixed: TimeframeDefinition[] = [
+      { type: 'holiday', holidayDates: ['2026-07-24'], holidayMultiplier: 2 },
+      ...weekendNight,
+    ];
+    expect(resolveRateLabel('NIGHT', '2026-07-24', mixed)).toBe('FRI_SAT_NIGHT');
   });
 });
 
@@ -123,18 +180,27 @@ describe('extractRate', () => {
 });
 
 describe('resolveRate', () => {
-  it('derives the label, filters, selects the effective card, extracts the rate', () => {
-    const cards: RateCardInput[] = [
-      card({ rateLabel: 'MON_THU_NIGHT', hourlyRateCents: 6000 }),
-      card({ rateLabel: 'FRI_SAT_NIGHT', hourlyRateCents: 8000 }),
-    ];
-    const resolved = resolveRate(cards, 'NIGHT', '2026-07-24'); // Friday → FRI_SAT_NIGHT
+  const cards: RateCardInput[] = [
+    card({ rateLabel: 'MON_THU_NIGHT', hourlyRateCents: 6000 }),
+    card({ rateLabel: 'FRI_SAT_NIGHT', hourlyRateCents: 8000 }),
+  ];
+  const weekendNight: TimeframeDefinition[] = [
+    { type: 'label_rule', shiftType: 'NIGHT', daysOfWeek: [5, 6], label: 'FRI_SAT_NIGHT' },
+  ];
+
+  it('derives the label from the rules, then selects the card and extracts the rate', () => {
+    const resolved = resolveRate(cards, 'NIGHT', '2026-07-24', weekendNight); // Friday
     expect(resolved?.label).toBe('FRI_SAT_NIGHT');
     expect(resolved?.rate.baseCents).toBe(8000);
   });
+  it('picks a different card for the same date when the rules differ', () => {
+    // Same cards, same Friday, no rule — the company prices it as a weekday night.
+    const resolved = resolveRate(cards, 'NIGHT', '2026-07-24', []);
+    expect(resolved?.label).toBe('MON_THU_NIGHT');
+    expect(resolved?.rate.baseCents).toBe(6000);
+  });
   it('returns null when no card matches the resolved label', () => {
-    const cards: RateCardInput[] = [card({ rateLabel: 'MON_FRI_DAY' })];
-    expect(resolveRate(cards, 'NIGHT', '2026-07-23')).toBeNull();
+    expect(resolveRate([card({ rateLabel: 'MON_FRI_DAY' })], 'NIGHT', '2026-07-23', [])).toBeNull();
   });
 });
 

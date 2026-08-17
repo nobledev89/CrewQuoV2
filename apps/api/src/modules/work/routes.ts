@@ -26,7 +26,7 @@ import {
   type EngagementEdge,
 } from '../../authorization/policies';
 import { findEngagementEdge, type EngagementEdgeRow } from '../engagements/repo';
-import { listResolveCandidates } from '../rates/repo';
+import { getEffectiveTimeframeDefinitions, listResolveCandidates } from '../rates/repo';
 import { pickEffectiveCard } from '../rates/resolve';
 import { notifyCompanyManagers, notifyUser } from '../push/send';
 import { recordAudit } from '../audit/record';
@@ -305,7 +305,9 @@ async function resolvePaySnapshot(args: {
   hoursRegular: number;
   hoursOt: number;
 }): Promise<ResolvedRateSnapshot | null> {
-  const label = resolveRateLabel(args.shiftType, args.workDate);
+  // The paying (client) side's own label rules decide the label (§6).
+  const labelRules = await getEffectiveTimeframeDefinitions(args.clientCompanyId);
+  const label = resolveRateLabel(args.shiftType, args.workDate, labelRules);
   const candidates = await listResolveCandidates({
     companyId: args.clientCompanyId,
     kind: 'PAY',

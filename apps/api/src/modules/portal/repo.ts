@@ -6,6 +6,7 @@ import type {
 } from '@crewquo/shared';
 import { query, queryOne } from '../../db';
 import { resolveBillCentsForLog } from '../projects/billing';
+import { getEffectiveTimeframeDefinitions } from '../rates/repo';
 
 /**
  * Client-portal persistence (CREWQUO_V2_PLAN.md §3.6).
@@ -146,6 +147,8 @@ export async function getPortalLineItems(project: {
   );
 
   const noteCounts = await countNotesByEntity(project.id);
+  // The owner's label rules — one load for the whole page, not one per line.
+  const labelRules = await getEffectiveTimeframeDefinitions(project.ownerCompanyId);
 
   const lineItems: PortalLineItem[] = [];
   let timeTotalCents = 0;
@@ -162,6 +165,7 @@ export async function getPortalLineItems(project: {
       workDate: row.work_date,
       hoursRegular,
       hoursOt,
+      labelRules,
     });
     if (amountCents === null) pricingComplete = false;
     else timeTotalCents += amountCents;

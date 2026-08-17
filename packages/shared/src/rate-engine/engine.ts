@@ -16,39 +16,47 @@ import type {
  */
 
 /** Day-of-week (0=Sun … 6=Sat) for an ISO date, read in UTC to avoid TZ drift. */
-function dayOfWeek(isoDate: string): number {
+export function dayOfWeek(isoDate: string): number {
   return new Date(`${isoDate}T00:00:00Z`).getUTCDay();
 }
 
-const FRIDAY = 5;
-const SATURDAY = 6;
-
 /**
- * Static shift-type → rate-label mapping (v1 `shiftTypeToRateLabel`). This is the
- * DB-code equivalence; date-sensitive labels are handled by `resolveRateLabel`.
+ * Baseline shift-type → rate-label mapping. This is the enum correspondence
+ * between what a worker logs and how a card is labelled — structural, not a
+ * pricing rule — and it is what applies when a company has configured no
+ * `label_rule` covering the shift.
  */
 export function shiftTypeToRateLabel(shiftType: ShiftType): RateLabel {
   return SHIFT_TYPE_TO_RATE_LABEL[shiftType];
 }
 
 /**
- * Resolve the rate label for a shift on a specific date.
+ * Resolve the rate label for a shift on a specific date, honouring the company's
+ * own label rules.
  *
- * The static map sends NIGHT → MON_THU_NIGHT, but v1 surfaced a distinct
- * weekend-night label: a NIGHT shift that lands on a Friday or Saturday resolves
- * to FRI_SAT_NIGHT. All other labels are date-independent.
+ * **No date rule is hardcoded here** (owner decision, 2026-08-17). `rules` comes
+ * from the company's default `rate_card_templates.timeframe_definitions`; the
+ * first `label_rule` matching both the shift type and the weekday wins, so the
+ * array order is the company's precedence list. With no matching rule the
+ * baseline mapping applies.
  *
- * ⚠️ OWNER DECISION #4 (§17): this Fri/Sat override is reconstructed from the
- * plan spec, not the original v1 source. Verify against v1 `rates.ts` before
- * relying on it for billing.
+ * The weekend-night behaviour that used to live in this function is now a rule a
+ * company holds as data — migration 0007 wrote it for every company that had a
+ * FRI_SAT_NIGHT card, so nothing already priced changes.
  */
-export function resolveRateLabel(shiftType: ShiftType, isoDate: string): RateLabel {
-  const base = shiftTypeToRateLabel(shiftType);
-  if (shiftType === 'NIGHT') {
-    const dow = dayOfWeek(isoDate);
-    if (dow === FRIDAY || dow === SATURDAY) return 'FRI_SAT_NIGHT';
+export function resolveRateLabel(
+  shiftType: ShiftType,
+  isoDate: string,
+  rules: readonly TimeframeDefinition[]
+): RateLabel {
+  const dow = dayOfWeek(isoDate);
+  for (const rule of rules) {
+    if (rule.type !== 'label_rule') continue;
+    if (rule.shiftType !== shiftType) continue;
+    if (rule.daysOfWeek.length > 0 && !rule.daysOfWeek.includes(dow)) continue;
+    return rule.label;
   }
-  return base;
+  return shiftTypeToRateLabel(shiftType);
 }
 
 /**
@@ -104,16 +112,18 @@ export function extractRate(card: RateCardInput): ExtractedRate {
 
 /**
  * Full resolve (v1 `RateResolver.resolveRate`): derive the label from the shift +
- * date, pick the effective card, and extract its rate. The caller supplies cards
- * pre-filtered by company/kind/role (the SQL candidate query lives in the repo);
- * this narrows to the label and effective date. Returns null if nothing applies.
+ * date + the company's label rules, pick the effective card, and extract its
+ * rate. The caller supplies cards pre-filtered by company/kind/role (the SQL
+ * candidate query lives in the repo); this narrows to the label and effective
+ * date. Returns null if nothing applies.
  */
 export function resolveRate(
   cards: readonly RateCardInput[],
   shiftType: ShiftType,
-  isoDate: string
+  isoDate: string,
+  rules: readonly TimeframeDefinition[]
 ): ResolvedRate | null {
-  const label = resolveRateLabel(shiftType, isoDate);
+  const label = resolveRateLabel(shiftType, isoDate, rules);
   const forLabel = cards.filter((c) => c.rateLabel === label);
   const card = selectEffectiveCard(forLabel, isoDate);
   if (card === null) return null;

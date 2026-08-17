@@ -10,8 +10,9 @@ import type {
   RoleCatalogCreate,
   RoleCatalogUpdate,
   RoleCatalogView,
+  TimeframeDefinition,
 } from '@crewquo/shared';
-import { query, queryOne } from '../../db';
+import { query, queryOne, withTransaction, type Queryable } from '../../db';
 import { AppError } from '../../http/errors';
 
 /**
@@ -102,6 +103,7 @@ interface TemplateRow {
   id: string;
   name: string;
   timeframe_definitions: RateCardTemplateView['timeframeDefinitions'];
+  is_default: boolean;
   created_at: Date;
   updated_at: Date;
 }
@@ -111,12 +113,31 @@ function toTemplateView(r: TemplateRow): RateCardTemplateView {
     id: r.id,
     name: r.name,
     timeframeDefinitions: r.timeframe_definitions,
+    isDefault: r.is_default,
     createdAt: r.created_at.toISOString(),
     updatedAt: r.updated_at.toISOString(),
   };
 }
 
-const TEMPLATE_COLS = 'id, name, timeframe_definitions, created_at, updated_at';
+const TEMPLATE_COLS = 'id, name, timeframe_definitions, is_default, created_at, updated_at';
+
+/**
+ * `rate_card_templates` carries a partial unique index on (company_id) where
+ * is_default, so promoting a template has to demote the incumbent in the same
+ * transaction or the insert/update trips the constraint.
+ */
+async function clearDefaultTemplate(
+  companyId: string,
+  exceptId: string | null,
+  runner: Queryable
+): Promise<void> {
+  await query(
+    `update rate_card_templates set is_default = false, updated_at = now()
+      where company_id = $1 and is_default and ($2::uuid is null or id <> $2)`,
+    [companyId, exceptId],
+    runner
+  );
+}
 
 export async function listTemplates(companyId: string): Promise<RateCardTemplateView[]> {
   const rows = await query<TemplateRow>(
@@ -141,13 +162,17 @@ export async function createTemplate(
   companyId: string,
   input: RateCardTemplateCreate
 ): Promise<RateCardTemplateView> {
-  const row = await queryOne<TemplateRow>(
-    `insert into rate_card_templates (company_id, name, timeframe_definitions)
-     values ($1, $2, $3::jsonb)
-     returning ${TEMPLATE_COLS}`,
-    [companyId, input.name, JSON.stringify(input.timeframeDefinitions)]
-  );
-  return toTemplateView(row!);
+  return withTransaction(async (client) => {
+    if (input.isDefault) await clearDefaultTemplate(companyId, null, client);
+    const row = await queryOne<TemplateRow>(
+      `insert into rate_card_templates (company_id, name, timeframe_definitions, is_default)
+       values ($1, $2, $3::jsonb, $4)
+       returning ${TEMPLATE_COLS}`,
+      [companyId, input.name, JSON.stringify(input.timeframeDefinitions), input.isDefault],
+      client
+    );
+    return toTemplateView(row!);
+  });
 }
 
 export async function updateTemplate(
@@ -155,22 +180,28 @@ export async function updateTemplate(
   id: string,
   patch: RateCardTemplateUpdate
 ): Promise<RateCardTemplateView> {
-  const row = await queryOne<TemplateRow>(
-    `update rate_card_templates set
-       name = coalesce($3, name),
-       timeframe_definitions = coalesce($4::jsonb, timeframe_definitions),
-       updated_at = now()
-     where company_id = $1 and id = $2
-     returning ${TEMPLATE_COLS}`,
-    [
-      companyId,
-      id,
-      patch.name ?? null,
-      patch.timeframeDefinitions ? JSON.stringify(patch.timeframeDefinitions) : null,
-    ]
-  );
-  if (!row) throw new AppError('NOT_FOUND', 'Template not found');
-  return toTemplateView(row);
+  return withTransaction(async (client) => {
+    if (patch.isDefault === true) await clearDefaultTemplate(companyId, id, client);
+    const row = await queryOne<TemplateRow>(
+      `update rate_card_templates set
+         name = coalesce($3, name),
+         timeframe_definitions = coalesce($4::jsonb, timeframe_definitions),
+         is_default = coalesce($5, is_default),
+         updated_at = now()
+       where company_id = $1 and id = $2
+       returning ${TEMPLATE_COLS}`,
+      [
+        companyId,
+        id,
+        patch.name ?? null,
+        patch.timeframeDefinitions ? JSON.stringify(patch.timeframeDefinitions) : null,
+        patch.isDefault ?? null,
+      ],
+      client
+    );
+    if (!row) throw new AppError('NOT_FOUND', 'Template not found');
+    return toTemplateView(row);
+  });
 }
 
 export async function deleteTemplate(companyId: string, id: string): Promise<void> {
@@ -179,6 +210,28 @@ export async function deleteTemplate(companyId: string, id: string): Promise<voi
     [companyId, id]
   );
   if (!row) throw new AppError('NOT_FOUND', 'Template not found');
+}
+
+/**
+ * The timeframe definitions in force for a company — its default template's, or
+ * none at all.
+ *
+ * Every label resolution reads this (§6), so callers that resolve more than one
+ * line must load it **once** and pass it down: a project summary otherwise
+ * queries it per approved time log. `resolveRateLabel` takes the array rather
+ * than a company id precisely so this stays visible at the call site.
+ */
+export async function getEffectiveTimeframeDefinitions(
+  companyId: string,
+  runner?: Queryable
+): Promise<TimeframeDefinition[]> {
+  const row = await queryOne<{ timeframe_definitions: TimeframeDefinition[] }>(
+    `select timeframe_definitions from rate_card_templates
+      where company_id = $1 and is_default limit 1`,
+    [companyId],
+    runner
+  );
+  return row?.timeframe_definitions ?? [];
 }
 
 // ── Rate cards ────────────────────────────────────────────────────────────────
