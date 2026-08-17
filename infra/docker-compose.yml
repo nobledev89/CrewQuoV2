@@ -8,7 +8,10 @@ services:
       POSTGRES_PASSWORD: crewquo
       POSTGRES_DB: crewquo
     ports:
-      - "5432:5432"
+      # Bind explicitly to IPv4 loopback: on a host that already runs a native
+      # Postgres, a bare "5432:5432" can end up reachable only over IPv6 and gets
+      # shadowed by it. Override the host port via POSTGRES_HOST_PORT (.env).
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - crewquo_pgdata:/var/lib/postgresql/data
     healthcheck:

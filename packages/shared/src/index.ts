@@ -9,3 +9,4 @@ export * from './rate-engine';
 export * from './engagements';
 export * from './projects';
 export * from './work';
+export * from './audit';

@@ -45,6 +45,10 @@ pnpm --filter @crewquo/api dev
 | `pnpm db:migrate` | Apply pending SQL migrations |
 | `pnpm db:seed` | Run the seed script |
 | `pnpm --filter @crewquo/web dev` | Run the web console (http://localhost:3000) |
+| `pnpm --filter @crewquo/api purge-audit` | Delete audit rows past their retention window |
+
+The API also runs the audit purge daily in-process; set `AUDIT_PURGE_ENABLED=false`
+to drive it from an external scheduler with the command above instead.
 
 ## Layout
 

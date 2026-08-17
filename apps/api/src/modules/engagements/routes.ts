@@ -18,6 +18,7 @@ import { assertWithinLimit, operatesDownstream } from '../entitlements/guards';
 import { findCompanyById, insertCompany } from '../companies/repo';
 import { listMembers } from '../memberships/repo';
 import { insertInvite } from '../invites/repo';
+import { recordAudit } from '../audit/record';
 import {
   findEngagementEdge,
   getEngagementView,
@@ -70,6 +71,14 @@ engagementsRouter.post(
       throw err;
     });
 
+    await recordAudit({
+      companyId: ctx.companyId,
+      actorUserId: ctx.userId,
+      action: 'engagement.created',
+      entityType: 'ENGAGEMENT',
+      entityId: edge.id,
+      description: `Engagement with ${provider.name} created`,
+    });
     res.status(201).json({ engagement: await getEngagementView(edge.id, ctx.companyId) });
   })
 );
@@ -86,6 +95,15 @@ engagementsRouter.patch(
       throw new AppError('NOT_FOUND', 'Engagement not found');
     }
     await updateEngagementStatus(edge.id, status);
+    await recordAudit({
+      companyId: ctx.companyId,
+      actorUserId: ctx.userId,
+      action: 'engagement.updated',
+      entityType: 'ENGAGEMENT',
+      entityId: edge.id,
+      changes: { status },
+      description: `Engagement set to ${status}`,
+    });
     res.json({ engagement: await getEngagementView(edge.id, ctx.companyId) });
   })
 );
@@ -155,6 +173,17 @@ providersRouter.post(
       return { provider: view, inviteToken: invite.invite_token };
     });
 
+    // After commit — a failed audit write must not roll back the provider.
+    await recordAudit({
+      companyId: ctx.companyId,
+      actorUserId: ctx.userId,
+      action: 'invite.created',
+      entityType: 'INVITE',
+      entityId: provider.engagementId,
+      changes: { kind: 'ENGAGEMENT', email: input.email },
+      description: `Provider "${input.name}" invited`,
+    });
+
     const body: CreateProviderResponse = { provider, inviteToken };
     res.status(201).json(body);
   })
@@ -186,6 +215,15 @@ membersRouter.post(
       email: input.email,
       role: input.role,
       invitedByUserId: ctx.userId,
+    });
+    await recordAudit({
+      companyId: ctx.companyId,
+      actorUserId: ctx.userId,
+      action: 'invite.created',
+      entityType: 'INVITE',
+      entityId: invite.id,
+      changes: { kind: 'MEMBER', email: input.email, role: input.role },
+      description: `Member invited (${input.role})`,
     });
     res.status(201).json({ inviteToken: invite.invite_token });
   })

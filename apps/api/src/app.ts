@@ -28,6 +28,7 @@ import {
   workContextRouter,
 } from './modules/work/routes';
 import { pushRouter } from './modules/push/routes';
+import { auditLogsRouter, auditSettingsRouter } from './modules/audit/routes';
 
 /** Build the Express app. Kept separate from listen() so tests can import it. */
 export function buildApp(): Express {
@@ -73,6 +74,10 @@ export function buildApp(): Express {
   app.use('/v1/expenses', requireAuth, expensesRouter);
   app.use('/v1/project-submissions', requireAuth, submissionsRouter);
   app.use('/v1/push', requireAuth, pushRouter);
+
+  // Client portal & audit (§3.6).
+  app.use('/v1/audit-logs', requireAuth, auditLogsRouter);
+  app.use('/v1/audit-settings', requireAuth, auditSettingsRouter);
 
   app.use('/v1/admin', requireAuth, requireSuperAdmin, adminRouter);
 

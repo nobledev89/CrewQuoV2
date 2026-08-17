@@ -29,6 +29,7 @@ import { findEngagementEdge, type EngagementEdgeRow } from '../engagements/repo'
 import { listResolveCandidates } from '../rates/repo';
 import { pickEffectiveCard } from '../rates/resolve';
 import { notifyCompanyManagers, notifyUser } from '../push/send';
+import { recordAudit } from '../audit/record';
 import {
   deleteExpense,
   deleteTimeLog,
@@ -192,9 +193,20 @@ timeLogsRouter.post(
     });
 
     const submitted = await submitTimeLog(log.id, snapshot);
+    const hours = log.hoursRegular + log.hoursOt;
+    await recordAudit({
+      companyId: ctx.companyId,
+      actorUserId: ctx.userId,
+      action: 'time_log.submitted',
+      entityType: 'TIME_LOG',
+      entityId: log.id,
+      changes: { workDate: log.workDate, hoursRegular: log.hoursRegular, hoursOt: log.hoursOt },
+      description: `Time log for ${log.workDate} submitted (${hours}h)`,
+      visibleToClient: true,
+    });
     void notifyCompanyManagers(edge.client_company_id, {
       title: 'Time log submitted',
-      body: `${log.hoursRegular + log.hoursOt}h awaiting your approval`,
+      body: `${hours}h awaiting your approval`,
       data: { type: 'time_log', id: log.id },
     });
     res.json({ timeLog: submitted });
@@ -204,14 +216,23 @@ timeLogsRouter.post(
 timeLogsRouter.post(
   '/:id/approve',
   asyncHandler(async (req, res) => {
-    const { log, edge } = await reviewGuard(req);
-    const updated = await reviewTimeLog(log.id, 'APPROVED', getCompanyCtx(req).userId, null);
+    const ctx = getCompanyCtx(req);
+    const { log } = await reviewGuard(req);
+    const updated = await reviewTimeLog(log.id, 'APPROVED', ctx.userId, null);
+    await recordAudit({
+      companyId: ctx.companyId,
+      actorUserId: ctx.userId,
+      action: 'time_log.approved',
+      entityType: 'TIME_LOG',
+      entityId: log.id,
+      description: `Time log for ${log.workDate} approved (${log.hoursRegular + log.hoursOt}h)`,
+      visibleToClient: true,
+    });
     void notifyUser(log.loggedByUserId, {
       title: 'Time log approved',
       body: `Your ${log.workDate} time log was approved`,
       data: { type: 'time_log', id: log.id },
     });
-    void edge;
     res.json({ timeLog: updated });
   })
 );
@@ -219,9 +240,20 @@ timeLogsRouter.post(
 timeLogsRouter.post(
   '/:id/reject',
   asyncHandler(async (req, res) => {
+    const ctx = getCompanyCtx(req);
     const { log } = await reviewGuard(req);
     const { reason } = rejectSchema.parse(req.body ?? {});
-    const updated = await reviewTimeLog(log.id, 'REJECTED', getCompanyCtx(req).userId, reason ?? null);
+    const updated = await reviewTimeLog(log.id, 'REJECTED', ctx.userId, reason ?? null);
+    await recordAudit({
+      companyId: ctx.companyId,
+      actorUserId: ctx.userId,
+      action: 'time_log.rejected',
+      entityType: 'TIME_LOG',
+      entityId: log.id,
+      changes: reason ? { reason } : null,
+      description: `Time log for ${log.workDate} rejected`,
+      visibleToClient: true,
+    });
     void notifyUser(log.loggedByUserId, {
       title: 'Time log rejected',
       body: reason ? `Rejected: ${reason}` : 'Your time log was rejected',
@@ -366,6 +398,16 @@ expensesRouter.post(
       throw new AppError('CONFLICT', `Cannot submit a ${expense.status} expense`);
     }
     const updated = await transitionExpense(expense.id, 'SUBMITTED');
+    await recordAudit({
+      companyId: ctx.companyId,
+      actorUserId: ctx.userId,
+      action: 'expense.submitted',
+      entityType: 'EXPENSE',
+      entityId: expense.id,
+      changes: { amountCents: expense.amountCents, category: expense.category },
+      description: `Expense submitted (${expense.amountCents} cents)`,
+      visibleToClient: true,
+    });
     void notifyCompanyManagers(edge.client_company_id, {
       title: 'Expense submitted',
       body: 'An expense is awaiting your approval',
@@ -386,6 +428,15 @@ expensesRouter.post(
     const updated = await transitionExpense(expense.id, 'APPROVED', {
       reviewerUserId: ctx.userId,
       rejectReason: null,
+    });
+    await recordAudit({
+      companyId: ctx.companyId,
+      actorUserId: ctx.userId,
+      action: 'expense.approved',
+      entityType: 'EXPENSE',
+      entityId: expense.id,
+      description: `Expense approved (${expense.amountCents} cents)`,
+      visibleToClient: true,
     });
     void notifyUser(expense.loggedByUserId, {
       title: 'Expense approved',
@@ -408,6 +459,16 @@ expensesRouter.post(
     const updated = await transitionExpense(expense.id, 'REJECTED', {
       reviewerUserId: ctx.userId,
       rejectReason: reason ?? null,
+    });
+    await recordAudit({
+      companyId: ctx.companyId,
+      actorUserId: ctx.userId,
+      action: 'expense.rejected',
+      entityType: 'EXPENSE',
+      entityId: expense.id,
+      changes: reason ? { reason } : null,
+      description: 'Expense rejected',
+      visibleToClient: true,
     });
     void notifyUser(expense.loggedByUserId, {
       title: 'Expense rejected',
@@ -489,6 +550,16 @@ submissionsRouter.post(
       throw new AppError('CONFLICT', `Cannot submit a ${submission.status} submission`);
     }
     const updated = await transitionSubmission(submission.id, 'SUBMITTED');
+    await recordAudit({
+      companyId: ctx.companyId,
+      actorUserId: ctx.userId,
+      action: 'submission.submitted',
+      entityType: 'PROJECT_SUBMISSION',
+      entityId: submission.id,
+      changes: { periodStart: submission.periodStart, periodEnd: submission.periodEnd },
+      description: 'Work submission sent for approval',
+      visibleToClient: true,
+    });
     void notifyCompanyManagers(edge.client_company_id, {
       title: 'Submission received',
       body: 'A work submission is awaiting your approval',
@@ -510,6 +581,15 @@ submissionsRouter.post(
       reviewerUserId: ctx.userId,
       rejectReason: null,
     });
+    await recordAudit({
+      companyId: ctx.companyId,
+      actorUserId: ctx.userId,
+      action: 'submission.approved',
+      entityType: 'PROJECT_SUBMISSION',
+      entityId: submission.id,
+      description: 'Work submission approved',
+      visibleToClient: true,
+    });
     res.json({ submission: updated });
   })
 );
@@ -526,6 +606,16 @@ submissionsRouter.post(
     const updated = await transitionSubmission(submission.id, 'REJECTED', {
       reviewerUserId: ctx.userId,
       rejectReason: reason ?? null,
+    });
+    await recordAudit({
+      companyId: ctx.companyId,
+      actorUserId: ctx.userId,
+      action: 'submission.rejected',
+      entityType: 'PROJECT_SUBMISSION',
+      entityId: submission.id,
+      changes: reason ? { reason } : null,
+      description: 'Work submission rejected',
+      visibleToClient: true,
     });
     res.json({ submission: updated });
   })

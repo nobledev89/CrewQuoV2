@@ -73,3 +73,34 @@ export function canReviewWork(
 ): boolean {
   return isEngagementClientSide(companyId, edge) && canManage(role) && status === 'SUBMITTED';
 }
+
+/**
+ * Portal audit read (§3.6): the client side of an engagement may read the
+ * provider's trail only when the provider's plan includes `audit_visibility`
+ * *and* the provider has switched the trail on for that engagement. Exposure is
+ * opt-in twice over; the query additionally returns only `visible_to_client` rows.
+ */
+export function canReadCounterpartyAudit(args: {
+  companyId: string;
+  edge: EngagementEdge;
+  providerHasAuditVisibility: boolean;
+  showAuditTrail: boolean;
+}): boolean {
+  return (
+    isEngagementClientSide(args.companyId, args.edge) &&
+    args.providerHasAuditVisibility &&
+    args.showAuditTrail
+  );
+}
+
+/**
+ * Portal settings belong to the side whose data is exposed — the provider on the
+ * edge — and only its managers may change them.
+ */
+export function canManageAuditSettings(
+  companyId: string,
+  role: MembershipRole,
+  edge: EngagementEdge
+): boolean {
+  return isEngagementProviderSide(companyId, edge) && canManage(role);
+}

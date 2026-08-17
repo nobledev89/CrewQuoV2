@@ -11,6 +11,7 @@ import { param } from '../../http/params';
 import { canManage } from '../../authorization/policies';
 import { findCompanyById } from '../companies/repo';
 import { findEngagementByPair } from '../engagements/repo';
+import { recordAudit } from '../audit/record';
 import {
   createProject,
   deleteProject,
@@ -42,7 +43,19 @@ projectsRouter.post(
     const ctx = getCompanyCtx(req);
     assertManager(ctx.role);
     const input = createProjectSchema.parse(req.body);
-    res.status(201).json({ project: await createProject(ctx.companyId, input) });
+    const project = await createProject(ctx.companyId, input);
+    // Project rows reach the portal only for projects the client can already see.
+    await recordAudit({
+      companyId: ctx.companyId,
+      actorUserId: ctx.userId,
+      action: 'project.created',
+      entityType: 'PROJECT',
+      entityId: project.id,
+      changes: { name: project.name, status: project.status },
+      description: `Project "${project.name}" created`,
+      visibleToClient: project.clientVisible,
+    });
+    res.status(201).json({ project });
   })
 );
 
@@ -62,7 +75,18 @@ projectsRouter.patch(
     const ctx = getCompanyCtx(req);
     assertManager(ctx.role);
     const patch = updateProjectSchema.parse(req.body);
-    res.json({ project: await updateProject(ctx.companyId, param(req, 'id'), patch) });
+    const project = await updateProject(ctx.companyId, param(req, 'id'), patch);
+    await recordAudit({
+      companyId: ctx.companyId,
+      actorUserId: ctx.userId,
+      action: 'project.updated',
+      entityType: 'PROJECT',
+      entityId: project.id,
+      changes: { ...patch },
+      description: `Project "${project.name}" updated`,
+      visibleToClient: project.clientVisible,
+    });
+    res.json({ project });
   })
 );
 
@@ -71,7 +95,18 @@ projectsRouter.delete(
   asyncHandler(async (req, res) => {
     const ctx = getCompanyCtx(req);
     assertManager(ctx.role);
-    await deleteProject(ctx.companyId, param(req, 'id'));
+    const id = param(req, 'id');
+    const project = await getProject(ctx.companyId, id); // captured for the trail
+    await deleteProject(ctx.companyId, id);
+    await recordAudit({
+      companyId: ctx.companyId,
+      actorUserId: ctx.userId,
+      action: 'project.deleted',
+      entityType: 'PROJECT',
+      entityId: id,
+      description: project ? `Project "${project.name}" deleted` : 'Project deleted',
+      visibleToClient: project?.clientVisible ?? false,
+    });
     res.status(204).end();
   })
 );
@@ -102,10 +137,20 @@ projectsRouter.post(
     if (!edge) {
       throw new AppError('VALIDATION', 'No engagement with that provider — add them first');
     }
-    await insertAssignment({
+    const assignment = await insertAssignment({
       projectId: project.id,
       providerCompanyId: input.providerCompanyId,
       engagementId: edge.id,
+    });
+    // Never client-visible: which subcontractor does the work is not the client's business.
+    await recordAudit({
+      companyId: ctx.companyId,
+      actorUserId: ctx.userId,
+      action: 'assignment.created',
+      entityType: 'ASSIGNMENT',
+      entityId: assignment.id,
+      changes: { projectId: project.id, providerCompanyId: input.providerCompanyId },
+      description: `Provider assigned to "${project.name}"`,
     });
     res.status(201).json({ data: await listAssignments(project.id) });
   })

@@ -32,6 +32,13 @@ const EnvSchema = z.object({
 
   // Base URL used in password-reset / verify-email links (Resend arrives Phase 5).
   APP_BASE_URL: z.string().url().default('http://localhost:3000'),
+
+  // Nightly audit-retention purge (§3.6). Disable to drive it from an external
+  // scheduler instead: pnpm --filter @crewquo/api purge-audit.
+  AUDIT_PURGE_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
 });
 
 const parsed = EnvSchema.safeParse(process.env);

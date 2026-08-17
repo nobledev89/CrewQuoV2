@@ -10,6 +10,7 @@ import { findUserById } from '../users/repo';
 import { findMembership, insertMembership } from '../memberships/repo';
 import { updateEngagementStatus } from '../engagements/repo';
 import { findInviteRowByToken, findInviteView, markInviteAccepted } from './repo';
+import { recordAudit } from '../audit/record';
 
 /**
  * Invite accept flow (CREWQUO_V2_PLAN.md §3.6, §7). GET is public (renders the
@@ -73,6 +74,17 @@ invitesRouter.post(
         await updateEngagementStatus(invite.engagement_id, 'ACTIVE', client);
       }
       await markInviteAccepted(invite.id, client);
+    });
+
+    // Recorded against the company just joined — that's whose trail it belongs in.
+    await recordAudit({
+      companyId: invite.target_company_id,
+      actorUserId: user.id,
+      action: 'invite.accepted',
+      entityType: 'INVITE',
+      entityId: invite.id,
+      changes: { kind: invite.kind, role },
+      description: `${user.name} joined as ${role}`,
     });
 
     const body: AcceptInviteResponse = { companyId: invite.target_company_id, role };

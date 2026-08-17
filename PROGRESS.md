@@ -4,7 +4,7 @@ Living checklist for the build. Full detail for every item is in **[CREWQUO_V2_P
 
 **Legend:** `[x]` done · `[~]` in progress · `[ ]` not started
 
-Last updated: 2026-07-21 · Current phase: **Phase 4 (not started)** · Phase 3 shipped
+Last updated: 2026-08-17 · Current phase: **Phase 4 (audit slice landed; portal/exports next)** · Phase 3 shipped
 
 ---
 
@@ -51,7 +51,7 @@ Last updated: 2026-07-21 · Current phase: **Phase 4 (not started)** · Phase 3 
 - [ ] `api-client` package extraction (mobile currently uses an inline typed fetch client)
 - [ ] Redis-backed entitlement cache (in-process TTL for now; Phase 2 stack)
 
-> **Local env note:** two native Postgres instances occupy host ports 5432/5433 on this machine, shadowing the docker container (which binds IPv6). Phase 1 was verified with the compose Postgres remapped to `127.0.0.1:15432`. `infra/docker-compose.yml` still targets 5432 — free those ports or remap before `pnpm db:migrate`.
+> **Local env note (resolved 2026-08-17):** native Postgres instances occupy host ports 5432, 5433 **and 5434** on this machine, and none accepts the `crewquo` role. `infra/docker-compose.yml` now binds explicitly to IPv4 loopback and takes the host port from `POSTGRES_HOST_PORT` (default 5432, so nothing changes for other machines); this repo's `.env` sets it to **15432** and points `DATABASE_URL` at `127.0.0.1:15432`. Bring the DB up with `docker compose --env-file .env -f infra/docker-compose.yml up -d`. This removes the port-shadowing footgun that dogged Phases 1–3.
 
 ## ✅ Phase 2 — Rate engine + catalog (DONE) — plan §3.3, §6
 
@@ -83,14 +83,23 @@ Last updated: 2026-07-21 · Current phase: **Phase 4 (not started)** · Phase 3 
 
 > **Deferred (non-blocking):** expense **receipt upload** (`receipt_url` stays null — needs R2/object storage); `CLIENT_PORTAL` invite kind (arrives with the Phase 4 portal). **One-time human step for push:** run `eas login` locally then a dev/prod build — `eas`/`getExpoPushTokenAsync` need your Expo account and a physical device (simulator is a no-op). Expo push tokens can't be minted from CI here.
 
-## Phase 4 — Client portal + exports + audit — plan §3.6
+## Phase 4 — Client portal + exports + audit (in progress) — plan §3.6
 
-- [ ] Migrations: `line_item_notes`, `audit_logs`, `audit_settings`
-- [ ] Client portal (client-side of engagements; `projects.client_visible`)
-- [ ] Audit logging (append-only) + nightly `expires_at` cleanup job
+- [x] Migration `0005_portal_audit.sql`: `line_item_notes`, `audit_logs`, `audit_settings`
+- [x] Audit logging (append-only): `recordAudit` writes at every Phase 3 mutation site (work submit/approve/reject, project CRUD, assignments, engagements, invites) + `GET /v1/audit-logs` (own trail, or a counterparty's client-visible slice via `?engagementId=`)
+- [x] Per-engagement portal settings: `GET/PUT /v1/audit-settings/:engagementId` (`client_can_comment`, `show_audit_trail`) — provider side manages, either side reads
+- [x] Retention: `expires_at` stamped from `audit_retention_days` (`'infinity'` when unlimited; retention 0 ⇒ nothing written) + nightly purge (in-process daily timer, or `pnpm --filter @crewquo/api purge-audit`)
+- [x] 78 tests green (8 new: retention mapping + portal-visibility policies), all 5 packages type-check
+- [x] **Verified end-to-end** vs live Postgres (30 checks): invite→accept→role→PAY card→project→assignment→submit→approve, then submit/approve both recorded on the right side of the edge, `expires_at` = 90d on `pro`, internal events never client-visible, counterparty read **403 until the provider flips `show_audit_trail`** then returns only its client-visible rows, client side can't change portal settings (403), outsider 404s on the engagement, Crew plan refused the trail (403) and writes **zero** rows, purge deletes expired rows and keeps `'infinity'` ones
+- [ ] Client portal (client-side of engagements; `projects.client_visible`) — `GET /v1/portal/projects[/:id]`
+- [ ] `line_item_notes` CRUD (table exists; routes gated on `client_portal_notes`)
+- [ ] `CLIENT_PORTAL` invite kind (currently 422s in the accept flow)
 - [ ] Server-side PDF/XLSX exports (`jspdf`/`xlsx` in the API)
-- [ ] Placeholder → linked company **merge flow**
+- [ ] Web portal screens in `apps/web`
+- [ ] Placeholder → linked company **merge flow** — blocked on the owner decision below
 - [ ] **Milestone:** a client logs in, sees only granted projects + visible audit trail, downloads an export
+
+> **Audit design notes.** `audit_logs.company_id` is *whose activity* it is (the actor's active company) and `visible_to_client` says whether the company that hired them may see the row — so exposure is opt-in three times over: the row's flag, the provider's `audit_visibility` feature, and that engagement's `show_audit_trail`. Descriptions never name a counterparty, so a visible row can't leak who a subcontractor is. `recordAudit` never throws: a broken trail must not fail an approval, so failures are logged instead. Starter plans retain 30 days but can't *read* the trail until Pro — that's the seed's intent (§5B), not a bug.
 
 ## Phase 5 — Billing, invoicing, notifications, polish — plan §3.5, §5B
 
