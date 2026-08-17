@@ -83,7 +83,7 @@ crewquo-v2/
 | Web host | **Vercel** | Next.js. |
 | Mobile | **Expo + EAS** | OTA updates, managed builds. |
 | Billing | **Merchant of Record — Lemon Squeezy (primary), Paddle (alt)** | §5B. |
-| Exports | **Server-side `jspdf`/`xlsx` in `apps/api`** | Identical files for web + mobile. |
+| Exports | **Server-side `jspdf` + `exceljs` in `apps/api`** | Identical files for web + mobile. `exceljs` replaced `xlsx`: SheetJS's last public-npm release (0.18.5) carries CVE-2023-30533/CVE-2024-22363 and current builds ship only from its own CDN. |
 | Monitoring | **Sentry** (api/web/mobile) | + structured logs + `/healthz`. |
 
 ---
@@ -589,7 +589,8 @@ GET    /v1/rates/resolve?roleId&shiftType&date&counterpartyId&kind   -- resolved
 CRUD   /v1/projects
 POST   /v1/projects/:id/assignments               -- assign a provider (+engagement)
 GET    /v1/projects/:id/summary                   -- server-computed costs, margins, totals
-GET    /v1/projects/:id/export.(pdf|xlsx)         -- server-rendered file (feature: exports)
+GET    /v1/projects/:id/export.(pdf|xlsx)         -- server-rendered file (feature: exports); owner side only
+                                                  -- the CLIENT-side export is Phase 10 (§29.5), from a report snapshot
 POST   /v1/time-logs                              (provider MEMBER; status DRAFT)
 PATCH  /v1/time-logs/:id                          (owner draft edit)
 POST   /v1/time-logs/:id/submit                   (provider: DRAFT→SUBMITTED)
@@ -620,6 +621,17 @@ GET    /v1/entitlements                             -- resolved entitlements + l
 CRUD   /v1/admin/plans  /v1/admin/plans/:id/prices  /v1/admin/features  /v1/admin/limits
 GET    /v1/admin/companies  POST /v1/admin/companies/:id/overrides  POST /v1/admin/companies/:id/comp-trial
 ```
+
+---
+
+### 7.1 Error envelope & identifiers
+
+Every failure returns `{ error: { code, message, details? } }` with the §7 status mapping. Two rules make that hold in practice:
+
+- **A path `:id` that is not a UUID is a 404, not a 500.** `uuidParam` (`http/params.ts`) rejects at the edge, so a malformed id and an id belonging to someone else give the same answer — nothing is learned from the difference.
+- **Postgres errors a caller can provoke are 4xx.** `http/pgErrors.ts` maps `22P02`/`22003`/`22007`/`22008` → `VALIDATION`, `23505` → `CONFLICT`, `23503`/`23502`/`23514` → `VALIDATION`, and logs each one. Everything else — a bad query (`42P08`), a connection failure (`08006`) — stays a 500, because it *is* our fault and must not be dressed up as the caller's.
+
+Driver messages never reach the client; the envelope carries a fixed message per code.
 
 ---
 
@@ -655,11 +667,11 @@ Next.js (App Router). **Every feature ships here first and ships here complete.*
 
 ### 9.1 Web parity backlog (the gap Phases 1–3 left)
 
-Phases 1–3 were built mobile-first, so `apps/web` today is a marketing landing page (`/`), login, an authenticated dashboard home (`/app`) and the four rate-card screens. Everything below is **shipped, tested API functionality with no web UI at all** — it is the scope of §42's Phase 6W gate, and none of it is new backend work.
+Phases 1–3 were built mobile-first, so `apps/web` today is a marketing landing page (`/`), login, an authenticated dashboard home (`/app`), the four rate-card screens and company settings (`/settings` — added 2026-08-17 with the currency decision). Everything below is **shipped, tested API functionality with no web UI at all** — it is the scope of §42's Phase 6W gate, and none of it is new backend work.
 
 | Area | Endpoints already live | Web screens needed |
 |---|---|---|
-| Auth & context | `/v1/auth/*`, `/v1/me/*` | register, forgot/reset password, verify email, company switcher, profile |
+| Auth & context | `/v1/auth/*`, `/v1/me/*`, `/v1/companies/:id` | register, forgot/reset password, verify email, company switcher, profile *(company name + currency done: `/settings`)* |
 | Entitlements | `/v1/entitlements` | plan + live usage display, limit-reached states |
 | Engagements | `/v1/engagements` | list (both sides of the edge), create, pause/end |
 | Providers & clients | `/v1/providers`, `/v1/clients` | list, add provider (placeholder + invite), add portal client |
@@ -696,13 +708,13 @@ Phases 1–3 were built mobile-first, so `apps/web` today is a marketing landing
 
 **Phase 3 — The core loop (mobile-first).** `engagements`, `providers`, `projects`, `project_assignments`, `invites` (create provider + accept). `time_logs` + `expenses` with `DRAFT→SUBMITTED→APPROVED/REJECTED`. Mobile: log time → submit; approvals inbox. `/projects/:id/summary`. *Milestone: a subcontractor logs time on a phone and an admin approves it — the product's heartbeat.*
 
-**Phase 4 — Client portal + exports + audit.** Client-side portal via engagements + `projects.client_visible`; `line_item_notes`, `audit_logs` (+ nightly `expires_at` cleanup job), `audit_settings`. Server-side PDF/XLSX exports. Web portal + placeholder→linked company **merge flow**. *Milestone: a client logs in, sees only granted projects + visible audit trail, downloads an export.*
+**Phase 4 — Client portal + exports + audit.** Client-side portal via engagements + `projects.client_visible`; `line_item_notes`, `audit_logs` (+ nightly `expires_at` cleanup job), `audit_settings`. Server-side PDF/XLSX exports. Placeholder→linked company **merge flow**. *Milestone: a client logs in, sees only granted projects + visible audit trail, and an owner downloads an export whose numbers match the summary endpoint.* **Backend complete 2026-08-17** — the web portal screens moved into Phase 6W (which builds every missing web surface at once), and the *client-facing* export moved to Phase 10 so it renders from a report snapshot rather than a live recalculation (owner decision).
 
 **Phase 5 — Billing, invoicing, notifications, polish.** `invoices`/`invoice_items`. **MoR billing** (Lemon Squeezy/Paddle): checkout, webhooks, trial→paid, entitlement snapshots. Super-admin price editor + subscription management. Push + email notifications. Reports. Public marketing + legal pages. *(EAS store submission moved to Phase 13.9 — decision #21.)*
 
 **Phase 6 (deferred).** Offline draft capture, real-time updates, and the optional v1→v2 per-customer importer (§12).
 
-> **Phases 6W–13 are specified in §42.** **Phase 6W** closes the web parity backlog (§9.1) — everything the API already does, given a web UI. **Phases 7–12** are the v2.1 expansion, web-only: project evidence, site diary, locations, asset & material tracking, the sustainability/carbon engine, reporting, variations, scheduling and subcontractor compliance. **Phase 13** ports the whole thing to mobile, including the supervisor field experience (decision #21). Phase 4's remaining **server-side PDF/XLSX export engine** is the shared foundation for §29's reports and should be finished before Phase 10.
+> **Phases 6W–13 are specified in §42.** **Phase 6W** closes the web parity backlog (§9.1) — everything the API already does, given a web UI. **Phases 7–12** are the v2.1 expansion, web-only: project evidence, site diary, locations, asset & material tracking, the sustainability/carbon engine, reporting, variations, scheduling and subcontractor compliance. **Phase 13** ports the whole thing to mobile, including the supervisor field experience (decision #21). The **server-side PDF/XLSX export engine** — the shared foundation for §29's reports — **landed 2026-08-17** in `apps/api/src/modules/exports/`, so Phase 6W is now the next gate.
 
 ---
 
@@ -747,7 +759,7 @@ This spec resolves contradictions that existed while the plan evolved: (a) the o
 2. **App ↔ server:** REST + Zod.
 3. **File storage:** Cloudflare R2.
 4. **Login:** email/password + Google sign-in.
-5. **Currency:** one per company; rate cards inherit.
+5. **Currency:** one per company; rate cards inherit. Default **USD**, changeable via `PATCH /v1/companies/:id` (OWNER/ADMIN) — migration 0006, 2026-08-17. `DEFAULT_CURRENCY` in `packages/shared/src/me.ts` is the only place the default lives in code.
 6. **Repo:** new `crewquo-v2`.
 7. **Parties are a company graph** (`companies` + `engagements`); client/subcontractor are relative, reversible; no separate client/sub tables.
 8. **One-hop visibility;** operate-downstream is a paid capability.
@@ -788,11 +800,13 @@ This spec resolves contradictions that existed while the plan evolved: (a) the o
 
 **Shipped:** the monorepo and migration runner (Phase 0); users/companies/memberships, JWT + Google auth, the authorization policy module, and the super-admin-configurable entitlements engine (Phase 1); the rate engine in `packages/shared` with 37 pinned branches, the rate-card catalog and `/v1/rates/resolve` plus a web console (Phase 2); engagements, providers/clients/invites with placeholder auto-merge, projects and assignments, the `DRAFT→SUBMITTED→APPROVED/REJECTED` work loop with a frozen PAY snapshot, project summaries with BILL/margin, and Expo push (Phase 3); the append-only audit trail with retention, per-engagement portal settings, the client portal read surface and line-item notes (Phase 4, partial).
 
-**Open on the existing roadmap:** Phase 4's server-side PDF/XLSX **export engine** and the web portal screens; Phase 5 billing/invoicing/notifications; the Phase 2 follow-up to move the `FRI_SAT_NIGHT` label rule out of code and into per-company `rate_card_templates` data; the `USD` currency default.
+**Open on the existing roadmap:** the web portal screens (folded into Phase 6W); Phase 5 billing/invoicing/notifications. **Closed 2026-08-17:** Phase 4's server-side PDF/XLSX **export engine**; the `FRI_SAT_NIGHT` label rule moved out of code into per-company `rate_card_templates` data (migration 0007, with a behaviour-preserving backfill); the `USD` currency default plus a settings endpoint to change it (migration 0006).
 
 **The web/mobile imbalance:** `apps/web` has a marketing landing page, login, a dashboard home and the four rate-card screens. `apps/mobile` has the working core loop. Everything from Phases 1, 3 and 4 — projects, approvals, providers, members, invites, portal, audit, super-admin — has **no web UI**. That is the §9.1 backlog and the reason Phase 6W exists.
 
-**Next:** finish the export engine (it is the foundation §29 builds on), then **Phase 6W — web parity** (§42), then Phase 7. All mobile work is now Phase 13 (decision #21).
+**Next: Phase 6W — web parity** (§42), then Phase 7. All mobile work is now Phase 13 (decision #21).
+
+**Verification.** `pnpm --filter @crewquo/api verify:e2e` runs 93 live-Postgres checks over currency, label rules, the Phase 3/4 core-loop numbers (PAY 40000 / BILL 65550 / margin 24000 / 36.61%), the export engine (including the XLSX's own cells against `/summary`), malformed-identifier handling, both migration backfills and the portal's PAY-exclusion. Re-run it green at the end of every phase.
 
 ---
 ---
@@ -1573,7 +1587,7 @@ What CrewQuo must never do, and what §41 enforces:
 
 - Represent avoided emissions as a reduction of Scope 1, 2 or 3.
 - Present a single "net" headline that combines emissions and avoided emissions.
-- Describe a report as independently verified, ISO-certified or GHG-Protocol-certified. Referencing a methodology is not certification (§29.5).
+- Describe a report as independently verified, ISO-certified or GHG-Protocol-certified. Referencing a methodology is not certification (§29.3).
 
 ---
 
@@ -1715,7 +1729,17 @@ create table generated_reports (
 
 **Re-rendering a report reads the snapshot; it never recalculates.** A 2026 report opened in 2028, after two new factor sets have been imported and three weights corrected, produces byte-identical numbers. Regenerating *with current data* is an explicit action that creates a new row and marks the old one `SUPERSEDED` — both remain retrievable.
 
-### 29.5 Charts
+### 29.5 Client-facing project export *(moved here from Phase 4)*
+
+**Owner decision, 2026-08-17.** Phase 4 shipped the owner-side export engine (`GET /v1/projects/:id/export.pdf|.xlsx`, `apps/api/src/modules/exports/`). The **client's** own download belongs here instead, because §29.4 is exactly what it needs: a client re-opening a document must see the numbers they were shown, not a recalculation against rate cards that have since changed.
+
+- Renders from a `generated_reports` snapshot, never from live data — same rule as every other report here.
+- **BILL side only.** No PAY figure, no rate snapshot, no subcontractor identity — the §4 boundary, in a file that leaves the building.
+- Build the renderer's input from the existing `PortalProjectView` / `PortalLineItem` types in `packages/shared`. Those types *structurally* exclude the owner's PAY columns and every provider identity (that is why they exist as a separate type rather than a filtered `ProjectView`), so the exclusion cannot be forgotten by a later edit the way a `select` list can.
+- Reuse Phase 4's `model.ts` formatting seam so a figure reads identically in the owner's export, the client's export and the portal screen. Its output is ASCII-only — jsPDF's built-in Helvetica encodes Latin-1 and drops an em dash or an ellipsis off the page without error.
+- Gated on the **owner's** `exports` feature and that engagement's portal settings, matching how the portal read surface already works: a free-plan client can be shown an export by a provider who pays for one.
+
+### 29.6 Charts
 
 Report and dashboard charts are generated server-side into the PDF and client-side in the app from the same snapshot. Keep them plain: mass balance as a stacked bar in hierarchy order, outcomes as a horizontal bar, carbon as two separate figures. No 3-D, no donuts-with-a-number-in-the-middle for anything that is not a single share of a whole.
 
@@ -2162,7 +2186,7 @@ When a product decision and one of these principles conflict, the principle wins
 
 Same discipline as Phases 0–4: one phase at a time, each independently demoable, each verified end-to-end against live Postgres before the next begins. The phase numbering continues the existing roadmap (§11); the mapping to the brief's own numbering is given for reference.
 
-**Sequencing against the existing roadmap.** Finish Phase 4's **export engine** first — §29 is built on it. Phase 5 (billing/invoicing) is independent of everything here and can land whenever revenue requires it, with one dependency: §30.1 links variations to `invoices`, so that FK arrives with Phase 5 or is added when it does.
+**Sequencing against the existing roadmap.** Phase 4's **export engine** is done (2026-08-17) — §29 builds on `apps/api/src/modules/exports/model.ts`, which is the single place a figure is formatted. **Phase 6W is the next gate.** Phase 5 (billing/invoicing) is independent of everything here and can land whenever revenue requires it, with one dependency: §30.1 links variations to `invoices`, so that FK arrives with Phase 5 or is added when it does.
 
 ### The web-first gate (decision #21)
 

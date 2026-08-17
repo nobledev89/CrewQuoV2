@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import {
+  DEFAULT_CURRENCY,
   createAssignmentSchema,
   createProjectSchema,
   updateProjectSchema,
@@ -21,9 +22,13 @@ import {
   listProjects,
   updateProject,
 } from './repo';
+import { registerExportRoutes } from '../exports/routes';
 import { computeProjectSummary } from './summary';
 
 export const projectsRouter = Router();
+
+// GET /v1/projects/:id/export.(pdf|xlsx) — feature-gated, owner side (§7).
+registerExportRoutes(projectsRouter);
 
 function assertManager(role: Parameters<typeof canManage>[0]) {
   if (!canManage(role)) throw new AppError('FORBIDDEN', 'Requires a manager role');
@@ -169,7 +174,7 @@ projectsRouter.get(
       id: project.id,
       ownerCompanyId: project.ownerCompanyId,
       clientCompanyId: project.clientCompanyId,
-      currency: owner?.currency ?? 'USD',
+      currency: owner?.currency ?? DEFAULT_CURRENCY,
     });
     res.json({ summary });
   })

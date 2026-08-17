@@ -4,11 +4,13 @@ Living checklist for the build. Full detail for every item is in **[CREWQUO_V2_P
 
 **Legend:** `[x]` done · `[~]` in progress · `[ ]` not started
 
-Last updated: 2026-08-17 · Current phase: **Phase 4 (audit + portal landed; exports & web screens next)** · Phase 3 shipped
+Last updated: 2026-08-17 · Current phase: **Phase 4 (backend complete — export engine landed; only the web portal screens remain, and they fold into Phase 6W)** · Phase 3 shipped
+
+> **Re-run the end-to-end verification any time:** `pnpm --filter @crewquo/api verify:e2e` (needs the DB up, migrations + seed applied, and the API running). **93 checks** covering currency, label rules, the Phase 3/4 core-loop numbers, the export engine, malformed identifiers, both migration backfills and the portal. Previous phases' scripts were ad-hoc and lost; this one is checked in at [apps/api/scripts/verify-e2e.ts](apps/api/scripts/verify-e2e.ts).
 
 > **Scope expanded 2026-08-17.** Phases 7–12 (project evidence, site diary, locations, asset & material tracking, the sustainability/carbon engine, reporting, variations, scheduling, compliance) are now specified in **Part II of the plan (§19–§47)**. Everything below Phase 6 is new work; Phases 0–4 are unaffected and must not regress.
 >
-> **Web-first reorder 2026-08-17 (owner decision — plan decision #21).** **Phases 6W–12 are web-only. No new mobile screen until Phase 13.** Phase 6W is a new gate that closes the web parity backlog (plan §9.1) — Phases 1–3 were built mobile-first, so `apps/web` currently has only a landing page, login, a dashboard home and the 4 rate screens, while projects, approvals, providers, members, portal and the admin console have **no web UI at all**. Shipped mobile screens are **maintained, not deleted**: they keep working and stay green in CI. A phase is not done until its web surface is complete — every state, not a happy path.
+> **Web-first reorder 2026-08-17 (owner decision — plan decision #21).** **Phases 6W–12 are web-only. No new mobile screen until Phase 13.** Phase 6W is a new gate that closes the web parity backlog (plan §9.1) — Phases 1–3 were built mobile-first, so `apps/web` currently has only a landing page, login, a dashboard home, the 4 rate screens and company settings, while projects, approvals, providers, members, portal and the admin console have **no web UI at all**. Shipped mobile screens are **maintained, not deleted**: they keep working and stay green in CI. A phase is not done until its web surface is complete — every state, not a happy path.
 
 ---
 
@@ -68,13 +70,18 @@ Last updated: 2026-08-17 · Current phase: **Phase 4 (audit + portal landed; exp
 - [x] Web console (`apps/web`, Next.js 14 app-router) to manage roles, rate cards & templates + a resolve tester — auth/company-switcher, typed API client, `packages/ui` neutral design system
 - [x] **Milestone:** rates resolve for a date+shift with correct margins ✅
 
-**Phase 2 follow-up — de-hardcode the rate-label rules (owner decision, 2026-08-17):**
+**✅ Phase 2 follow-up — de-hardcode the rate-label rules (owner decision, 2026-08-17) — DONE**
 
-- [ ] Move the `FRI_SAT_NIGHT` override out of `resolveRateLabel` ([engine.ts:45-52](packages/shared/src/rate-engine/engine.ts#L45-L52)) into per-company `rate_card_templates` data — which days/times map to which label is a company setting, not product logic
-- [ ] Migration: default `companies.currency` to `'USD'` (currently `'GBP'`, `0001_init.sql:21`) + a settings endpoint to change it. **Two** places hardcode GBP — the column default and `auth/service.ts:74`, which stamps it on every company created at registration
-- [ ] Web UI for editing the label rules; keep existing cards working (labels are stored per card, so shipped data is unaffected)
+- [x] The `FRI_SAT_NIGHT` override is **out of the engine**. `resolveRateLabel(shiftType, isoDate, rules)` now takes the company's `label_rule` timeframe definitions as a **required** third argument — no default, so every call site had to declare what rules it is resolving under. With no matching rule the baseline shift-type→label mapping applies; nothing about a weekend is assumed
+- [x] Migration `0007_rate_label_rules.sql`: `rate_card_templates.is_default` (partial unique index — one per company) + a **behaviour-preserving backfill** that writes `{"type":"label_rule","shiftType":"NIGHT","daysOfWeek":[5,6],"label":"FRI_SAT_NIGHT"}` for every company that had a FRI_SAT_NIGHT card. Companies that never used the branch get **no invented rule**
+- [x] Overlapping rules are rejected at the edge (two rules claiming the same shift type on the same weekday would let array order silently decide a price)
+- [x] Load-once discipline: `getEffectiveTimeframeDefinitions` is called once per request by the summary, portal and export paths and passed down — `resolveBillCentsForLog` takes `labelRules` as a required argument so a per-line query can't creep back in
+- [x] Migration `0006_currency_usd_default.sql`: `companies.currency` defaults to `'USD'`, existing `'GBP'` rows backfilled, and `DEFAULT_CURRENCY` in [me.ts](packages/shared/src/me.ts) is now the single place the value lives in code (the two hardcoded GBP literals and four `?? 'USD'` fallbacks all import it)
+- [x] `GET /v1/companies/:id` + `PATCH /v1/companies/:id` (OWNER/ADMIN, audited both-sides-of-the-change) — currency is user-changeable, as decided
+- [x] Web UI, [/rates/templates](apps/web/src/app/rates/templates/page.tsx): create **any number** of label rules (shift type → weekday picker → label), add and remove rules on an existing template, and elect the default — with a warning banner when a company has templates but no default, since its rules would then be silently ignored. Rule order is shown as the precedence list it is
+- [x] Web UI, [/settings](apps/web/src/app/settings/page.tsx): company name + currency, OWNER/ADMIN only, with an explicit warning that changing currency re-labels every figure and converts nothing. A setting only an API caller can change isn't "user-changeable", which is what the decision asked for
 
-> **Superseded note on `FRI_SAT_NIGHT`:** a NIGHT shift on a Friday/Saturday resolves to `FRI_SAT_NIGHT`; all other labels are date-independent. This was **reconstructed from the plan spec**, not v1 `rates.ts`. It is no longer a "verify against v1" item — per the owner, no rate rule may be hardcoded at all, so the branch gets replaced by company config rather than corrected.
+> **The 0006 backfill is deliberately narrow (resolved 2026-08-17).** Currency is the *unit* on every stored minor-unit amount and CrewQuo holds no exchange rate anywhere (decision #5), so rewriting it restates real figures rather than converting them — £50.00 becomes $50.00. A schema migration does not get to do that silently to a company that has already priced work, even pre-launch. So the backfill only touches companies with **no rate cards, no projects, no time logs and no expenses**, where the flip is provably inert; that clears the stale default from every account that never got as far as entering money. Anyone else keeps GBP until an owner or admin changes it through `PATCH /v1/companies/:id`, which is audited. Both halves are asserted in `verify:e2e`, because a later "tidy-up" widening that `where` clause would be silent and irreversible.
 >
 > **BILL-visibility scope:** `/v1/rate-cards` only ever returns the active company's *own* cards (PAY and BILL), so nothing leaks here. The provider-never-reads-client-BILL rule (§4) is realised in Phase 3: a project summary computes BILL/margin only for the *owner* (client) side; the provider only ever sees its frozen PAY snapshot.
 
@@ -93,7 +100,7 @@ Last updated: 2026-08-17 · Current phase: **Phase 4 (audit + portal landed; exp
 
 > **Deferred (non-blocking):** expense **receipt upload** (`receipt_url` stays null — needs R2/object storage); `CLIENT_PORTAL` invite kind (arrives with the Phase 4 portal). **One-time human step for push:** run `eas login` locally then a dev/prod build — `eas`/`getExpoPushTokenAsync` need your Expo account and a physical device (simulator is a no-op). Expo push tokens can't be minted from CI here.
 
-## Phase 4 — Client portal + exports + audit (in progress) — plan §3.6
+## Phase 4 — Client portal + exports + audit (backend complete; web screens → Phase 6W) — plan §3.6
 
 - [x] Migration `0005_portal_audit.sql`: `line_item_notes`, `audit_logs`, `audit_settings`
 - [x] Audit logging (append-only): `recordAudit` writes at every Phase 3 mutation site (work submit/approve/reject, project CRUD, assignments, engagements, invites) + `GET /v1/audit-logs` (own trail, or a counterparty's client-visible slice via `?engagementId=`)
@@ -107,11 +114,22 @@ Last updated: 2026-08-17 · Current phase: **Phase 4 (audit + portal landed; exp
 - [x] Placeholder → linked company **merge flow**: **auto-merge** on accept, no prompt (owner decision 2026-08-17). Re-points engagement, assignments, time logs, expenses, submissions and rate-card counterparties, then leaves the placeholder as a tombstone (`claimed_by_company_id`) so old ids still resolve
 - [x] 89 tests green (11 new: portal read, note-write matrix, merge decision), all 5 packages type-check
 - [x] **Verified end-to-end** vs live Postgres (**55 checks**): client invited → claims placeholder → work logged/approved by the owner → portal shows the line at **BILL 64000¢** while the PAY snapshot stays **40000¢**, with no PAY figure, rate snapshot, or subcontractor identity anywhere in the payload; notes honour `client_can_comment` (client 403s, owner unaffected); outsider/owner/unpublished all 404; Crew plan can't add a portal client (403); auto-merge re-points the edge and creates **no** placeholder membership; a colliding second merge **declines** and claims instead, leaving the first merge untouched
-- [ ] Server-side PDF/XLSX exports (`jspdf`/`xlsx` in the API)
-- [ ] Web portal screens in `apps/web` (Codex's redesign covers the Phase 2 console only — no `/portal` route yet)
-- [ ] **Milestone:** a client logs in, sees only granted projects + visible audit trail, downloads an export
+- [x] **Server-side PDF/XLSX export engine** — `GET /v1/projects/:id/export.pdf|.xlsx`, gated on the `exports` feature, owner side only, audited as `project.exported` (internal, never client-visible). `modules/exports/` splits into `data.ts` (SQL assembly, totals taken from `computeProjectSummary` so the file and the screen cannot disagree), `model.ts` (**the only place a figure is formatted** — the seam §29's report engine builds on), `pdf.ts` and `xlsx.ts` (layout only, no computation). XLSX carries money as *numbers* with a currency `numFmt` so a recipient can sum it; nulls stay empty cells, never zeros
+- [ ] Web portal screens in `apps/web` — **rolled into Phase 6W**, which is the phase that builds every missing web surface at once (§9.1). No portal route exists yet
+- [x] **Milestone (backend):** a client logs in, sees only granted projects + visible audit trail; an owner downloads a PDF or XLSX whose numbers match the summary endpoint cell-for-cell. The *client-side* download moves to Phase 10 — see below
+- [x] 136 tests green (47 new: the export model incl. an ASCII-output guard, plus the Postgres error mapping) + **93 live-Postgres checks**
+
+> **Client-facing export → Phase 10 (owner decision, 2026-08-17).** The client's own download is **not** in Phase 4. It lands with §29's report engine, where it renders from a stored `generated_reports` snapshot with a `content_hash` rather than from a live recalculation — so a client re-opening last quarter's document gets the same numbers they were shown then, which is the whole point of §29.4. Phase 4 ships the owner-side engine those reports are built on.
+>
+> **Library deviation:** the plan named `jspdf`/`xlsx`; this ships `jspdf@4` + **`exceljs@4`**. SheetJS's public-npm `xlsx@0.18.5` is its last registry release and carries CVE-2023-30533 and CVE-2024-22363; current builds ship only from the vendor's own CDN, which pnpm lockfiles and CI resolve badly. `exceljs` is maintained, write-oriented and has no equivalent advisory. §2's "one server-side rendering path" is unchanged.
+>
+> **jsPDF encodes Latin-1, not Unicode.** An em dash, an ellipsis and an arrow are *silently dropped from the page* — no substitution, no error. An unpriced line was rendering as a blank cell (reads as "not applicable") instead of a marker (reads as "not known yet"), and truncated values read as complete. Every string `model.ts` emits is now ASCII (`n/a`, `to`, `...`) and a test enforces it.
+>
+> **Pre-existing bug found and fixed (Phase 3 code, outside this scope).** `transitionExpense` and `transitionSubmission` interpolated `$3` only inside `case when $3 is null`, where Postgres has no column to infer a type from and refuses to parse the statement at all: *"could not determine data type of parameter $3"*. **Every expense and project-submission transition — submit, approve, reject — had been 500ing since Phase 3**, which is why `expenseCostCents` was always 0. Time logs were unaffected (different query shape), and Phase 3's verification only exercised time logs, so nothing caught it. Fixed with an explicit `$3::uuid`; the e2e script now asserts the whole expense workflow.
 
 > **Audit design notes.** `audit_logs.company_id` is *whose activity* it is (the actor's active company) and `visible_to_client` says whether the company that hired them may see the row — so exposure is opt-in three times over: the row's flag, the provider's `audit_visibility` feature, and that engagement's `show_audit_trail`. Descriptions never name a counterparty, so a visible row can't leak who a subcontractor is. `recordAudit` never throws: a broken trail must not fail an approval, so failures are logged instead. Starter plans retain 30 days but can't *read* the trail until Pro — that's the seed's intent (§5B), not a bug.
+
+> **API hardening found while verifying (2026-08-17).** No route validated that an `:id` path parameter was a UUID, and nothing mapped Postgres error codes — so `GET /v1/projects/not-a-uuid` reached a `uuid` column, raised SQLSTATE `22P02`, and came back as **`500 Internal server error`**. That was true of *every* `:id` route in the app, and it is a lie: nothing internal went wrong, the request was malformed. Fixed in two places rather than forty handlers — [`http/pgErrors.ts`](apps/api/src/http/pgErrors.ts) maps the caller-provokable SQLSTATEs (`22P02`/`22003`/`22007`/`22008` → 422, `23505` → 409, `23503`/`23502`/`23514` → 422) while still logging every one, and [`uuidParam`](apps/api/src/http/params.ts) rejects at the edge with a 404 so a malformed id and someone else's id give the same answer. Genuine faults (`42P08`, `08006`, `53300`) stay 500s on purpose. 11 unit tests pin the mapping; `verify:e2e` asserts 8 routes never 500.
 
 ## Phase 5 — Billing, invoicing, notifications, polish — plan §3.5, §5B
 
@@ -190,6 +208,7 @@ Not started. Sequencing: finish Phase 4's **export engine** first (§29 builds o
 
 - [ ] Sustainability & Completion report, 12 sections (§29.1)
 - [ ] `generated_reports` snapshots + `content_hash`; **re-render reads the snapshot, never recalculates** (§29.4)
+- [ ] **Client-facing project export** (moved here from Phase 4 by owner decision, 2026-08-17): BILL-side line items only — no PAY figure, no rate snapshot, no subcontractor identity. Renders from the report snapshot, not a live recalculation, so a client re-opening a document a year later sees the numbers they were shown. Reuse the `PortalLineItem`/`PortalProjectView` types in `packages/shared` as the renderer's input so the exclusions are structural rather than a filter someone can forget
 - [ ] Evidence pack with section toggles (§29.2)
 - [ ] Configurable disclaimer + claim guards — no "verified"/"certified" language (§29.3)
 - [ ] Client sign-off: signature capture, evidence snapshot, append-only supersession (§34)
@@ -234,8 +253,8 @@ Everything mobile in one phase, against a finished and proven domain. Every endp
 ## ✅ Owner decisions — answered 2026-08-17 (plan §17)
 
 - [x] **Placeholder→linked merge policy → AUTO-MERGE.** On invite accept, if the invitee already owns a real company, the placeholder is claimed automatically (`companies.claimed_by_company_id`) and the engagement re-points to the real company — no confirmation prompt on either side. *Owner chose auto over the manual/two-sided-confirm recommendation; proceed as decided.* Open implementation assumption: if the accepting user owns **several** companies, merge into the one they're acting as (active company), falling back to their sole company when there's only one.
-- [x] **Rate rules are per-company — nothing about rates may be hardcoded.** Rate *amounts* were already user-owned (`rate_cards`), but the **`FRI_SAT_NIGHT` label rule is a hardcoded branch** in `resolveRateLabel` and must become company-configurable data (`rate_card_templates` already exists as its home). See the Phase 2 follow-up item below. This supersedes the old "verify against v1" decision — the rule doesn't get verified, it gets removed.
-- [x] **Currency → USD default, user-changeable.** `companies.currency` currently defaults to **`'GBP'`** (`0001_init.sql:21`) — must change to `'USD'`. Per-rate-card currency is **open**, see the question below.
+- [x] **Rate rules are per-company — nothing about rates may be hardcoded.** ✅ **Implemented 2026-08-17.** The `FRI_SAT_NIGHT` branch is gone from `resolveRateLabel`; label rules live in `rate_card_templates.timeframe_definitions` as `label_rule` entries, with one template per company elected as the default the engine reads. Migration 0007 backfilled the old behaviour for anyone who was relying on it. This superseded the old "verify against v1" decision — the rule wasn't verified, it was removed.
+- [x] **Currency → USD default, user-changeable.** ✅ **Implemented 2026-08-17.** Migration 0006 moves the column default to `'USD'` and backfills existing `'GBP'` rows; `PATCH /v1/companies/:id` (OWNER/ADMIN) makes it changeable. Per-rate-card currency is still **open**, see the question below.
 - [x] **MoR → Gumroad** (replaces the Lemon Squeezy vs Paddle choice) — Phase 5. Confirm PH payout method and verify Gumroad's subscription-webhook coverage before building against it.
 - [x] **Visual design system → not needed from Claude.** Owner has frontend work done via Codex; skip brand-token selection. *Blocked on locating that codebase — see below.*
 
