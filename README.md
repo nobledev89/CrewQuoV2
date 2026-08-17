@@ -122,6 +122,13 @@ Create the project from this repo, then in **Settings → General**:
 | Framework Preset | Next.js |
 | Build / Install Command | leave as the defaults |
 
+Both matter. Left at the repo root, Vercel builds the monorepo through turbo and
+then fails with `No entrypoint found. Searched for: app.*, index.*, server.*` —
+that is Vercel's *Node server* builder hunting for something to run, because the
+preset is "Other" and it never recognised this as a Next.js app. `apps/web/vercel.json`
+declares `"framework": "nextjs"` so the preset is correct once the Root Directory
+points at it.
+
 And in **Settings → Environment Variables**:
 
 | Variable | Value |
