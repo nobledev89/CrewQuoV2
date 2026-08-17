@@ -370,9 +370,14 @@ export async function transitionExpense(
   status: WorkStatus,
   review?: { reviewerUserId: string; rejectReason: string | null }
 ): Promise<ExpenseView> {
+  // `$3` is cast explicitly: it appears only inside `case when $3 is null`, where
+  // Postgres has no column to infer a type from and fails to parse the statement
+  // outright ("could not determine data type of parameter $3"). Without the cast
+  // every expense transition 500s — submit, approve and reject alike.
   const row = await queryOne<ExpenseRow>(
     `update expenses set status = $2,
-       reviewed_by_user_id = $3, reviewed_at = case when $3 is null then reviewed_at else now() end,
+       reviewed_by_user_id = $3::uuid,
+       reviewed_at = case when $3::uuid is null then reviewed_at else now() end,
        reject_reason = $4, updated_at = now()
      where id = $1 returning ${EXPENSE_COLS}`,
     [id, status, review?.reviewerUserId ?? null, review?.rejectReason ?? null]
@@ -487,8 +492,10 @@ export async function transitionSubmission(
   review?: { reviewerUserId: string; rejectReason: string | null }
 ): Promise<SubmissionView> {
   const row = await queryOne<SubmissionRow>(
+    // Same explicit cast as `transitionExpense` — see the note there.
     `update project_submissions set status = $2,
-       reviewed_by_user_id = $3, reviewed_at = case when $3 is null then reviewed_at else now() end,
+       reviewed_by_user_id = $3::uuid,
+       reviewed_at = case when $3::uuid is null then reviewed_at else now() end,
        reject_reason = $4, updated_at = now()
      where id = $1
      returning id, engagement_id, project_id, provider_company_id,
