@@ -1,6 +1,15 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    // Inherited from tsconfig.base.json, but restated here deliberately. A tool
+    // that rewrites this file (Next.js adds `"strict": false` when the file
+    // itself doesn't set it) would otherwise override the inherited value, and a
+    // local setting beats an extended one. Losing strictNullChecks does not fail
+    // loudly — it silently collapses every zod-inferred type to all-optional,
+    // because zod v3 tests `undefined extends T[k]` to decide optionality. The
+    // errors then land on innocent call sites like extractRate().
+    "strict": true,
+    "strictNullChecks": true,
     "types": ["node"]
   },
   "include": ["src"]

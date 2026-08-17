@@ -1,6 +1,11 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    // Restated, not just inherited: `next build` rewrites this file and writes
+    // `"strict": false` when the file itself doesn't set it, which would override
+    // the value from tsconfig.base.json and collapse every zod-inferred type.
+    "strict": true,
+    "strictNullChecks": true,
     "lib": [
       "ES2022",
       "DOM",

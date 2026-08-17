@@ -1,0 +1,25 @@
+{
+  // Root tsconfig. Nothing is compiled from here — `files` is empty on purpose
+  // (the canonical "solution style" form; an empty `include` would instead make a
+  // direct `tsc -p .` fail with TS18003). Each workspace package type-checks
+  // itself via its own tsconfig.
+  //
+  // This file exists to stop a build tool from *generating* one. Next.js creates a
+  // tsconfig.json when it can't find one, and its generated default is
+  // `"strict": false`. That silently breaks every zod-derived type in the repo:
+  // zod v3 decides whether a key is optional with `undefined extends T[k]`, which
+  // is true for every key once strictNullChecks is off, so `z.infer` collapses to
+  // an all-optional object and types like RateCardView stop satisfying
+  // RateCardInput. The resulting errors point at innocent call sites (e.g.
+  // extractRate in modules/rates/routes.ts) and look nothing like their cause.
+  //
+  // Keep strict on. If a type-check ever reports a required zod field as optional,
+  // suspect the tsconfig being used, not the code.
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "strict": true,
+    "strictNullChecks": true
+  },
+  "files": []
+}

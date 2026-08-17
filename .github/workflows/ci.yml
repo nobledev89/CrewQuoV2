@@ -9,15 +9,17 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
+      # No `version:` here on purpose. package.json's "packageManager" field
+      # (pnpm@10.32.1) is the single source of truth; specifying a version in
+      # both places makes action-setup fail with ERR_PNPM_BAD_PM_VERSION.
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      # Must come after pnpm/action-setup — `cache: pnpm` needs pnpm on PATH.
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
