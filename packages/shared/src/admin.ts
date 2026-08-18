@@ -243,3 +243,148 @@ export const adminPlanViewSchema = z.object({
   prices: z.array(adminPlanPriceViewSchema),
 });
 export type AdminPlanView = z.infer<typeof adminPlanViewSchema>;
+
+// ── Platform workspace ────────────────────────────────────────────────────────
+
+export const adminPlatformAuditSchema = z.object({
+  id: z.string().uuid(),
+  actorUserId: z.string().uuid().nullable(),
+  actorName: z.string().nullable(),
+  actorEmail: z.string().nullable(),
+  action: z.string(),
+  entityType: z.string(),
+  entityId: z.string().nullable(),
+  changes: z.record(z.unknown()),
+  description: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type AdminPlatformAudit = z.infer<typeof adminPlatformAuditSchema>;
+
+export const adminDashboardSchema = z.object({
+  totals: z.object({
+    users: z.number().int(),
+    verifiedUsers: z.number().int(),
+    superAdmins: z.number().int(),
+    companies: z.number().int(),
+    placeholders: z.number().int(),
+    paidCompanies: z.number().int(),
+    trialingCompanies: z.number().int(),
+    activeProjects: z.number().int(),
+    pendingWork: z.number().int(),
+    issuedInvoices: z.number().int(),
+  }),
+  attention: z.object({
+    pendingInvites: z.number().int(),
+    pastDueSubscriptions: z.number().int(),
+    trialsExpiringSoon: z.number().int(),
+    overridesExpiringSoon: z.number().int(),
+  }),
+  planDistribution: z.array(z.object({ key: z.string(), count: z.number().int() })),
+  recentUsers: z.array(z.object({
+    id: z.string().uuid(),
+    name: z.string(),
+    email: z.string(),
+    isSuperAdmin: z.boolean(),
+    createdAt: z.string(),
+  })),
+  recentCompanies: z.array(adminCompanySummarySchema),
+});
+export type AdminDashboard = z.infer<typeof adminDashboardSchema>;
+
+export const adminUserListQuerySchema = z.object({
+  search: z.string().trim().max(200).optional(),
+  access: z.enum(['ALL', 'SUPER_ADMIN', 'CUSTOMER']).default('ALL'),
+  verification: z.enum(['ALL', 'VERIFIED', 'UNVERIFIED']).default('ALL'),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+export type AdminUserListQuery = z.infer<typeof adminUserListQuerySchema>;
+
+export const adminUserSummarySchema = z.object({
+  id: z.string().uuid(),
+  email: z.string().email(),
+  name: z.string(),
+  avatarUrl: z.string().nullable(),
+  isSuperAdmin: z.boolean(),
+  emailVerified: z.boolean(),
+  membershipCount: z.number().int(),
+  activeSessionCount: z.number().int(),
+  createdAt: z.string(),
+});
+export type AdminUserSummary = z.infer<typeof adminUserSummarySchema>;
+
+export const adminUserDetailSchema = z.object({
+  user: adminUserSummarySchema,
+  memberships: z.array(z.object({
+    membershipId: z.string().uuid(),
+    companyId: z.string().uuid(),
+    companyName: z.string(),
+    role: z.enum(['OWNER', 'ADMIN', 'MANAGER', 'MEMBER']),
+    status: z.enum(['ACTIVE', 'INVITED', 'SUSPENDED']),
+  })),
+});
+export type AdminUserDetail = z.infer<typeof adminUserDetailSchema>;
+
+export const adminReasonSchema = z.object({
+  reason: z.string().trim().min(3).max(1000),
+});
+export type AdminReason = z.infer<typeof adminReasonSchema>;
+
+export const adminSetSuperAdminSchema = adminReasonSchema.extend({ enabled: z.boolean() });
+export type AdminSetSuperAdmin = z.infer<typeof adminSetSuperAdminSchema>;
+
+export const adminReportingQuerySchema = z.object({
+  days: z.coerce.number().int().min(7).max(365).default(30),
+});
+
+export const adminReportingSchema = z.object({
+  days: z.number().int(),
+  signupsByDay: z.array(z.object({ day: z.string(), count: z.number().int() })),
+  companiesByDay: z.array(z.object({ day: z.string(), count: z.number().int() })),
+  planDistribution: z.array(z.object({ key: z.string(), count: z.number().int() })),
+  subscriptionDistribution: z.array(z.object({ key: z.string(), count: z.number().int() })),
+  workflow: z.object({
+    projects: z.number().int(),
+    timeLogs: z.number().int(),
+    submittedTimeLogs: z.number().int(),
+    invoices: z.number().int(),
+    issuedInvoices: z.number().int(),
+    activeEngagements: z.number().int(),
+  }),
+});
+export type AdminReporting = z.infer<typeof adminReportingSchema>;
+
+export const adminOperationsSchema = z.object({
+  pendingInvites: z.array(z.object({
+    id: z.string().uuid(),
+    kind: z.string(),
+    email: z.string(),
+    companyName: z.string(),
+    expiresAt: z.string(),
+  })),
+  expiringOverrides: z.array(z.object({
+    id: z.string().uuid(),
+    companyId: z.string().uuid(),
+    companyName: z.string(),
+    subject: z.string(),
+    expiresAt: z.string(),
+  })),
+  recentAudit: z.array(adminPlatformAuditSchema),
+  services: z.array(z.object({
+    name: z.string(),
+    status: z.enum(['HEALTHY', 'ATTENTION', 'NOT_CONFIGURED']),
+    detail: z.string(),
+  })),
+});
+export type AdminOperations = z.infer<typeof adminOperationsSchema>;
+
+export const adminPlatformSettingsSchema = z.object({
+  platformName: z.string().trim().min(1).max(120),
+  supportEmail: z.string().trim().email().or(z.literal('')),
+  registrationOpen: z.boolean(),
+  maintenanceMode: z.boolean(),
+  maintenanceMessage: z.string().trim().max(500),
+});
+export type AdminPlatformSettings = z.infer<typeof adminPlatformSettingsSchema>;
+
+export const adminPlatformSettingsUpdateSchema = adminPlatformSettingsSchema.partial();
+export type AdminPlatformSettingsUpdate = z.infer<typeof adminPlatformSettingsUpdateSchema>;

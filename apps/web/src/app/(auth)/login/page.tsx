@@ -36,7 +36,11 @@ function Login() {
    * sign-in instead of dropping them on the dashboard with a lost token.
    */
   const next = params.get('next');
-  const destination = next && next.startsWith('/') ? next : '/app';
+  const destination = next && next.startsWith('/')
+    ? next
+    : session?.user.isSuperAdmin
+      ? '/admin'
+      : '/app';
 
   useEffect(() => {
     if (ready && session) router.replace(destination);
@@ -47,8 +51,8 @@ function Login() {
     setBusy(true);
     setError(null);
     try {
-      await login(email.trim(), password);
-      router.replace(destination);
+      const user = await login(email.trim(), password);
+      router.replace(next && next.startsWith('/') ? next : user.isSuperAdmin ? '/admin' : '/app');
     } catch (err) {
       setError(
         err instanceof ApiError

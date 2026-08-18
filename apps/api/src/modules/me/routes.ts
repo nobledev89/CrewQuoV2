@@ -1,9 +1,11 @@
 import { Router } from 'express';
 import {
   createCompanyRequestSchema,
+  resolveWorkspaceViews,
   updateMeSchema,
   type MeResponse,
   type MembershipsResponse,
+  type WorkspacesResponse,
 } from '@crewquo/shared';
 import { asyncHandler } from '../../http/asyncHandler';
 import { getCtx } from '../../http/context';
@@ -13,6 +15,8 @@ import { findUserById, toPublicUser, updateUserProfile } from '../users/repo';
 import { insertMembership, listMembershipSummaries } from '../memberships/repo';
 import { insertCompany, toCompanySummary } from '../companies/repo';
 import { recordAudit } from '../audit/record';
+import { resolveEntitlements } from '../entitlements/cache';
+import { listWorkspaceFacts } from './workspaces.repo';
 
 export const meRouter = Router();
 
@@ -72,6 +76,38 @@ meRouter.get(
     const ctx = getCtx(req);
     const memberships = await listMembershipSummaries(ctx.userId);
     const body: MembershipsResponse = { memberships };
+    res.json(body);
+  })
+);
+
+// GET /v1/me/workspaces — every valid company/view entry for the combined switcher.
+meRouter.get(
+  '/workspaces',
+  asyncHandler(async (req, res) => {
+    const ctx = getCtx(req);
+    const facts = await listWorkspaceFacts(ctx.userId);
+    const workspaces = await Promise.all(
+      facts.map(async (row) => {
+        const entitlements = await resolveEntitlements(row.companyId);
+        return {
+          companyId: row.companyId,
+          companyName: row.companyName,
+          currency: row.currency,
+          role: row.role,
+          views: resolveWorkspaceViews({
+            // Effective feature overrides count: an explicitly enabled operational
+            // capability should not leave its company trapped in Account setup.
+            operationsEntitled:
+              entitlements.operatesDownstream || entitlements.features.length > 0,
+            hasProviderRelationship: row.hasProviderRelationship,
+            hasAssignedWork: row.hasAssignedWork,
+            hasClientRelationship: row.hasClientRelationship,
+            hasPortalProject: row.hasPortalProject,
+          }),
+        };
+      })
+    );
+    const body: WorkspacesResponse = { workspaces };
     res.json(body);
   })
 );

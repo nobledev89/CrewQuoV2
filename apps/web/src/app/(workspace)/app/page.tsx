@@ -1,6 +1,8 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { useEffect } from 'react';
 import type {
   ClientView,
   EngagementView,
@@ -23,6 +25,7 @@ import { useAsyncList } from '@/lib/useAsyncList';
 import { useAsyncData } from '@/lib/useAsyncData';
 import { useEntitlements } from '@/lib/useEntitlements';
 import { formatUsage, titleCase } from '@/lib/format';
+import { landingForWorkspaceView, useWorkspace } from '@/workspaces/WorkspaceProvider';
 
 /**
  * Overview — deliberately role-aware rather than one fixed dashboard.
@@ -34,9 +37,35 @@ import { formatUsage, titleCase } from '@/lib/format';
  * someone's project, the portal only if something is shared with it.
  */
 export default function OverviewPage() {
+  const router = useRouter();
+  const { activeWorkspace, selectedView } = useWorkspace();
+
+  useEffect(() => {
+    if (selectedView && selectedView !== 'OPERATIONS') {
+      router.replace(landingForWorkspaceView(selectedView));
+    } else if (activeWorkspace?.views.length === 0) {
+      router.replace('/profile');
+    }
+  }, [activeWorkspace, router, selectedView]);
+
+  const choosingInitialView = Boolean(
+    activeWorkspace && activeWorkspace.views.length > 0 && selectedView === null
+  );
+  const leavingOverview = Boolean(
+    (selectedView && selectedView !== 'OPERATIONS') || activeWorkspace?.views.length === 0
+  );
+
   return (
     <Shell>
-      <Overview />
+      {choosingInitialView || leavingOverview ? (
+        <div className="cq-centered-message" role="status">
+          {choosingInitialView
+            ? 'Opening your workspace…'
+            : `Opening ${selectedView === 'CLIENT' ? 'client projects' : selectedView === 'SUBCONTRACTOR' ? 'your work' : 'account setup'}…`}
+        </div>
+      ) : (
+        <Overview />
+      )}
     </Shell>
   );
 }

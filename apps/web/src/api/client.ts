@@ -1,5 +1,6 @@
 import type {
   AcceptInviteResponse,
+  AdminDashboard,
   AdminCompaniesResponse,
   AdminCompanyDetail,
   AdminCompanySummary,
@@ -11,7 +12,14 @@ import type {
   AdminPlanPriceView,
   AdminPlanUpdate,
   AdminPlanView,
+  AdminOperations,
+  AdminPlatformAudit,
+  AdminPlatformSettings,
+  AdminPlatformSettingsUpdate,
+  AdminReporting,
   AdminSetSubscription,
+  AdminUserDetail,
+  AdminUserSummary,
   AssignmentView,
   AuditLogsResponse,
   AuditSettings,
@@ -83,6 +91,7 @@ import type {
   UpdateTimeLog,
   WorkContext,
   WorkStatus,
+  WorkspacesResponse,
 } from '@crewquo/shared';
 
 const API_URL: string = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
@@ -218,6 +227,8 @@ export const api = {
     request<MeResponse>('PATCH', '/v1/me', { accessToken: t, body }),
   memberships: (accessToken: string) =>
     request<{ memberships: MembershipSummary[] }>('GET', '/v1/me/memberships', { accessToken }),
+  workspaces: (accessToken: string) =>
+    request<WorkspacesResponse>('GET', '/v1/me/workspaces', { accessToken }),
   createCompany: (t: string, body: CreateCompanyRequest) =>
     request<{ company: CompanySummary }>('POST', '/v1/me/companies', {
       accessToken: t,
@@ -719,6 +730,44 @@ export const api = {
     }),
 
   // ── Super-admin (isSuperAdmin only) ──────────────────────────────────────────
+  adminDashboard: (t: string) =>
+    request<AdminDashboard>('GET', '/v1/admin/dashboard', { accessToken: t }),
+  adminUsers: (
+    t: string,
+    q: { search?: string; access?: string; verification?: string } = {}
+  ) => request<{ data: AdminUserSummary[] }>('GET', '/v1/admin/users', {
+    accessToken: t,
+    query: {
+      search: q.search || undefined,
+      access: q.access && q.access !== 'ALL' ? q.access : undefined,
+      verification: q.verification && q.verification !== 'ALL' ? q.verification : undefined,
+    },
+  }),
+  adminUser: (t: string, id: string) =>
+    request<AdminUserDetail>('GET', `/v1/admin/users/${id}`, { accessToken: t }),
+  adminRevokeUserSessions: (t: string, id: string, reason: string) =>
+    request<{ revoked: number }>('POST', `/v1/admin/users/${id}/revoke-sessions`, {
+      accessToken: t,
+      body: { reason },
+    }),
+  adminSetSuperAdmin: (t: string, id: string, enabled: boolean, reason: string) =>
+    request<{ user: AdminUserSummary }>('POST', `/v1/admin/users/${id}/super-admin`, {
+      accessToken: t,
+      body: { enabled, reason },
+    }),
+  adminReporting: (t: string, days = 30) =>
+    request<AdminReporting>('GET', '/v1/admin/reporting', {
+      accessToken: t,
+      query: { days: String(days) },
+    }),
+  adminOperations: (t: string) =>
+    request<AdminOperations>('GET', '/v1/admin/operations', { accessToken: t }),
+  adminPlatformSettings: (t: string) =>
+    request<AdminPlatformSettings>('GET', '/v1/admin/settings', { accessToken: t }),
+  adminUpdatePlatformSettings: (t: string, body: AdminPlatformSettingsUpdate) =>
+    request<AdminPlatformSettings>('PATCH', '/v1/admin/settings', { accessToken: t, body }),
+  adminPlatformAudit: (t: string) =>
+    request<{ data: AdminPlatformAudit[] }>('GET', '/v1/admin/audit', { accessToken: t }),
   adminListPlans: (t: string) =>
     request<{ plans: AdminPlanView[] }>('GET', '/v1/admin/plans', { accessToken: t }),
   adminCreatePlan: (t: string, body: AdminPlanCreate) =>

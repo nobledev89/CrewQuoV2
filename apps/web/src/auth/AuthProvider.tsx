@@ -30,7 +30,7 @@ interface AuthState {
   session: Session | null;
   companyId: string | null;
   activeMembership: MembershipSummary | null;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<PublicUser>;
   register: (input: RegisterRequest) => Promise<void>;
   logout: () => Promise<void>;
   setCompanyId: (companyId: string) => void;
@@ -117,6 +117,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(next);
       persist(next);
       setCompanyId(next.memberships[0]?.companyId ?? '');
+      return next.user;
     },
     [setCompanyId]
   );

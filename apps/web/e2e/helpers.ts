@@ -12,7 +12,6 @@ import { expect, type Browser, type Page } from '@playwright/test';
 export const RUN = Math.random().toString(36).slice(2, 8);
 
 const PASSWORD = 'Parity-passw0rd!';
-
 /** Read `DATABASE_URL` from the repo-root `.env` when it is not already exported. */
 function databaseUrl(): string {
   if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
@@ -175,7 +174,7 @@ export async function signIn(page: Page, email: string): Promise<void> {
   await page.getByLabel('Email address').fill(email);
   await page.getByLabel('Password').fill(PASSWORD);
   await page.getByRole('button', { name: 'Sign in' }).click();
-  await expect(page).toHaveURL(/\/app/);
+  await expect(page).toHaveURL(/\/(app|admin)/);
 
   /*
    * Wait for the shell itself, not just the URL.

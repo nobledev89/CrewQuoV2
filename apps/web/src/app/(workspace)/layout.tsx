@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { AuthProvider } from '@/auth/AuthProvider';
+import { WorkspaceProvider } from '@/workspaces/WorkspaceProvider';
 
 /**
  * One provider for the whole authenticated app.
@@ -12,5 +13,9 @@ import { AuthProvider } from '@/auth/AuthProvider';
  * parentheses is a grouping only.
  */
 export default function WorkspaceLayout({ children }: { children: ReactNode }) {
-  return <AuthProvider>{children}</AuthProvider>;
+  return (
+    <AuthProvider>
+      <WorkspaceProvider>{children}</WorkspaceProvider>
+    </AuthProvider>
+  );
 }

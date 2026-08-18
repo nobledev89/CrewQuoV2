@@ -3,12 +3,21 @@
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState, type ReactNode } from 'react';
-import { DEFAULT_CURRENCY, type FeatureKey } from '@crewquo/shared';
+import {
+  DEFAULT_CURRENCY,
+  type FeatureKey,
+  type WorkspaceView,
+} from '@crewquo/shared';
 import { Button, ErrorText, Field, Input, Select } from '@crewquo/ui';
 import { useAuth } from '@/auth/AuthProvider';
 import { ApiError } from '@/api/client';
 import { useEntitlements } from '@/lib/useEntitlements';
 import { titleCase } from '@/lib/format';
+import {
+  landingForWorkspaceView,
+  useWorkspace,
+  WORKSPACE_VIEW_LABELS,
+} from '@/workspaces/WorkspaceProvider';
 
 interface NavItem {
   href: string;
@@ -26,62 +35,144 @@ interface NavItem {
   requiresDownstream?: boolean;
 }
 
-const NAV: { label: string; items: NavItem[] }[] = [
+interface NavGroup {
+  label: string;
+  items: NavItem[];
+}
+
+/** Every destination stays in the sidebar; view switching alone lives in the top bar. */
+const VIEW_NAV: Record<WorkspaceView, NavGroup[]> = {
+  OPERATIONS: [
+    {
+      label: 'Workspace',
+      items: [
+        { href: '/app', label: 'Overview', icon: 'overview' },
+        { href: '/projects', label: 'Projects', icon: 'template' },
+        { href: '/review', label: 'Approvals', icon: 'check', requiresDownstream: true },
+      ],
+    },
+    {
+      label: 'Commercial',
+      items: [
+        { href: '/commercial', label: 'Agreements', icon: 'link' },
+        { href: '/invoices', label: 'Invoices', icon: 'card', feature: 'invoicing' },
+      ],
+    },
+    {
+      label: 'Network',
+      items: [
+        { href: '/network/engagements', label: 'Engagements', icon: 'link' },
+        { href: '/network/providers', label: 'Subcontractors', icon: 'people', requiresDownstream: true },
+        { href: '/network/clients', label: 'Clients', icon: 'building', feature: 'client_portal' },
+      ],
+    },
+    {
+      label: 'Rates',
+      items: [
+        { href: '/rates/roles', label: 'Roles', icon: 'people', feature: 'rate_cards' },
+        { href: '/rates/cards', label: 'Rate cards', icon: 'card', feature: 'rate_cards' },
+        { href: '/rates/templates', label: 'Templates', icon: 'template', feature: 'rate_cards' },
+        { href: '/rates/resolve', label: 'Rate resolver', icon: 'resolve', feature: 'rate_cards' },
+      ],
+    },
+    {
+      label: 'Reports',
+      items: [{ href: '/audit', label: 'Audit trail', icon: 'list', feature: 'audit_visibility' }],
+    },
+    {
+      label: 'Company',
+      items: [
+        { href: '/company/members', label: 'Members', icon: 'people' },
+        { href: '/plan', label: 'Plan & usage', icon: 'gauge' },
+        { href: '/settings', label: 'Settings', icon: 'settings' },
+        { href: '/profile', label: 'Profile', icon: 'people' },
+      ],
+    },
+  ],
+  SUBCONTRACTOR: [
+    {
+      label: 'Work',
+      items: [{ href: '/work', label: 'My work', icon: 'clock' }],
+    },
+    {
+      label: 'Commercial',
+      items: [
+        { href: '/commercial', label: 'Rate agreements', icon: 'link' },
+        { href: '/network/engagements', label: 'Engagements', icon: 'building' },
+      ],
+    },
+    {
+      label: 'Company',
+      items: [
+        { href: '/company/members', label: 'My team', icon: 'people' },
+        { href: '/plan', label: 'Plan & usage', icon: 'gauge' },
+        { href: '/settings', label: 'Settings', icon: 'settings' },
+        { href: '/profile', label: 'Profile', icon: 'people' },
+      ],
+    },
+  ],
+  CLIENT: [
+    {
+      label: 'Workspace',
+      items: [
+        { href: '/portal', label: 'Projects', icon: 'portal' },
+        { href: '/invoices', label: 'Invoices', icon: 'card' },
+      ],
+    },
+    {
+      label: 'Company',
+      items: [
+        { href: '/company/members', label: 'Members', icon: 'people' },
+        { href: '/plan', label: 'Plan & usage', icon: 'gauge' },
+        { href: '/settings', label: 'Settings', icon: 'settings' },
+        { href: '/profile', label: 'Profile', icon: 'people' },
+      ],
+    },
+  ],
+};
+
+const ACCOUNT_NAV: NavGroup[] = [{
+  label: 'Account',
+  items: [
+    { href: '/profile', label: 'Profile', icon: 'people' },
+    { href: '/company/members', label: 'Members', icon: 'people' },
+    { href: '/plan', label: 'Plan & usage', icon: 'gauge' },
+    { href: '/settings', label: 'Settings', icon: 'settings' },
+  ],
+}];
+
+const PLATFORM_NAV: NavGroup[] = [
   {
-    label: 'Workspace',
+    label: 'Overview',
+    items: [{ href: '/admin', label: 'Dashboard', icon: 'overview', superAdmin: true }],
+  },
+  {
+    label: 'Directory',
     items: [
-      { href: '/app', label: 'Overview', icon: 'overview' },
-      { href: '/projects', label: 'Projects', icon: 'template' },
-      { href: '/work', label: 'Log work', icon: 'clock' },
-      { href: '/review', label: 'Approvals', icon: 'check', requiresDownstream: true },
-      { href: '/invoices', label: 'Invoices', icon: 'card', feature: 'invoicing' },
-      { href: '/portal', label: 'Shared with me', icon: 'portal' },
+      { href: '/admin/users', label: 'Users', icon: 'people', superAdmin: true },
+      { href: '/admin/companies', label: 'Companies', icon: 'building', superAdmin: true },
     ],
   },
   {
-    label: 'Network',
-    items: [
-      { href: '/network/engagements', label: 'Engagements', icon: 'link' },
-      {
-        href: '/network/providers',
-        label: 'Subcontractors',
-        icon: 'people',
-        requiresDownstream: true,
-      },
-      { href: '/network/clients', label: 'Clients', icon: 'building', feature: 'client_portal' },
-    ],
+    label: 'Commercial',
+    items: [{ href: '/admin/plans', label: 'Plans & pricing', icon: 'gauge', superAdmin: true }],
   },
   {
-    label: 'Rates',
-    items: [
-      /**
-       * Deliberately ungated. Every other item here needs `rate_cards`, but a
-       * provider on the free Crew plan proposes its own PAY schedule — that is what
-       * the free tier is for (§5B), and the gate sits on the hiring company at
-       * approval time instead. Hiding this would hide the negotiation from exactly
-       * the people who start it.
-       */
-      { href: '/commercial', label: 'Agreements', icon: 'link' },
-      { href: '/rates/roles', label: 'Roles', icon: 'people', feature: 'rate_cards' },
-      { href: '/rates/cards', label: 'Rate cards', icon: 'card', feature: 'rate_cards' },
-      { href: '/rates/templates', label: 'Templates', icon: 'template', feature: 'rate_cards' },
-      { href: '/rates/resolve', label: 'Rate resolver', icon: 'resolve', feature: 'rate_cards' },
-    ],
+    label: 'Operations',
+    items: [{ href: '/admin/operations', label: 'Operations', icon: 'check', superAdmin: true }],
   },
   {
-    label: 'Company',
+    label: 'Insights',
     items: [
-      { href: '/company/members', label: 'Members', icon: 'people' },
-      { href: '/audit', label: 'Audit trail', icon: 'list', feature: 'audit_visibility' },
-      { href: '/plan', label: 'Plan & usage', icon: 'gauge' },
-      { href: '/settings', label: 'Settings', icon: 'settings' },
+      { href: '/admin/reporting', label: 'Reporting', icon: 'list', superAdmin: true },
+      { href: '/admin/audit', label: 'Platform audit', icon: 'resolve', superAdmin: true },
     ],
   },
   {
     label: 'Platform',
     items: [
-      { href: '/admin/companies', label: 'Companies', icon: 'building', superAdmin: true },
-      { href: '/admin/plans', label: 'Plans', icon: 'gauge', superAdmin: true },
+      { href: '/admin/settings', label: 'Settings', icon: 'settings', superAdmin: true },
+      { href: '/admin/access', label: 'Admin access', icon: 'people', superAdmin: true },
     ],
   },
 ];
@@ -108,6 +199,13 @@ const PAGE_NAMES: Record<string, string> = {
   '/profile': 'Profile',
   '/admin/plans': 'Plans',
   '/admin/companies': 'Companies',
+  '/admin/users': 'Users',
+  '/admin/reporting': 'Reporting',
+  '/admin/operations': 'Operations',
+  '/admin/settings': 'Settings',
+  '/admin/access': 'Admin access',
+  '/admin/audit': 'Platform audit',
+  '/admin': 'Dashboard',
 };
 
 /** The longest registered prefix wins, so `/projects/<id>` reads as "Projects". */
@@ -121,7 +219,8 @@ function pageNameFor(pathname: string): string {
 }
 
 export function Shell({ children }: { children: ReactNode }) {
-  const { ready, session, companyId, activeMembership, setCompanyId, logout } = useAuth();
+  const { ready, session, companyId, activeMembership, logout } = useAuth();
+  const workspace = useWorkspace();
   const router = useRouter();
   const pathname = usePathname();
   const pageName = pageNameFor(pathname);
@@ -140,6 +239,9 @@ export function Shell({ children }: { children: ReactNode }) {
 
   if (!ready) return <CenteredMessage>Loading workspace…</CenteredMessage>;
   if (!session) return <CenteredMessage>Redirecting to sign in…</CenteredMessage>;
+  if (activeMembership && workspace.loading) {
+    return <CenteredMessage>Loading workspace views…</CenteredMessage>;
+  }
 
   const isSuperAdmin = session.user.isSuperAdmin;
   /**
@@ -157,20 +259,33 @@ export function Shell({ children }: { children: ReactNode }) {
    * and buries the two that work below the fold.
    */
   const companyless = !activeMembership;
-  const groups = NAV.map((group) => ({
-    ...group,
-    items: group.items.filter((item) => {
+  const visible = (items: NavItem[]) =>
+    items.filter((item) => {
       if (item.superAdmin) return isSuperAdmin;
       if (companyless) return false;
-      // Until entitlements resolve, show the full set rather than flashing a short nav
-      // that grows a moment later — a menu that moves under the cursor is worse than a
-      // menu that briefly offers one refusal.
+      // Within Operations, effective plan entitlements still decide which controls
+      // exist. Client/Subcontractor access itself came from `/me/workspaces` and is
+      // not inferred from those plan features.
       if (!entitlements) return true;
       if (item.requiresDownstream && !entitlements.operatesDownstream) return false;
       if (item.feature && !entitlements.features.includes(item.feature)) return false;
       return true;
-    }),
-  })).filter((group) => group.items.length > 0);
+    });
+
+  const sourceGroups = platformScreen || (companyless && isSuperAdmin)
+    ? PLATFORM_NAV
+    : workspace.selectedView
+      ? VIEW_NAV[workspace.selectedView]
+      : ACCOUNT_NAV;
+  const groups = sourceGroups
+    .map((group) => ({ ...group, items: visible(group.items) }))
+    .filter((group) => group.items.length > 0);
+  const showCompanySwitcher = isSuperAdmin || workspace.workspaces.length > 1;
+  const showViewSwitcher = platformScreen || Boolean(workspace.activeWorkspace);
+  const brandHref = platformScreen
+    ? '/admin'
+    : landingForWorkspaceView(workspace.selectedView);
+  const companySelectorValue = platformScreen ? 'PLATFORM' : (companyId ?? '');
 
   return (
     <>
@@ -179,7 +294,7 @@ export function Shell({ children }: { children: ReactNode }) {
       </a>
       <div className="cq-app-shell">
         <aside className="cq-sidebar" aria-label="Primary navigation">
-          <Link className="cq-brand" href="/app" translate="no">
+          <Link className="cq-brand" href={brandHref} translate="no">
             <span className="cq-brand__mark" aria-hidden="true">
               CQ
             </span>
@@ -194,7 +309,7 @@ export function Shell({ children }: { children: ReactNode }) {
                   {group.items.map((item) => {
                     const active =
                       pathname === item.href ||
-                      (item.href !== '/app' && pathname.startsWith(`${item.href}/`));
+                      (item.href !== '/app' && item.href !== '/admin' && pathname.startsWith(`${item.href}/`));
                     return (
                       <Link
                         className="cq-nav-link"
@@ -221,7 +336,9 @@ export function Shell({ children }: { children: ReactNode }) {
               <span className="cq-account__copy">
                 <span className="cq-account__name">{session.user.name}</span>
                 <span className="cq-account__role">
-                  {activeMembership ? titleCase(activeMembership.role) : 'No company'}
+                  {activeMembership
+                    ? `${titleCase(activeMembership.role)}${workspace.selectedView ? ` · ${WORKSPACE_VIEW_LABELS[workspace.selectedView]}` : ''}`
+                    : platformScreen ? 'Super Admin' : 'No company'}
                 </span>
               </span>
             </Link>
@@ -231,25 +348,63 @@ export function Shell({ children }: { children: ReactNode }) {
         <div className="cq-app">
           <header className="cq-topbar">
             <div className="cq-breadcrumbs" aria-label="Breadcrumb">
-              <span>{activeMembership?.companyName ?? 'Workspace'}</span>
+              <span>{platformScreen ? 'CrewQuo Platform' : (activeMembership?.companyName ?? 'Workspace')}</span>
               <span className="cq-breadcrumbs__separator" aria-hidden="true">
                 /
               </span>
               <span aria-current="page">{pageName}</span>
             </div>
             <div className="cq-row" style={{ gap: 8 }}>
-              {session.memberships.length > 0 ? (
+              {workspace.error ? (
+                <span className="cq-muted" role="alert">
+                  {workspace.error}
+                </span>
+              ) : null}
+              {showCompanySwitcher ? (
                 <Select
                   className="cq-company-select"
-                  value={companyId ?? ''}
-                  onChange={(event) => setCompanyId(event.target.value)}
+                  value={companySelectorValue}
+                  onChange={(event) => {
+                    if (event.target.value === 'PLATFORM') router.push('/admin');
+                    else workspace.selectCompany(event.target.value);
+                  }}
                   aria-label="Active company"
                 >
-                  {session.memberships.map((membership) => (
-                    <option key={membership.companyId} value={membership.companyId}>
-                      {membership.companyName} · {titleCase(membership.role)}
+                  {isSuperAdmin ? <option value="PLATFORM">CrewQuo Platform</option> : null}
+                  {workspace.workspaces.map((entry) => (
+                    <option key={entry.companyId} value={entry.companyId}>
+                      {entry.companyName} · {titleCase(entry.role)}
                     </option>
                   ))}
+                </Select>
+              ) : null}
+              {showViewSwitcher ? (
+                <Select
+                  className="cq-view-select"
+                  value={platformScreen ? 'SUPER_ADMIN' : (workspace.selectedView ?? 'ACCOUNT')}
+                  onChange={(event) => {
+                    if (event.target.value === 'SUPER_ADMIN') {
+                      router.push('/admin');
+                      return;
+                    }
+                    if (!companyId) return;
+                    const rawView = event.target.value;
+                    workspace.selectWorkspace(
+                      companyId,
+                      rawView === 'ACCOUNT' ? null : (rawView as WorkspaceView)
+                    );
+                  }}
+                  aria-label="Workspace view"
+                >
+                  {platformScreen ? (
+                    <option value="SUPER_ADMIN">Super Admin</option>
+                  ) : workspace.activeWorkspace?.views.length ? (
+                    workspace.activeWorkspace.views.map((view) => (
+                      <option key={view} value={view}>{WORKSPACE_VIEW_LABELS[view]}</option>
+                    ))
+                  ) : (
+                    <option value="ACCOUNT">Account setup</option>
+                  )}
                 </Select>
               ) : null}
               <Button variant="secondary" size="sm" onClick={() => void logout()}>

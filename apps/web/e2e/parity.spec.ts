@@ -67,7 +67,7 @@ test.describe('Web core workflows', () => {
   let sub: Page;
   let client: Page;
 
-  test('the register screen creates an account and lands in a workspace', async ({ browser }) => {
+  test('the register screen creates a free account and lands in account setup', async ({ browser }) => {
     // Proves the registration UI in isolation. This company stays on the free `crew`
     // plan, which is exactly what a real sign-up gets.
     const page = await freshPage(browser);
@@ -77,13 +77,18 @@ test.describe('Web core workflows', () => {
       companyName: `Signup Test Co ${RUN}`,
     });
 
-    await expect(page).toHaveURL(/\/app/);
-    await expect(page.getByRole('heading', { name: `Signup Test Co ${RUN}` })).toBeVisible();
+    await expect(page).toHaveURL(/\/profile/);
+    await expect(page.getByRole('heading', { name: 'Profile' })).toBeVisible();
 
-    // A free plan cannot hire, and the UI should say so rather than 403 on click.
+    // Owning a free company does not invent an Operations workspace. Until this
+    // company is assigned as a subcontractor/client or upgrades, it gets only the
+    // compact account-setup navigation and cannot enter an Ops URL manually.
+    const sidebar = page.getByRole('complementary', { name: 'Primary navigation' });
+    await expect(sidebar.getByRole('link', { name: 'Profile' })).toBeVisible();
+    await expect(sidebar.getByRole('link', { name: 'Subcontractors' })).toHaveCount(0);
+    await expect(page.getByLabel('Workspace view')).toHaveValue('ACCOUNT');
     await page.goto('/network/providers');
-    await expect(page.getByText('This plan cannot hire.')).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Add subcontractor' })).toBeDisabled();
+    await expect(page).toHaveURL(/\/profile/);
     await page.close();
   });
 
@@ -169,6 +174,35 @@ test.describe('Web core workflows', () => {
 
     client = await freshPage(browser);
     await acceptInviteAsNewUser(client, inviteUrl, { handle: 'client', name: 'Chris Client' });
+  });
+
+  test('each participant receives only its eligible workspace navigation', async () => {
+    await contractor.goto('/app');
+    const operationsNav = contractor.getByRole('complementary', { name: 'Primary navigation' });
+    await expect(contractor.getByLabel('Workspace view')).toHaveValue('OPERATIONS');
+    await expect(contractor.getByLabel('Workspace view').getByRole('option')).toHaveText(['Contractor']);
+    await expect(operationsNav.getByRole('link', { name: 'Overview' })).toBeVisible();
+    await expect(operationsNav.getByRole('link', { name: 'Rate cards' })).toBeVisible();
+    await expect(operationsNav.getByRole('link', { name: 'Profile' })).toBeVisible();
+    await expect(operationsNav.getByRole('link', { name: 'My work' })).toHaveCount(0);
+
+    await sub.goto('/work');
+    const subcontractorNav = sub.getByRole('complementary', { name: 'Primary navigation' });
+    await expect(sub.getByLabel('Workspace view')).toHaveValue('SUBCONTRACTOR');
+    await expect(sub.getByLabel('Workspace view').getByRole('option')).toHaveText(['Subcontractor']);
+    await expect(subcontractorNav.getByRole('link', { name: 'My work' })).toBeVisible();
+    await expect(subcontractorNav.getByRole('link', { name: 'Rate agreements' })).toBeVisible();
+    await expect(subcontractorNav.getByRole('link', { name: 'Profile' })).toBeVisible();
+    await expect(subcontractorNav.getByRole('link', { name: 'Overview' })).toHaveCount(0);
+
+    await client.goto('/portal');
+    const clientNav = client.getByRole('complementary', { name: 'Primary navigation' });
+    await expect(client.getByLabel('Workspace view')).toHaveValue('CLIENT');
+    await expect(client.getByLabel('Workspace view').getByRole('option')).toHaveText(['Client']);
+    await expect(clientNav.getByRole('link', { name: 'Projects' })).toBeVisible();
+    await expect(clientNav.getByRole('link', { name: 'Invoices' })).toBeVisible();
+    await expect(clientNav.getByRole('link', { name: 'Profile' })).toBeVisible();
+    await expect(clientNav.getByRole('link', { name: 'Commercial' })).toHaveCount(0);
   });
 
   test('a project is created for the client, published, and the subcontractor assigned', async () => {
@@ -481,6 +515,35 @@ test.describe('Web core workflows', () => {
 
     const staff = await freshPage(browser);
     await signIn(staff, email);
+
+    await expect(staff).toHaveURL(/\/admin$/);
+    await expect(staff.getByRole('heading', { name: 'Platform dashboard' })).toBeVisible();
+    await expect(staff.getByLabel('Active company')).toHaveValue('PLATFORM');
+    await expect(staff.getByLabel('Active company').getByRole('option', { name: 'CrewQuo Platform' })).toHaveCount(1);
+    await expect(staff.getByLabel('Workspace view')).toHaveValue('SUPER_ADMIN');
+    await expect(staff.getByLabel('Workspace view').getByRole('option', { name: 'Super Admin' })).toHaveCount(1);
+    for (const item of ['Dashboard', 'Users', 'Companies', 'Plans & pricing', 'Operations', 'Reporting', 'Platform audit', 'Settings', 'Admin access']) {
+      await expect(staff.getByRole('link', { name: item, exact: true })).toBeVisible();
+    }
+
+    await staff.getByRole('link', { name: 'Users', exact: true }).click();
+    await expect(staff.getByRole('heading', { name: 'Users' })).toBeVisible();
+    await staff.getByLabel('Search users').fill(email);
+    await staff.getByRole('button', { name: 'Search' }).click();
+    const userRow = staff.getByRole('row').filter({ hasText: email });
+    // This fixture is intentionally elevated directly in SQL without completing
+    // email verification; the real bootstrap CLI refuses that state.
+    await expect(userRow).toContainText('Unverified');
+    await userRow.getByRole('button', { name: 'Open' }).click();
+    await expect(staff.getByText('Super Admin', { exact: true }).last()).toBeVisible();
+    await staff.getByRole('button', { name: 'Close panel' }).click();
+
+    await staff.getByRole('link', { name: 'Reporting', exact: true }).click();
+    await expect(staff.getByRole('heading', { name: 'Reporting' })).toBeVisible();
+    await staff.getByRole('link', { name: 'Operations', exact: true }).click();
+    await expect(staff.getByRole('heading', { name: 'Operations' })).toBeVisible();
+    await staff.getByRole('link', { name: 'Settings', exact: true }).click();
+    await expect(staff.getByRole('heading', { name: 'Platform settings' })).toBeVisible();
 
     // A staff account owns nothing, so every ordinary screen correctly asks for a
     // company — but the console must not, or support is unreachable by its own audience.

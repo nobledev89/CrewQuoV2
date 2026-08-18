@@ -24,6 +24,7 @@ import { Shell } from '@/components/Shell';
 import { formatCents, formatDate, formatDateTime } from '@/lib/format';
 import { useAsyncList } from '@/lib/useAsyncList';
 import { useEntitlements } from '@/lib/useEntitlements';
+import { useWorkspace } from '@/workspaces/WorkspaceProvider';
 
 export default function InvoicesPage() {
   return <Shell><Invoices /></Shell>;
@@ -32,14 +33,17 @@ export default function InvoicesPage() {
 function Invoices() {
   const ctx = useSessionCtx();
   const { activeMembership } = useAuth();
+  const { selectedView } = useWorkspace();
   const ent = useEntitlements();
   const list = useAsyncList<InvoiceView>(
     ctx ? () => api.listInvoices(ctx.accessToken, ctx.companyId).then((r) => r.data) : null,
     [ctx?.companyId]
   );
   const projects = useAsyncList<ProjectView>(
-    ctx ? () => api.listProjects(ctx.accessToken, ctx.companyId).then((r) => r.data) : null,
-    [ctx?.companyId]
+    ctx && selectedView === 'OPERATIONS'
+      ? () => api.listProjects(ctx.accessToken, ctx.companyId).then((r) => r.data)
+      : null,
+    [ctx?.companyId, selectedView]
   );
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedSnapshot, setSelectedSnapshot] = useState<InvoiceView | null>(null);
@@ -55,7 +59,10 @@ function Invoices() {
     if (fresh) setSelectedSnapshot(fresh);
   }, [list.items, selectedId]);
 
-  const canManage = activeMembership ? activeMembership.role !== 'MEMBER' : false;
+  const canManage =
+    selectedView === 'OPERATIONS' && activeMembership
+      ? activeMembership.role !== 'MEMBER'
+      : false;
   const clientProjects = projects.items.filter((p) => p.clientCompanyId && p.engagementId);
 
   function accept(invoice: InvoiceView) {
@@ -69,13 +76,19 @@ function Invoices() {
       <PageHeader
         eyebrow="Commercial"
         title="Invoices"
-        description="Turn approved work into a frozen client invoice. Work-backed amounts always come from the same BILL-rate path as the project summary."
+        description={
+          selectedView === 'CLIENT'
+            ? 'Invoices issued to your company, with the frozen totals and status the contractor shared.'
+            : 'Turn approved work into a frozen client invoice. Work-backed amounts always come from the same BILL-rate path as the project summary.'
+        }
         actions={canManage && ent.has('invoicing') && !creating ? (
           <Button size="sm" onClick={() => setCreating(true)}>New invoice</Button>
         ) : null}
       />
 
-      {!ent.loading && canManage && !ent.has('invoicing') ? <FeatureNotice feature="invoicing" /> : null}
+      {selectedView === 'OPERATIONS' && !ent.loading && canManage && !ent.has('invoicing') ? (
+        <FeatureNotice feature="invoicing" />
+      ) : null}
       {creating ? (
         <NewInvoice
           projects={clientProjects}

@@ -3,10 +3,15 @@ import {
   adminCompTrialSchema,
   adminCompanyListQuerySchema,
   adminOverrideCreateSchema,
+  adminPlatformSettingsUpdateSchema,
   adminPlanCreateSchema,
   adminPlanPriceSchema,
   adminPlanUpdateSchema,
+  adminReasonSchema,
+  adminReportingQuerySchema,
   adminSetSubscriptionSchema,
+  adminSetSuperAdminSchema,
+  adminUserListQuerySchema,
   type AdminCompaniesResponse,
 } from '@crewquo/shared';
 import { asyncHandler } from '../../http/asyncHandler';
@@ -35,6 +40,19 @@ import {
   listCompanies,
   setSubscription,
 } from './companies.repo';
+import {
+  getAdminDashboard,
+  getAdminOperations,
+  getAdminReporting,
+  getAdminUser,
+  getPlatformSettings,
+  listAdminUsers,
+  listPlatformAudit,
+  recordPlatformAudit,
+  revokeAdminUserSessions,
+  setUserSuperAdmin,
+  updatePlatformSettings,
+} from './platform.repo';
 
 /**
  * Super-admin console API (§5B). Mounted behind requireAuth + requireSuperAdmin.
@@ -47,6 +65,93 @@ import {
 export const adminRouter = Router();
 
 adminRouter.get(
+  '/dashboard',
+  asyncHandler(async (_req, res) => {
+    res.json(await getAdminDashboard());
+  })
+);
+
+adminRouter.get(
+  '/users',
+  asyncHandler(async (req, res) => {
+    const input = adminUserListQuerySchema.parse(req.query);
+    res.json({ data: await listAdminUsers(input) });
+  })
+);
+
+adminRouter.get(
+  '/users/:id',
+  asyncHandler(async (req, res) => {
+    const user = await getAdminUser(uuidParam(req, 'id'));
+    if (!user) throw new AppError('NOT_FOUND', 'User not found');
+    res.json(user);
+  })
+);
+
+adminRouter.post(
+  '/users/:id/revoke-sessions',
+  asyncHandler(async (req, res) => {
+    const ctx = getCtx(req);
+    const { reason } = adminReasonSchema.parse(req.body);
+    const revoked = await revokeAdminUserSessions(ctx.userId, uuidParam(req, 'id'), reason);
+    res.json({ revoked });
+  })
+);
+
+adminRouter.post(
+  '/users/:id/super-admin',
+  asyncHandler(async (req, res) => {
+    const ctx = getCtx(req);
+    const input = adminSetSuperAdminSchema.parse(req.body);
+    const user = await setUserSuperAdmin(
+      ctx.userId,
+      uuidParam(req, 'id'),
+      input.enabled,
+      input.reason
+    );
+    res.json({ user });
+  })
+);
+
+adminRouter.get(
+  '/reporting',
+  asyncHandler(async (req, res) => {
+    const { days } = adminReportingQuerySchema.parse(req.query);
+    res.json(await getAdminReporting(days));
+  })
+);
+
+adminRouter.get(
+  '/operations',
+  asyncHandler(async (_req, res) => {
+    res.json(await getAdminOperations());
+  })
+);
+
+adminRouter.get(
+  '/settings',
+  asyncHandler(async (_req, res) => {
+    res.json(await getPlatformSettings());
+  })
+);
+
+adminRouter.patch(
+  '/settings',
+  asyncHandler(async (req, res) => {
+    const ctx = getCtx(req);
+    const patch = adminPlatformSettingsUpdateSchema.parse(req.body);
+    res.json(await updatePlatformSettings(ctx.userId, patch));
+  })
+);
+
+adminRouter.get(
+  '/audit',
+  asyncHandler(async (_req, res) => {
+    res.json({ data: await listPlatformAudit(100) });
+  })
+);
+
+adminRouter.get(
   '/plans',
   asyncHandler(async (_req, res) => {
     res.json({ plans: await listPlans() });
@@ -56,9 +161,11 @@ adminRouter.get(
 adminRouter.post(
   '/plans',
   asyncHandler(async (req, res) => {
+    const ctx = getCtx(req);
     const input = adminPlanCreateSchema.parse(req.body);
     const plan = await createPlan(input);
     clearEntitlementsCache();
+    await recordPlatformAudit({ actorUserId: ctx.userId, action: 'plan.created', entityType: 'PLAN', entityId: plan.id, changes: { plan }, description: `Plan ${plan.name} was created` });
     res.status(201).json({ plan });
   })
 );
@@ -75,9 +182,11 @@ adminRouter.get(
 adminRouter.patch(
   '/plans/:id',
   asyncHandler(async (req, res) => {
+    const ctx = getCtx(req);
     const patch = adminPlanUpdateSchema.parse(req.body);
     const plan = await updatePlan(param(req, 'id'), patch);
     clearEntitlementsCache();
+    await recordPlatformAudit({ actorUserId: ctx.userId, action: 'plan.updated', entityType: 'PLAN', entityId: plan.id, changes: { patch }, description: `Plan ${plan.name} was updated` });
     res.json({ plan });
   })
 );
@@ -85,9 +194,12 @@ adminRouter.patch(
 adminRouter.post(
   '/plans/:id/prices',
   asyncHandler(async (req, res) => {
+    const ctx = getCtx(req);
     const price = adminPlanPriceSchema.parse(req.body);
-    const saved = await upsertPlanPrice(param(req, 'id'), price);
+    const planId = param(req, 'id');
+    const saved = await upsertPlanPrice(planId, price);
     clearEntitlementsCache();
+    await recordPlatformAudit({ actorUserId: ctx.userId, action: 'plan.price_updated', entityType: 'PLAN', entityId: planId, changes: { price: saved }, description: `A ${saved.currency} ${saved.interval.toLowerCase()} price was updated` });
     res.status(201).json({ price: saved });
   })
 );
@@ -150,6 +262,7 @@ adminRouter.post(
         ? `Feature ${override.featureKey} was ${override.featureEnabled ? 'granted' : 'withdrawn'} by CrewQuo staff`
         : `Limit ${override.limitKey} was set to ${override.limitValue === null ? 'unlimited' : override.limitValue} by CrewQuo staff`,
     });
+    await recordPlatformAudit({ actorUserId: ctx.userId, action: 'company.override_applied', entityType: 'COMPANY', entityId: companyId, changes: { override }, description: `An entitlement override was applied to company ${companyId}` });
 
     res.status(201).json({ override });
   })
@@ -175,6 +288,7 @@ adminRouter.delete(
         : { limit: removed.limitKey, value: removed.limitValue },
       description: 'An entitlement override was removed by CrewQuo staff',
     });
+    await recordPlatformAudit({ actorUserId: ctx.userId, action: 'company.override_removed', entityType: 'COMPANY', entityId: companyId, changes: { overrideId: removed.id }, description: `An entitlement override was removed from company ${companyId}` });
     res.status(204).end();
   })
 );
@@ -205,6 +319,7 @@ adminRouter.post(
       },
       description: `Plan set to ${input.planId} (${input.status}) by CrewQuo staff`,
     });
+    await recordPlatformAudit({ actorUserId: ctx.userId, action: 'company.plan_changed', entityType: 'COMPANY', entityId: companyId, changes: { before, after: input }, description: `Company ${companyId} was moved to ${input.planId}` });
 
     res.json({ company: (await getCompanyDetail(companyId))!.company });
   })
@@ -237,6 +352,7 @@ adminRouter.post(
       },
       description: `${input.days}-day trial of ${input.planId} granted by CrewQuo staff`,
     });
+    await recordPlatformAudit({ actorUserId: ctx.userId, action: 'company.trial_comped', entityType: 'COMPANY', entityId: companyId, changes: { before, planId: input.planId, days: input.days, trialEnd }, description: `A ${input.days}-day trial was granted to company ${companyId}` });
 
     res.json({ company: (await getCompanyDetail(companyId))!.company });
   })

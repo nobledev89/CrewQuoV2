@@ -1,7 +1,7 @@
 # CrewQuo v2 — Unified Build Specification
 
 > **Product decision:** CrewQuo v2 is one new, independent application. Its scope includes the commercial core, field operations, project evidence, asset and material tracking, sustainability, reporting, scheduling, compliance, the client experience, web and mobile. Together they define v2.
-> **Implementation status:** Phases 0–5 are built and verified, and Phase 6 has delivered the invoice foundation; the remaining Phase 6 work is tracked in `PROGRESS.md`. Existing code is implementation progress, not a product or UX constraint. Keep correct, tested domain behavior; replace or reshape APIs, navigation, screens and workflows when the unified product requires it.
+> **Implementation status:** Phases 0–5 are built and verified, and Phase 6 has delivered the invoice and commercial-agreement foundations; the remaining Phase 6 work is tracked in `PROGRESS.md`. Existing code is implementation progress, not a product or UX constraint. Keep correct, tested domain behavior; replace or reshape APIs, navigation, screens and workflows when the unified product requires it.
 > **Relationship to v1:** v2 has no runtime connection to v1. v1 (Next.js + Firebase) may stay live while v2 is built, but it supplies neither the information architecture nor the acceptance criteria. There is no shared database, shared auth, dual-write, synchronization, parity requirement, or production-data migration in scope.
 
 ---
@@ -141,6 +141,20 @@ create index on memberships (user_id);
 > **The single most important design decision:** v1's `activeCompanyId` context-switching (a user working across multiple companies) is now a plain `memberships` join table. "Switch active company" = pick a different membership row. Every access check is `WHERE company_id = $activeCompanyId AND EXISTS (a membership for this user)`. There are no claims to refresh, ever.
 >
 > **Role semantics:** a membership role governs what a user can do *inside their own company* (OWNER/ADMIN/MANAGER can manage; MEMBER = worker who logs time). Whether that company is a *client* or *provider* on a given piece of work is derived from the **engagement**, never from the role. There is no `CLIENT` or `SUBCONTRACTOR` user role in v2.
+
+#### 3.1.1 Company ownership and creation safeguard
+
+Multiple **memberships** are intentional; unlimited self-created tenant companies are not. A user may be invited into any number of companies and the switcher continues to expose every active membership. Company creation follows a separate platform-level policy:
+
+1. **One automatic first-company creation.** A verified, non-platform-staff identity that has never consumed its first-company allowance may create one real company and becomes its `OWNER`. Memberships received by invitation do not consume this allowance. The allowance is ledgered permanently: transferring ownership, leaving, archiving or deleting the company does not restore it.
+2. **Additional companies use an advanced flow.** “Create another legal company” requires the legal/business name, country, registration identifier where one exists, intended plan and an attestation that this is a distinct business—not a client, subcontractor, department, branch, brand or project that belongs in an existing CrewQuo structure.
+3. **One-time approval before creation.** An additional-company request becomes usable only after either a fresh Gumroad subscription checkout for that new company or an audited super-admin approval (the exceptional path for a legitimate free/Crew company). Approval is single-use, expires and is consumed atomically with `POST /v1/me/companies`; retrying the same idempotent request returns the same company.
+4. **No inherited tenancy or commerce.** Every created company receives its own company id, subscription/plan, billing identity, settings, currency, limits, retention and data boundary. Membership, entitlements, client/provider relationships and records never copy from the user's other companies.
+5. **Trials do not reset.** Trial eligibility is ledgered outside any one tenant against the owning user and stable MoR customer identity. Creating, transferring, archiving or deleting a company cannot create another automatic trial. Store provider identifiers and decisions—not invasive device fingerprints or raw payment data.
+6. **Duplicate and recovery handling.** Country + registration identifier is a strong duplicate signal and routes the user to invitation, ownership recovery or support; a name-only match warns but does not hard-block because names are not globally unique. Placeholder companies are claimed/merged through §3.6, never recreated here.
+7. **Safe edge behavior.** Company creation requires recent authentication, email verification, rate limiting, idempotency and an immutable audit/decision record. Platform staff do not use the customer endpoint. Rejected/expired approvals reveal a clear next step and never leave an active half-created tenant.
+
+Phase 6 adds a platform-scoped `company_creation_requests`/allowance ledger and backfills existing real-company owners as having consumed the automatic allowance. Where historical creator identity is ambiguous, fail safely and require an audited admin approval. The implementation packet must define the exact states (`PENDING_CHECKOUT | PENDING_REVIEW | APPROVED | REJECTED | EXPIRED | CONSUMED`), concurrency rule, support recovery and retention before the migration is written.
 
 ### 3.2 Engagements (the relationship graph)
 
@@ -536,7 +550,7 @@ Adding a *new* key requires a one-line enforcement hook the first time; after th
 ### Super-admin console (`apps/web`, `isSuperAdmin` only)
 Plans CRUD (create/edit/reorder/publish/archive; trial days; `operates_downstream`) · price editor per currency+interval (syncs to MoR) · feature matrix · limit matrix · companies view (live usage vs limits, apply overrides, comp/extend trials, force plan change) — every change written to `audit_logs`.
 
-**Implemented 2026-08-17** across two screens: `/admin/plans` (the catalog everyone resolves against) and `/admin/companies` (one account at a time). Two rules the console follows rather than re-deriving: it reads `resolveEntitlements` and `getAllUsage`, so it can never display an allowance the product would refuse; and platform staff usually own **no company**, so the `/admin/*` area is the one part of the workspace that renders without an active membership. Placeholder companies are hidden from the list by default — every invite creates one (§3.6).
+**Implemented and expanded through 2026-08-18** as a distinct `CrewQuo Platform` workspace with the fixed `Super Admin` view. Its sidebar contains Dashboard, Users, Companies, Plans & pricing, Operations, Reporting, Platform audit, Settings and Admin access. Platform context is synthetic—it is never inserted into memberships and never sent as `X-Company-Id`. The console reads `resolveEntitlements` and `getAllUsage`, so it cannot display an allowance the product would refuse; platform staff may own **no company**, so `/admin/*` renders without an active membership. Company/subscription writes keep their customer-facing company audit and also write the platform audit; identity, access and platform-setting actions exist only in the platform audit. Full boundary and route inventory: [docs/product/platform-admin.md](docs/product/platform-admin.md).
 
 ### Seed plans (editable rows, not constants)
 
@@ -594,7 +608,9 @@ POST   /v1/auth/request-password-reset | reset-password | verify-email
 GET    /v1/me                                  -- profile
 PATCH  /v1/me                                   -- own name + avatar (email is not editable here)
 GET    /v1/me/memberships                       -- company switcher source
-POST   /v1/me/companies                          -- create a new company (become OWNER)
+POST   /v1/me/company-creation-requests           -- advanced additional-company attestation; returns checkout/review next step
+GET    /v1/me/company-creation-requests           -- own request status/history
+POST   /v1/me/companies                          -- first allowance or approved request; consume atomically, become OWNER
 
 # Companies & engagements
 GET    /v1/companies/:id
@@ -652,6 +668,11 @@ GET    /v1/entitlements                             -- resolved entitlements + l
 
 # Super-admin (isSuperAdmin only). No X-Company-Id — these operate ON companies, not from inside one.
 CRUD   /v1/admin/plans  /v1/admin/plans/:id/prices  /v1/admin/features  /v1/admin/limits
+GET    /v1/admin/dashboard  /users[/:id]  /reporting  /operations  /audit
+POST   /v1/admin/users/:id/revoke-sessions | super-admin
+GET|PATCH /v1/admin/settings
+GET    /v1/admin/company-creation-requests          -- pending/history; legal identity + duplicate signals
+POST   /v1/admin/company-creation-requests/:id/approve | reject  -- reason required; immutable decision
 GET    /v1/admin/companies            -- ?search (name or member email) &planId &includePlaceholders
                                          &limit &cursor (keyset on created_at,id). Placeholders excluded
                                          by default: every invite creates one, so they outnumber real accounts
@@ -726,6 +747,31 @@ The table is a **capability inventory**, not a parity checklist or a prescribed 
 
 **Bulk review at scale is a defining web workflow:** approving 200 time logs across 12 providers needs filters, grouping, exception handling and multi-select. Its acceptance test is that the job is fast and safe—not that every existing endpoint has acquired a page.
 
+### 9.2 Three customer workspace views
+
+CrewQuo has **three customer-facing views**, implemented as runtime navigation lenses inside the same application—not separate apps, tenants, user roles, route trees or authorization systems. Internal identifiers are `OPERATIONS | SUBCONTRACTOR | CLIENT`; the UI may label `OPERATIONS` as **Contractor** where that is the market's clearest language.
+
+| View | Eligibility for the active company | Primary navigation (maximum six groups) | Never exposes |
+|---|---|---|---|
+| **Contractor / Operations** | Effective subscription/trial/comp grants the operations workspace | Home · Projects · Work review · Commercial · Reports · Company | Anything the membership capability or project scope refuses |
+| **Subcontractor** | A direct provider invitation, engagement or project assignment exists | Home · My jobs · Time & expenses · Agreements & invoices · Evidence & documents · Account | Upstream BILL rates, margin, unrelated projects or another provider's records |
+| **Client** | A direct client/portal relationship and published project visibility exist | Overview · Projects · Approvals & invoices · Reports · Messages · Account | PAY rates, subcontractor identity where hidden, internal audit entries or unpublished evidence |
+
+The groups are containers, not a promise to show empty pages. Project-local capabilities stay in the §20 project rail; future modules join the relevant group instead of adding another permanent top-level button. Action Centre, notifications, search, profile, help and company/view switching are shared shell utilities rather than duplicated navigation items.
+
+**Eligibility and selection rules:**
+
+1. Payment alone never creates a client or subcontractor relationship, and a relationship never unlocks paid Operations features. View eligibility is the intersection of active company, direct relationship, effective entitlement, membership capability and project/resource scope.
+2. A nonpaying company sees only its eligible Subcontractor and/or Client views plus shared Account/support controls. It never receives an Operations sidebar full of upgrade refusals. Upsell appears only at a relevant action boundary.
+3. A paying Operations company may also receive Subcontractor or Client views when it genuinely occupies those positions elsewhere. A company may therefore have one, two or all three views.
+4. The top-right **View** dropdown always shows the current customer perspective and contains only the active company's eligible Contractor, Subcontractor and Client views. Switching it changes the sidebar and landing page. Company switching remains a separate control and appears only when the user belongs to several companies; changing company restores that company's last valid view.
+5. Remember the last valid view per company and device. A deep link selects the required view automatically when authorized; otherwise it returns the ordinary denied/not-found behavior without leaking that a record exists.
+6. The selected view controls navigation, default landing page, terminology and default filters only. It is never accepted as authorization evidence by the API, never broadens an endpoint response and never gets stored as a membership role.
+7. OWNER/ADMIN/MANAGER/MEMBER and the §37 capability bundles refine controls **inside** a view. Supervisor/Worker/Finance and the mobile Field experience are role/job-specific presentations within Operations or Subcontractor—not fourth customer views.
+8. `isSuperAdmin` receives the separate platform console. Public/auth/onboarding and the no-entitlement account/setup state are application states, not customer views.
+
+**Acceptance matrix before implementation is complete:** paying Operations only; free Subcontractor only; free Client only; free company eligible for both Subcontractor and Client; paying Operations company also serving elsewhere as Subcontractor or Client; one user across several companies; and platform staff with no company. For every case, assert landing destination, visible navigation, deep-link behavior, Action Centre filtering and denied data—not just hidden buttons.
+
 ---
 
 ## 10. Infrastructure & environments
@@ -754,7 +800,7 @@ The table is a **capability inventory**, not a parity checklist or a prescribed 
 
 **Phase 5 — Unified v2 web application.** Design and build the new information architecture, navigation, workspace shell and complete core workflows described in §9.1: onboarding, company context, dashboard, projects, counterparties, members, time and expense review, rate management, client collaboration, audit and administration. Existing screens may be replaced. *Milestone: a user can run the v2 core lifecycle through one coherent web product, with every empty/loading/error/locked/forbidden state designed.*
 
-**Phase 6 — Commercial readiness.** `invoices`/`invoice_items`; commercial agreement/rate-proposal hardening; currency/FX/tax-invoice boundaries; Merchant-of-Record checkout and lifecycle; transactional outbox/webhook inbox/durable jobs; subscription management; Action Centre plus push/email notifications; time-zone/accessibility/security baselines; public/legal surfaces; production observability, support and recovery operations. *Milestone: a company can discover, subscribe to and operate the product without manual database or platform intervention.*
+**Phase 6 — Commercial readiness.** `invoices`/`invoice_items`; commercial agreement/rate-proposal hardening; the three-view customer workspace; guarded first/additional company creation with trial-abuse prevention; currency/FX/tax-invoice boundaries; Merchant-of-Record checkout and lifecycle; transactional outbox/webhook inbox/durable jobs; subscription management; Action Centre plus push/email notifications; time-zone/accessibility/security baselines; public/legal surfaces; production observability, support and recovery operations. *Milestone: a company can discover, subscribe to and operate the product without manual database or platform intervention.*
 
 > **Phases 5–13 are detailed in §42.** They are all v2: the new web application, commercial readiness, evidence, site diary, assets and materials, sustainability, reporting, variations, scheduling, compliance and the complete mobile field experience. Phase boundaries control delivery risk; they do not divide the product into separate scopes.
 
@@ -784,6 +830,7 @@ v2 is a **new Firebase-free product** with its own database, auth, information a
 | Authorization gaps | One policy module; explicit allow/deny tests for every role, capability, company edge and client boundary. |
 | One-hop leak (a company sees past its edge) | Central engagement-scope check; explicit deny tests at depth ≥ 2. |
 | `activeCompany` context bugs (v1's pain) | `memberships` rows + per-request context; nothing to go stale. |
+| Unlimited tenant creation fragments data or resets free/trial limits | Preserve multi-company memberships, but ledger one automatic first creation; require a single-use checkout/admin approval for each additional real company and keep trial eligibility outside the tenant. |
 | Gumroad payout/verification or lifecycle gaps | Complete seller KYC/payout setup and the purchase→renewal/failure→cancel/refund rehearsal before coupling entitlements to production events; escalate any provider change as a new owner decision. |
 | Two apps during transition | v1 frozen (bug-fix only); no feature work on v1. |
 
@@ -830,6 +877,8 @@ The unified model makes these choices: (a) clients, contractors and subcontracto
 28. **Sustainability defaults prefer an honest unknown.** Displacement defaults to `UNKNOWN`, never 100%. Enabling emissions are methodology-configurable and disclosed; no hidden universal deduction or omission may change a headline. Missing methodology/factor data produces a named gap, not a flattering assumption.
 29. **Time zone and accessibility are product data, not presentation polish.** Companies and projects carry IANA time zones before diary/scheduling work. Work dates, Close Day rules, due dates and notifications resolve against the documented zone. Web and mobile target WCAG 2.2 AA, keyboard/touch parity, non-colour status cues and alternatives to drag-only interactions.
 30. **Branding inheritance is client-first.** A client company supplies its default logo/brand details; a project may override them for a specific report. Generated reports freeze the resolved branding in their reproducible snapshot.
+31. **Multiple memberships do not mean unlimited tenant creation.** One verified customer identity receives one permanently ledgered automatic first-company allowance; invitations never consume it. Every additional owned company requires a single-use separate-business approval backed by a fresh subscription checkout or audited super-admin grant, receives an independent subscription/data boundary, and never resets trial eligibility (§3.1.1).
+32. **Three customer views, one authorization model.** Contractor/Operations, Subcontractor and Client are runtime navigation perspectives derived from company relationships and entitlements—not user roles or separate applications. Nonpaying assigned companies see only their eligible Client/Subcontractor views; mixed-position companies switch views explicitly. Platform Admin is a separate internal console, while job functions and mobile Field remain capability-shaped experiences inside a customer view (§9.2).
 
 ---
 
@@ -852,9 +901,9 @@ The unified model makes these choices: (a) clients, contractors and subcontracto
 
 **The web workspace is built (Phase 5, 2026-08-17):** two route groups behind one auth provider, and every workflow reachable — auth and profile, plan and usage, engagements, providers and clients, members (invite, re-role, suspend, remove), projects with server-computed margin, work entry and bulk approval at scale, the client portal, the audit viewer, and the super-admin console over both plans and individual companies. `apps/mobile` remains a prototype proving parts of the core loop; Phase 13 designs the field product.
 
-**Phase 6 is in progress:** the invoice foundation is built end to end; MoR, durable delivery, notifications, public/legal surfaces and launch operations remain. The 2026-08-18 planning pass added cross-company rate proposals, multi-currency/FX boundaries, transactional decision evidence, project-scoped capabilities, privacy/retention defaults and an early Phase 7.7 mobile field pilot. Phase 13 still completes the purpose-built mobile workspace.
+**Phase 6 is in progress:** the invoice and commercial-agreement/rate-proposal foundations and three-view workspace are built end to end; guarded company creation, money boundary, MoR, durable delivery, notifications, public/legal surfaces and launch operations remain. The 2026-08-18 planning pass also added transactional decision evidence, project-scoped capabilities, privacy/retention defaults and an early Phase 7.7 mobile field pilot. Phase 13 still completes the purpose-built mobile workspace.
 
-**Verification.** `pnpm --filter @crewquo/api verify:e2e` runs 163 live-Postgres checks over currency, label rules, the Phase 3/4 core-loop numbers (PAY 40000 / BILL 65550 / margin 24000 / 36.61%), the export engine (including the XLSX's own cells against `/summary`), malformed-identifier handling, both migration backfills, the portal's PAY-exclusion, the placeholder/meter rules, the super-admin console and member management. `pnpm --filter @crewquo/web test:e2e` runs 17 browser tests over the same loop through the real UI. Re-run both green at the end of every phase.
+**Verification.** The latest completed Phase 6 slice has 219 unit tests, all five packages type-checking, a clean production build, 318 live-Postgres checks and 22 browser tests. The live suite still covers the Phase 3/4 core-loop numbers, export cells against `/summary`, malformed identifiers, migration backfills, portal PAY exclusion, placeholder/meter rules, admin/member management and the commercial-agreement acceptance script; the browser and pure workspace suites now cover the §9.2 view matrix. Re-run the complete gates at the end of every phase.
 
 ---
 
@@ -946,6 +995,8 @@ A **Timeline** view (§35) cuts across all of them chronologically.
 **Layout rule.** These are sections of one record, not thirteen dashboards. Do not wrap each in an oversized card. Use a persistent left section rail (web) with a dense header strip carrying the project identity and 4–6 key figures, and put filters and detail in side panels rather than nested cards. §40 is binding here.
 
 **Progressive disclosure.** A project that has no assets, no diary and no evidence must not show twelve empty sections shouting for attention: sections with no data and no entitlement collapse to a single "not used on this project" line, and the section rail marks which sections have content.
+
+**View-aware project rail.** The canonical section list above is filtered, never forked: Operations receives the sections its plan/capabilities allow; Subcontractor receives assigned delivery sections without upstream BILL/margin or unrelated parties; Client receives only deliberately published portal sections and snapshots. Switching view changes the lens, not the project record or authorization source.
 
 ---
 
@@ -2252,7 +2303,7 @@ When a product decision and one of these principles conflict, the principle wins
 
 This is one v2 roadmap. Each phase is independently demoable and verified end to end before the next begins. The sequence manages implementation risk; every phase below belongs to the new application.
 
-**Current position.** Phase 4's domain and **export engine** are complete (2026-08-17); §29 builds on `apps/api/src/modules/exports/model.ts`, the single place a figure is formatted. **Phase 5 is built and verified** (2026-08-17) — every workflow, plus the endpoints the phase itself found missing. **Phase 6 is in progress**: project invoicing is built; MoR, durable delivery, notifications, legal/public surfaces and launch operations remain. Real pricing and an actual Gumroad seller/subscription rehearsal are still gates (§17). The 2026-08-18 planning pass adds the operating-model foundations in §19.5 and a Phase 7.7 field-validation checkpoint before the later domains expand.
+**Current position.** Phase 4's domain and **export engine** are complete (2026-08-17); §29 builds on `apps/api/src/modules/exports/model.ts`, the single place a figure is formatted. **Phase 5 and its measured Phase 5.5 information-architecture/density close-out are complete** (2026-08-18). **Phase 6 is in progress**: project invoicing, commercial agreements/rate proposals and the three-view workspace are built; guarded company creation, money boundary, MoR, durable delivery, notifications, legal/public surfaces and launch operations remain. Real pricing and an actual Gumroad seller/subscription rehearsal are still gates (§17). The 2026-08-18 planning pass also adds the operating-model foundations in §19.5 and a Phase 7.7 field-validation checkpoint before the later domains expand.
 
 ### Web-led sequencing (decision #21)
 
@@ -2276,12 +2327,15 @@ Create the new product experience described in §9 and §20. The existing API ca
 - [x] Audit trail viewer + per-engagement visibility settings
 - [x] Super-admin console: plans/prices/features/limits, companies + overrides + comped trials + forced plan changes
 - [x] Playwright E2E over the full loop: register → company → provider invite → project → log time → approve → portal → audit (17 tests)
-- *Milestone: the core lifecycle feels like one intentionally designed product from onboarding through client collaboration—not a collection of endpoint screens.* **Every workflow is built, reachable and verified; whether it reads as one designed product is the owner judgement still open — see `PROGRESS.md`.**
+- [x] *Milestone: the core lifecycle feels like one intentionally designed product from onboarding through client collaboration—not a collection of endpoint screens.* Answered 2026-08-18 by the 31-screen measured audit and closed by the Phase 5.5 information-architecture/density work recorded in `PROGRESS.md`.
 
 ### Phase 6 — Commercial readiness
 
 - [x] `invoices` and `invoice_items`, with totals derived from the same approved work calculations. Built 2026-08-17 with API + web workflow, immutable issue snapshots, issued-only client visibility and double-invoice protection. Phase 11 plugs approved variations into the same source builder when that domain exists.
 - [x] **Commercial agreement hardening.** Built 2026-08-18: `rate_proposals` + immutable `rate_proposal_lines`, versioned and DB-locked approved PAY cards, the full draft→submit→approve/reject/withdraw workflow with successor chaining, hiring-side direct entry, engagement payment terms and PO reference/ceiling (enforced at invoice issue), engagement and assignment acceptance, and `record_revisions` (§36). Operating-model packet: `docs/operating-model/commercial-agreements.md`.
+- [x] **Three-view workspace (§9.2).** Built 2026-08-18 and corrected to the intended shell on owner review: server-derived company/view eligibility; a top-right Contractor/Subcontractor/Client view dropdown; a separate multi-company control; per-company remembered selection; valid deep-link lens selection; and every eligible page retained in grouped sidebar navigation. Account setup stays outside the three views, Platform Admin remains separate, and shared invoice controls are client-aware. Views remain navigation state only; existing project rails and decision queues stay on their structurally filtered route surfaces. The future Universal Action Centre consumes this same read model rather than inventing a fourth lens. Route inventory and seven-case acceptance matrix: `docs/product/workspace-views.md`.
+- [x] **CrewQuo Platform admin workspace.** Built 2026-08-18: synthetic company context + fixed Super Admin view; cross-platform dashboard; searchable user directory and detail; reason-required session revocation and Super Admin grants/revocations with last-admin and self-revoke protection; existing company/subscription and plan controls; reporting; truthful service/queue operations status; platform audit; typed platform settings; admin-access register; and a verified-user bootstrap CLI. Every platform mutation is attributable in `platform_audit_logs`; settings never expose credentials or arbitrary keys. Route/action and security boundary: [platform-admin.md](docs/product/platform-admin.md).
+- [ ] **Company ownership/creation safeguard (§3.1.1):** write the reopened identity-domain operating packet; ledger one automatic first-company allowance; add the additional-company request/checkout/admin-approval state machine; prevent trial resets; preserve invitation-based multi-company membership; update onboarding/profile/support UI; backfill existing owners safely.
 - [ ] **Money boundary:** company default currency plus currency on new commercial agreements/documents; project reporting currency and frozen FX snapshots before unlike PAY/BILL currencies are allowed. Define tax identity, addresses, line tax, credit notes and payment allocation before marketing project invoices as jurisdiction-compliant tax invoices.
 - [ ] Merchant-of-Record checkout, webhooks, trial-to-paid state and entitlement snapshots.
 - [ ] Super-admin price and subscription management.
@@ -2402,6 +2456,8 @@ Extends §13; same gates, same CI.
 - **The firewall test:** assert that no API response ever returns a total mixing the `AVOIDED` bucket with any other, and that no persisted `carbon_calculations` sum crosses buckets.
 - **Authorization tests per capability** (§37), following the existing one-test-per-rule discipline: Supervisor cannot read margin; Worker cannot set a destination; Finance cannot close a diary; a capability never widens company scope or the one-hop rule.
 - **Resource-scope authorization tests:** a valid company membership and capability still cannot read or mutate an unassigned project/resource; forged company/project/file identifiers fail closed and reveal no cross-tenant existence.
+- **Company-creation policy tests:** invited memberships never consume the first-company allowance; the automatic path works exactly once under concurrency; ownership transfer/archive/delete never restores it; additional creation refuses missing/expired/reused approval; checkout/admin approval is single-use and audited; idempotent retry returns one company; separate subscription/data boundaries are created; a prior user/MoR-customer trial cannot be reset through another company; duplicate registration identifiers route to recovery without name-only false positives.
+- **Workspace-view tests:** cover the seven-case §9.2 matrix; the View dropdown shows only eligible lenses; the separate company control restores a valid view; deep links choose a valid lens without widening access; changing the client-side view cannot alter an API authorization result; nonpaying Client/Subcontractor users see no Contractor navigation; PAY/BILL/margin and unpublished evidence exclusions remain structural; keyboard/screen-reader operation of both selectors is asserted.
 - **Storage tests:** presign rejects oversize and wrong content type; complete verifies checksum; downloads 403 without the owning record's authorization; derivative failure leaves the original intact.
 - **State-machine tests:** every declared transition is covered by actor, source state, target state, rejection/withdraw/reopen behavior, terminal-state immutability and concurrent double-action cases.
 - **Durable-delivery tests:** domain write + outbox record commit atomically; duplicate webhook/event/job delivery has one business effect; transient failure retries; terminal failure reaches a visible dead-letter state; authorized replay is safe and auditable.
