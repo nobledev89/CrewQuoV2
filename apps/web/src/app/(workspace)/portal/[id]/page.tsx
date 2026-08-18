@@ -168,10 +168,10 @@ function PortalProject() {
           <Table label="Line items">
             <thead>
               <tr>
-                <th scope="col">Date</th>
+                <th scope="col" className="cq-numeric">Date</th>
                 <th scope="col">Description</th>
-                <th scope="col">Hours</th>
-                <th scope="col">Amount</th>
+                <th scope="col" className="cq-numeric">Hours</th>
+                <th scope="col" className="cq-numeric">Amount</th>
                 <th scope="col">
                   <span className="cq-table__actions">Notes</span>
                 </th>
@@ -180,7 +180,19 @@ function PortalProject() {
             <tbody>
               {d.lineItems.map((line) => (
                 <tr key={line.id}>
-                  <td className="cq-table__primary cq-numeric">{formatDate(line.date)}</td>
+                  {/*
+                    The two kinds of line carry different dates: a time log is dated by
+                    the day the work happened, an expense by the day it was raised. Under
+                    one "Date" heading that reads as a single fact, so an expense entered
+                    weeks later looks like work done weeks later. The kind is on the row,
+                    so say which this is rather than leaving the client to assume.
+                  */}
+                  <td className="cq-table__primary cq-numeric">
+                    {formatDate(line.date)}
+                    {line.kind === 'EXPENSE' ? (
+                      <span className="cq-muted"> raised</span>
+                    ) : null}
+                  </td>
                   <td>
                     {line.description}
                     {line.shiftType ? (
@@ -260,7 +272,7 @@ function PortalProject() {
             <Table label="Shared activity">
               <thead>
                 <tr>
-                  <th scope="col">When</th>
+                  <th scope="col" className="cq-numeric">When</th>
                   <th scope="col">Event</th>
                   <th scope="col">Detail</th>
                 </tr>

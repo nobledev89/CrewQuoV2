@@ -5,10 +5,12 @@ import type {
   ClientView,
   EngagementView,
   ExpenseView,
+  PendingAssignmentView,
   PortalProjectView,
   ProjectView,
   RateCardTemplateView,
   RateCardView,
+  RateProposalView,
   RoleCatalogView,
   TimeLogView,
   WorkContext,
@@ -86,6 +88,25 @@ function Overview() {
     ctx ? () => api.listClients(ctx.accessToken, ctx.companyId).then((r) => r.data) : null,
     [ctx?.companyId]
   );
+  /**
+   * Two things this company has been *offered* and not answered (Phase 6 acceptance
+   * rules). Both are the provider side of an edge, and both are decisions somebody
+   * upstream is waiting on — so they belong on the overview rather than buried on a
+   * screen you would only open if you already knew.
+   */
+  const pendingAssignments = useAsyncList<PendingAssignmentView>(
+    ctx
+      ? () => api.listPendingAssignments(ctx.accessToken, ctx.companyId).then((r) => r.data)
+      : null,
+    [ctx?.companyId]
+  );
+  const pendingSchedules = useAsyncList<RateProposalView>(
+    ctx
+      ? () => api.listRateProposals(ctx.accessToken, ctx.companyId).then((r) => r.data)
+      : null,
+    [ctx?.companyId]
+  );
+
   const templates = useAsyncList<RateCardTemplateView>(
     ctx ? () => api.listTemplates(ctx.accessToken, ctx.companyId).then((r) => r.data) : null,
     [ctx?.companyId]
@@ -107,10 +128,38 @@ function Overview() {
   // Ours to submit: rows where we are the provider and nothing has been handed up yet.
   const mySubmitted = pendingTime.items.filter((l) => l.providerCompanyId === companyId).length;
 
+  /**
+   * Things somebody upstream is waiting on us for (Phase 6 acceptance rules).
+   * `pendingEngagements` is the provider side only — a hiring company waiting on its
+   * own subcontractor to accept has nothing to decide, so counting those here would
+   * put an item in the reader's queue that they cannot action.
+   */
+  const pendingEngagements = engagements.items.filter(
+    (e) => e.status === 'PENDING' && e.side === 'provider'
+  );
+  const decidedSchedules = pendingSchedules.items.filter(
+    (p) => p.side === 'provider' && p.status === 'REJECTED'
+  );
+  const schedulesToDecide = pendingSchedules.items.filter(
+    (p) => p.side === 'client' && p.status === 'SUBMITTED'
+  );
+  const offeredCount =
+    pendingEngagements.length +
+    pendingAssignments.items.length +
+    decidedSchedules.length +
+    schedulesToDecide.length;
+
   const payCards = cards.items.filter((c) => c.kind === 'PAY').length;
   const billCards = cards.items.filter((c) => c.kind === 'BILL').length;
   const activeProjects = projects.items.filter((p) => p.status === 'ACTIVE').length;
   const subUsage = ent.usage('active_subcontractors');
+  /**
+   * Whether rate cards are this company's business at all. `operatesDownstream` is
+   * false and `rate_cards` is absent on the free plan, so a subcontractor on it can
+   * neither hire nor price — offering either is offering a refusal (§5B).
+   */
+  const canHire = ent.data?.operatesDownstream ?? true;
+  const canPriceWork = ent.has('rate_cards');
 
   const loading = engagements.loading || projects.loading || work.loading;
   const brandNew =
@@ -165,33 +214,67 @@ function Overview() {
         </Section>
       ) : null}
 
+      {/*
+        The headline figures follow what the company *is*, not one fixed set. A company
+        that only ever sells labour has no subcontractors and no rate cards by design —
+        its plan forbids both — so leading with "0 / 0 subcontractors" and "0 rate cards"
+        reports the shape of somebody else's business as if it were four failures.
+        Its own work goes first instead.
+      */}
       <div className="cq-metrics" aria-label="Workspace summary">
-        <Metric
-          label="Awaiting your approval"
-          value={loading ? '—' : toApprove}
-          context={toApprove > 0 ? 'Time logs and expenses submitted to you' : 'Nothing waiting'}
-        />
+        {delivers ? (
+          <>
+            <Metric
+              label="Assigned to you"
+              value={work.loading ? '—' : (work.data?.assignments.length ?? 0)}
+              context="Projects you can log time against"
+            />
+            <Metric
+              label="Awaiting a decision"
+              value={pendingTime.loading ? '—' : mySubmitted}
+              context={mySubmitted > 0 ? 'Submitted, with the company that hired you' : 'Nothing outstanding'}
+            />
+          </>
+        ) : null}
+        {hires ? (
+          <>
+            <Metric
+              label="Awaiting your approval"
+              value={loading ? '—' : toApprove}
+              context={toApprove > 0 ? 'Time logs and expenses submitted to you' : 'Nothing waiting'}
+            />
+            <Metric
+              label="Subcontractors"
+              value={
+                engagements.loading
+                  ? '—'
+                  : subUsage
+                    ? formatUsage(subUsage.used, subUsage.value)
+                    : engagements.items.filter((e) => e.side === 'client').length
+              }
+              context="Against your plan's allowance"
+            />
+          </>
+        ) : null}
+        {isSomeonesClient ? (
+          <Metric
+            label="Shared with you"
+            value={portal.loading ? '—' : portal.items.length}
+            context="Projects published to you by a contractor"
+          />
+        ) : null}
         <Metric
           label="Active projects"
           value={projects.loading ? '—' : activeProjects}
           context={`${projects.items.length} in total`}
         />
-        <Metric
-          label="Subcontractors"
-          value={
-            engagements.loading
-              ? '—'
-              : subUsage
-                ? formatUsage(subUsage.used, subUsage.value)
-                : engagements.items.filter((e) => e.side === 'client').length
-          }
-          context="Against your plan's allowance"
-        />
-        <Metric
-          label="Rate cards"
-          value={cards.loading ? '—' : cards.items.length}
-          context={`${payCards} pay · ${billCards} bill`}
-        />
+        {canPriceWork ? (
+          <Metric
+            label="Rate cards"
+            value={cards.loading ? '—' : cards.items.length}
+            context={`${payCards} pay · ${billCards} bill`}
+          />
+        ) : null}
       </div>
 
       <div className="cq-dashboard-grid">
@@ -202,8 +285,17 @@ function Overview() {
         >
           {!hires ? (
             <EmptyState title="You have no subcontractors">
-              Nothing can be submitted to you until you engage one.{' '}
-              <Link href="/network/providers">Add a subcontractor</Link>.
+              {canHire ? (
+                <>
+                  Nothing can be submitted to you until you engage one.{' '}
+                  <Link href="/network/providers">Add a subcontractor</Link>.
+                </>
+              ) : (
+                <>
+                  Your plan does not include engaging subcontractors, so nothing is
+                  submitted to you for approval. <Link href="/plan">See what does</Link>.
+                </>
+              )}
             </EmptyState>
           ) : toApprove === 0 ? (
             <EmptyState title="Everything is decided">
@@ -217,6 +309,59 @@ function Overview() {
                 description="Approve or reject many at once, with filters by subcontractor and project"
                 action="Open approvals"
               />
+            </ul>
+          )}
+        </Section>
+
+        <Section
+          title="Offered to you"
+          description="Decisions companies upstream are waiting on"
+          className="cq-section--table"
+        >
+          {offeredCount === 0 ? (
+            <EmptyState title="Nothing waiting on you">
+              When a company adds you to a project, or decides on a rate schedule you sent,
+              it shows up here.
+            </EmptyState>
+          ) : (
+            <ul className="cq-object-list">
+              {pendingEngagements.length > 0 ? (
+                <ActionRow
+                  href="/network/engagements"
+                  title={`${pendingEngagements.length} ${pendingEngagements.length === 1 ? 'engagement' : 'engagements'} to accept`}
+                  description="A company wants to hire you — accept before putting crew on site"
+                  action="Review"
+                />
+              ) : null}
+              {pendingAssignments.items.length > 0 ? (
+                // `/work`, not `/projects`: a provider cannot read the hiring
+                // company's project list at all — it is scoped to the owner.
+                <ActionRow
+                  href="/work"
+                  title={`${pendingAssignments.items.length} project ${pendingAssignments.items.length === 1 ? 'assignment' : 'assignments'} to accept`}
+                  description={pendingAssignments.items
+                    .slice(0, 3)
+                    .map((a) => a.projectName)
+                    .join(', ')}
+                  action="Open your work"
+                />
+              ) : null}
+              {decidedSchedules.length > 0 ? (
+                <ActionRow
+                  href="/commercial"
+                  title={`${decidedSchedules.length} rate ${decidedSchedules.length === 1 ? 'schedule' : 'schedules'} returned`}
+                  description="A hiring company sent a schedule back with a reason"
+                  action="Open agreements"
+                />
+              ) : null}
+              {schedulesToDecide.length > 0 ? (
+                <ActionRow
+                  href="/commercial"
+                  title={`${schedulesToDecide.length} rate ${schedulesToDecide.length === 1 ? 'schedule' : 'schedules'} awaiting your decision`}
+                  description="A subcontractor has proposed what you pay them"
+                  action="Open agreements"
+                />
+              ) : null}
             </ul>
           )}
         </Section>
@@ -279,18 +424,21 @@ function Overview() {
               label="Roles configured"
               ready={roles.items.length > 0}
               loading={roles.loading}
+              // Roles exist to match rate cards. Without that feature there is nothing
+              // to match, so "needs setup" would be nagging about work that has no effect.
+              irrelevant={!canPriceWork}
             />
             <ReadinessRow
               label="Pay rates for subcontractors"
               ready={payCards > 0}
               loading={cards.loading}
-              irrelevant={!hires}
+              irrelevant={!hires || !canPriceWork}
             />
             <ReadinessRow
               label="Bill rates for clients"
               ready={billCards > 0}
               loading={cards.loading}
-              irrelevant={clients.items.length === 0}
+              irrelevant={clients.items.length === 0 || !canPriceWork}
             />
             {/*
               A company with templates but none elected as default has label rules that

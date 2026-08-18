@@ -29,8 +29,24 @@ export const AUDIT_ACTIONS = [
   'project.deleted',
   'project.exported',
   'assignment.created',
+  'assignment.accepted',
+  'assignment.declined',
   'engagement.created',
   'engagement.updated',
+  // Commercial agreements (§3.3.1). `rate_proposal.*` rows are written against the
+  // company whose record moved — the provider for submit/withdraw, the hiring
+  // company for approve/reject — so each side's trail reads as its own actions.
+  'rate_proposal.created',
+  'rate_proposal.updated',
+  'rate_proposal.deleted',
+  'rate_proposal.submitted',
+  'rate_proposal.approved',
+  'rate_proposal.rejected',
+  'rate_proposal.withdrawn',
+  'rate_schedule.recorded',
+  'engagement.terms_updated',
+  'engagement.accepted',
+  'engagement.declined',
   'invite.created',
   'invite.accepted',
   'audit_settings.updated',
@@ -72,6 +88,8 @@ export const AUDIT_ENTITY_TYPES = [
   'MEMBERSHIP',
   'USER',
   'INVOICE',
+  'RATE_PROPOSAL',
+  'RATE_CARD',
   'SUBSCRIPTION',
   'ENTITLEMENT_OVERRIDE',
 ] as const;

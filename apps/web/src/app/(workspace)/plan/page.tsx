@@ -111,7 +111,7 @@ function Plan() {
           <thead>
             <tr>
               <th scope="col">Limit</th>
-              <th scope="col">In use</th>
+              <th scope="col" className="cq-numeric">In use</th>
               <th scope="col">State</th>
             </tr>
           </thead>

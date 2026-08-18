@@ -1,10 +1,18 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { SHIFT_TYPES, type ExpenseView, type ShiftType, type TimeLogView, type WorkContext } from '@crewquo/shared';
+import {
+  SHIFT_TYPES,
+  type ExpenseView,
+  type PendingAssignmentView,
+  type ShiftType,
+  type TimeLogView,
+  type WorkContext,
+} from '@crewquo/shared';
 import {
   Badge,
   Button,
+  Drawer,
   EmptyState,
   ErrorText,
   Field,
@@ -67,6 +75,19 @@ function Work() {
     [ctx?.companyId]
   );
 
+  /**
+   * Assignments this company has been offered and not answered (Phase 6 acceptance
+   * rules). This screen rather than `/projects`, because the project belongs to the
+   * hiring company: `GET /v1/projects` is scoped to `owner_company_id`, so a
+   * provider cannot see it there at all. `/work` is the provider's own surface.
+   */
+  const pendingAssignments = useAsyncList<PendingAssignmentView>(
+    ctx
+      ? () => api.listPendingAssignments(ctx.accessToken, ctx.companyId).then((r) => r.data)
+      : null,
+    [ctx?.companyId]
+  );
+
   // Only work *this* company delivers. The endpoints also return the rows we are the
   // client on — those belong on the Approvals screen, not here.
   const mine = useMemo(
@@ -82,13 +103,36 @@ function Work() {
   const openItems = mine.filter((l) => l.status === 'DRAFT' || l.status === 'REJECTED');
   const openExpenses = myExpenses.filter((x) => x.status === 'DRAFT' || x.status === 'REJECTED');
 
+  // Entry happens in side panels (§40). This is the screen a crew opens daily to see
+  // what is still theirs to fix; two stacked entry forms pushed that list off the
+  // bottom of the page, so the work you have to act on came second to the form.
+  const [entry, setEntry] = useState<'time' | 'expense' | null>(null);
+
   return (
     <Stack>
       <PageHeader
-        eyebrow="Delivery"
+        eyebrow="Workspace"
         title="Log work"
         description="Time and expenses on the projects you have been assigned to. Submit them for approval when they are ready."
+        actions={
+          assignments.length > 0 ? (
+            <>
+              <Button onClick={() => setEntry('time')}>Log time</Button>
+              <Button variant="secondary" onClick={() => setEntry('expense')}>Add expense</Button>
+            </>
+          ) : null
+        }
       />
+
+      {pendingAssignments.items.length > 0 ? (
+        <PendingAssignments
+          items={pendingAssignments.items}
+          onChanged={() => {
+            pendingAssignments.reload();
+            context.reload();
+          }}
+        />
+      ) : null}
 
       {context.loading ? (
         <p className="cq-muted">Loading your assignments…</p>
@@ -101,6 +145,8 @@ function Work() {
       ) : (
         <>
           <NewTimeLog
+            open={entry === 'time'}
+            onClose={() => setEntry(null)}
             context={context.data!}
             onCreated={() => {
               timeLogs.reload();
@@ -108,6 +154,8 @@ function Work() {
           />
 
           <NewExpense
+            open={entry === 'expense'}
+            onClose={() => setEntry(null)}
             context={context.data!}
             currency={currency}
             onCreated={() => {
@@ -135,9 +183,119 @@ function Work() {
   );
 }
 
+
+// ── Assignments offered to this company ────────────────────────────────────────
+
+/**
+ * Accepting or declining a project assignment.
+ *
+ * Deliberately **not** a gate on logging work: an unaccepted assignment still
+ * accepts time, because blocking it would stop a crew recording hours they had
+ * already worked, hours after a decision made by a different company. So this is an
+ * acknowledgement surface, placed first because an unanswered offer outranks a
+ * timesheet — not a blocker the crew has to clear before they can work.
+ */
+function PendingAssignments({
+  items,
+  onChanged,
+}: {
+  items: PendingAssignmentView[];
+  onChanged: () => void;
+}) {
+  const ctx = useSessionCtx();
+  const { activeMembership } = useAuth();
+  const canManage =
+    activeMembership?.role === 'OWNER' ||
+    activeMembership?.role === 'ADMIN' ||
+    activeMembership?.role === 'MANAGER';
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function decide(id: string, accept: boolean, projectName: string) {
+    if (!ctx) return;
+    let reason: string | null = null;
+    if (!accept) {
+      const entered = window.prompt(`Decline "${projectName}"? Your reason is recorded.`);
+      if (entered === null) return;
+      reason = entered.trim() === '' ? null : entered.trim();
+    }
+    setBusyId(id);
+    setError(null);
+    try {
+      if (accept) await api.acceptAssignment(ctx.accessToken, ctx.companyId, id);
+      else await api.declineAssignment(ctx.accessToken, ctx.companyId, id, reason);
+      onChanged();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not record your decision');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <Section
+      title="Projects you have been added to"
+      description="Confirm you are taking these on. You can still log time either way — this tells the client where they stand."
+      className="cq-section--table"
+    >
+      <ErrorText>{error}</ErrorText>
+      <Table label="Assignments awaiting your decision" compact>
+        <thead>
+          <tr>
+            <th scope="col">Project</th>
+            <th scope="col">
+              <span className="cq-table__actions">Actions</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((a) => (
+            <tr key={a.id}>
+              <td className="cq-table__primary">{a.projectName}</td>
+              <td className="cq-table__actions">
+                {!canManage ? (
+                  <span className="cq-muted">Manager role required</span>
+                ) : (
+                  <Row>
+                    <Button
+                      size="sm"
+                      disabled={busyId === a.id}
+                      onClick={() => void decide(a.id, true, a.projectName)}
+                    >
+                      Accept
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={busyId === a.id}
+                      onClick={() => void decide(a.id, false, a.projectName)}
+                    >
+                      Decline
+                    </Button>
+                  </Row>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </Table>
+    </Section>
+  );
+}
+
 // ── New time log ───────────────────────────────────────────────────────────────
 
-function NewTimeLog({ context, onCreated }: { context: WorkContext; onCreated: () => void }) {
+function NewTimeLog({
+  open,
+  onClose,
+  context,
+  onCreated,
+}: {
+  open: boolean;
+  onClose: () => void;
+  context: WorkContext;
+  onCreated: () => void;
+}) {
   const ctx = useSessionCtx();
   const [projectId, setProjectId] = useState(context.assignments[0]?.projectId ?? '');
   const [roleId, setRoleId] = useState('');
@@ -182,12 +340,23 @@ function NewTimeLog({ context, onCreated }: { context: WorkContext; onCreated: (
   }
 
   return (
-    <Section
+    <Drawer
+      open={open}
       title="Log time"
       description="Saved as a draft. Nothing reaches the client until you submit it."
+      onClose={onClose}
+      footer={
+        <>
+          <Button type="submit" form="log-time" disabled={busy || !effectiveRoleId}>
+            {busy ? 'Saving…' : 'Save draft'}
+          </Button>
+          <Button variant="secondary" onClick={onClose}>Done</Button>
+          {saved ? <Badge tone="success">Draft saved for {formatDate(saved)}</Badge> : null}
+        </>
+      }
     >
-      <form onSubmit={submit} className="cq-stack" aria-busy={busy}>
-        <div className="cq-form-grid">
+      <form id="log-time" onSubmit={submit} className="cq-stack" aria-busy={busy}>
+        <div className="cq-form-grid cq-form-grid--drawer">
           <Field label="Project">
             <Select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
               {context.assignments.map((a) => (
@@ -263,30 +432,27 @@ function NewTimeLog({ context, onCreated }: { context: WorkContext; onCreated: (
         ) : null}
 
         <ErrorText>{error}</ErrorText>
-        <Row>
-          <Button type="submit" disabled={busy || !effectiveRoleId}>
-            {busy ? 'Saving…' : 'Save draft'}
-          </Button>
-          {saved ? <Badge tone="success">Draft saved for {formatDate(saved)}</Badge> : null}
-        </Row>
       </form>
-    </Section>
+    </Drawer>
   );
 }
 
 // ── New expense ────────────────────────────────────────────────────────────────
 
 function NewExpense({
+  open,
+  onClose,
   context,
   currency,
   onCreated,
 }: {
+  open: boolean;
+  onClose: () => void;
   context: WorkContext;
   currency: string;
   onCreated: () => void;
 }) {
   const ctx = useSessionCtx();
-  const [open, setOpen] = useState(false);
   const [projectId, setProjectId] = useState(context.assignments[0]?.projectId ?? '');
   const [amount, setAmount] = useState('');
   const [category, setCategory] = useState('');
@@ -311,7 +477,7 @@ function NewExpense({
       setAmount('');
       setCategory('');
       setDescription('');
-      setOpen(false);
+      onClose();
       onCreated();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not save the expense');
@@ -321,20 +487,22 @@ function NewExpense({
   }
 
   return (
-    <Section
-      title="Log an expense"
+    <Drawer
+      open={open}
+      title="Add expense"
       description="Also saved as a draft, and submitted the same way."
-      actions={
-        open ? null : (
-          <Button size="sm" variant="secondary" onClick={() => setOpen(true)}>
-            Add expense
+      onClose={onClose}
+      footer={
+        <>
+          <Button type="submit" form="log-expense" disabled={busy || cents === null}>
+            {busy ? 'Saving…' : 'Save draft'}
           </Button>
-        )
+          <Button variant="secondary" onClick={onClose} disabled={busy}>Cancel</Button>
+        </>
       }
     >
-      {open ? (
-        <form onSubmit={submit} className="cq-stack" aria-busy={busy}>
-          <div className="cq-form-grid">
+        <form id="log-expense" onSubmit={submit} className="cq-stack" aria-busy={busy}>
+          <div className="cq-form-grid cq-form-grid--drawer">
             <Field label="Project">
               <Select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
                 {context.assignments.map((a) => (
@@ -371,17 +539,8 @@ function NewExpense({
             the paper copy until then.
           </Notice>
           <ErrorText>{error}</ErrorText>
-          <Row>
-            <Button type="submit" disabled={busy || cents === null}>
-              {busy ? 'Saving…' : 'Save draft'}
-            </Button>
-            <Button variant="secondary" onClick={() => setOpen(false)} disabled={busy}>
-              Cancel
-            </Button>
-          </Row>
         </form>
-      ) : null}
-    </Section>
+    </Drawer>
   );
 }
 
@@ -494,7 +653,7 @@ function OpenWork({
                 <td>
                   <WorkStatusBadge status={l.status} />
                   {l.rejectReason ? (
-                    <div className="cq-muted">Returned: {l.rejectReason}</div>
+                    <div className="cq-table__note">Returned: {l.rejectReason}</div>
                   ) : null}
                 </td>
                 <td className="cq-table__actions">
@@ -541,7 +700,7 @@ function OpenWork({
                 <td>
                   <WorkStatusBadge status={x.status} />
                   {x.rejectReason ? (
-                    <div className="cq-muted">Returned: {x.rejectReason}</div>
+                    <div className="cq-table__note">Returned: {x.rejectReason}</div>
                   ) : null}
                 </td>
                 <td className="cq-table__actions">

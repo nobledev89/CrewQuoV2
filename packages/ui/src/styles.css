@@ -47,6 +47,9 @@ a:hover { text-decoration: underline; }
 .cq-grid { display: grid; gap: 16px; }
 .cq-form-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 16px; }
 .cq-form-grid > * { grid-column: span 3; }
+/* Inside a side panel the same grid would give each field a quarter of ~520px. Two
+   fields per row is the widest that stays legible there. */
+.cq-form-grid--drawer > * { grid-column: span 6; }
 
 /* Type */
 .cq-h1 { margin: 0; font-size: 24px; line-height: 1.25; letter-spacing: -.02em; font-weight: 680; }
@@ -69,6 +72,13 @@ a:hover { text-decoration: underline; }
 .cq-section__body { padding: 18px 16px; }
 .cq-section--table > .cq-section__body { padding: 0; }
 .cq-card { background: var(--cq-surface); border: 1px solid var(--cq-border); border-radius: var(--cq-radius-panel); padding: 18px; }
+/* Grouping inside a panel or a drawer. §40 allows one elevation level, so a
+   subdivision of a form is a labelled rule — not another bordered panel, and never a
+   card inside a card. */
+.cq-fieldset { display: flex; flex-direction: column; gap: 12px; padding-top: 15px; border-top: 1px solid var(--cq-border); }
+.cq-fieldset__legend { font-size: 13px; font-weight: 650; }
+.cq-fieldset__hint { margin: 3px 0 0; color: var(--cq-text-muted); font-size: 12px; }
+.cq-subrow { display: flex; flex-direction: column; gap: 10px; padding: 12px 0 2px; border-top: 1px dashed var(--cq-border-strong); }
 
 /* Buttons */
 .cq-btn { min-height: 34px; appearance: none; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--cq-accent); border-radius: var(--cq-radius-button); padding: 7px 12px; cursor: pointer; background: var(--cq-accent); color: var(--cq-accent-fg); font-size: 13px; font-weight: 620; line-height: 1; transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease; }
@@ -101,7 +111,33 @@ a:hover { text-decoration: underline; }
 .cq-table tbody tr:last-child td { border-bottom: 0; }
 .cq-table tbody tr:hover td { background: #fafbfc; }
 .cq-table td[align="right"], .cq-table th[align="right"] { text-align: right; }
+/* §40: "Tabular figures, right-aligned." `cq-numeric` already sets tabular figures
+   wherever a number is rendered; inside a table it also decides the alignment, so a
+   column of money lines up on the decimal. Mark the matching <th> to keep the header
+   over its column. Outside a table the class stays alignment-neutral (metric tiles). */
+.cq-table td.cq-numeric, .cq-table th.cq-numeric { text-align: right; }
 .cq-table__primary { color: var(--cq-text); font-weight: 600; }
+/* A second line inside a cell — a rejection reason, a qualifier. Table cells are
+   `nowrap` so a sentence would run under the neighbouring column and collide with the
+   row below; this lets it wrap inside its own cell instead. */
+.cq-table__note { display: block; max-width: 46ch; margin-top: 3px; color: var(--cq-text-muted); font-size: 12px; white-space: normal; }
+
+/* Register density (§40: "Aim for 20+ rows visible on a laptop screen"). 20 rows at the
+   default 44px plus a header exceeds a 900px viewport before any page chrome exists, so
+   list screens that exist to be scanned opt into a shorter row. */
+.cq-table--compact th, .cq-table--compact td { height: 34px; padding: 5px 12px; }
+.cq-table--compact { font-size: 12.5px; }
+
+/* Sortable headers. The button fills the cell so the whole header is the hit target. */
+.cq-table th.cq-th--sortable { padding: 0; }
+.cq-sort { width: 100%; display: inline-flex; align-items: center; gap: 5px; padding: 9px 14px; border: 0; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer; }
+.cq-table--compact th.cq-th--sortable .cq-sort { padding: 5px 12px; }
+.cq-table th.cq-numeric .cq-sort { justify-content: flex-end; }
+.cq-sort:hover { color: var(--cq-text); }
+.cq-sort__caret { flex: 0 0 auto; width: 9px; height: 9px; opacity: 0; }
+.cq-sort:hover .cq-sort__caret { opacity: .45; }
+.cq-table th[aria-sort] .cq-sort { color: var(--cq-text); }
+.cq-table th[aria-sort] .cq-sort__caret { opacity: 1; }
 .cq-link-button { appearance: none; border: 0; padding: 0; background: transparent; color: var(--cq-accent); font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
 .cq-link-button:hover { color: var(--cq-accent-hover); }
 .cq-table__actions { width: 1%; text-align: right !important; }
@@ -124,7 +160,10 @@ a:hover { text-decoration: underline; }
 .cq-empty__copy { margin: 0; color: var(--cq-text-muted); font-size: 13px; }
 
 /* Compact dashboard */
-.cq-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--cq-border); border-radius: var(--cq-radius-panel); background: var(--cq-surface); }
+/* auto-fit, not a fixed 4: the dashboard chooses its figures by what the company is,
+   so a set of 3 has to fill the strip rather than leave a dead cell where a metric
+   about somebody else's business used to be. */
+.cq-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); border: 1px solid var(--cq-border); border-radius: var(--cq-radius-panel); background: var(--cq-surface); }
 .cq-metric { min-width: 0; padding: 16px 18px; border-right: 1px solid var(--cq-border); }
 .cq-metric:last-child { border-right: 0; }
 .cq-metric__value { margin-top: 5px; font-size: 24px; line-height: 1.2; letter-spacing: -.02em; font-weight: 680; font-variant-numeric: tabular-nums; }
@@ -134,8 +173,11 @@ a:hover { text-decoration: underline; }
 .cq-object-list__item { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 54px; padding: 10px 16px; border-bottom: 1px solid var(--cq-border); color: inherit; }
 .cq-object-list__item:last-child { border-bottom: 0; }
 a.cq-object-list__item:hover { background: var(--cq-surface-subtle); text-decoration: none; }
-.cq-object-list__title { font-weight: 600; }
-.cq-object-list__meta { margin-top: 2px; color: var(--cq-text-muted); font-size: 12px; }
+/* Both are <span>: without an explicit block they sit inline and the title runs
+   straight into its own description ("5 items to reviewApprove or reject..."), and
+   __meta's margin-top silently does nothing because margins don't apply inline. */
+.cq-object-list__title { display: block; font-weight: 600; }
+.cq-object-list__meta { display: block; margin-top: 2px; color: var(--cq-text-muted); font-size: 12px; }
 
 /* Application shell */
 .cq-app-shell { min-height: 100vh; display: grid; grid-template-columns: 228px minmax(0, 1fr); }
@@ -143,16 +185,23 @@ a.cq-object-list__item:hover { background: var(--cq-surface-subtle); text-decora
 .cq-brand { height: 64px; display: flex; align-items: center; gap: 10px; padding: 0 18px; border-bottom: 1px solid var(--cq-border); color: var(--cq-text); font-size: 15px; font-weight: 680; }
 .cq-brand:hover { text-decoration: none; }
 .cq-brand__mark { width: 27px; height: 27px; display: grid; place-items: center; border-radius: 6px; background: var(--cq-text); color: #fff; font-size: 10px; font-weight: 750; letter-spacing: -.02em; }
-.cq-sidebar__body { flex: 1; overflow-y: auto; padding: 16px 10px; }
-.cq-nav-group + .cq-nav-group { margin-top: 22px; }
-.cq-nav-label { padding: 0 9px 7px; color: var(--cq-text-muted); font-size: 10px; font-weight: 700; letter-spacing: .075em; text-transform: uppercase; }
-.cq-nav-link { min-height: 36px; display: flex; align-items: center; gap: 10px; padding: 7px 9px; border-radius: 6px; color: var(--cq-text-secondary); font-size: 13px; font-weight: 560; }
+/* Sized so a fully-entitled company's whole navigation fits a 900px laptop without
+   scrolling — the last group used to fall under the account footer, which put Settings
+   and the platform console behind a scroll nobody expects in a sidebar. */
+.cq-sidebar__body { flex: 1; overflow-y: auto; padding: 12px 10px; }
+.cq-nav-group + .cq-nav-group { margin-top: 15px; }
+.cq-nav-label { padding: 0 9px 5px; color: var(--cq-text-muted); font-size: 10px; font-weight: 700; letter-spacing: .075em; text-transform: uppercase; }
+.cq-nav-link { min-height: 31px; display: flex; align-items: center; gap: 10px; padding: 5px 9px; border-radius: 6px; color: var(--cq-text-secondary); font-size: 13px; font-weight: 560; }
 .cq-nav-link:hover { background: var(--cq-surface-subtle); color: var(--cq-text); text-decoration: none; }
 .cq-nav-link[aria-current="page"] { background: #eef1f5; color: var(--cq-text); font-weight: 650; }
 .cq-nav-link__icon { width: 17px; height: 17px; flex: 0 0 auto; color: #6d7583; }
 .cq-sidebar__footer { padding: 12px 10px; border-top: 1px solid var(--cq-border); }
 .cq-account { width: 100%; display: grid; grid-template-columns: 30px minmax(0, 1fr); align-items: center; gap: 9px; padding: 7px 8px; border: 0; border-radius: 6px; background: transparent; color: inherit; text-align: left; }
 .cq-account__avatar { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; background: #e8edf8; color: #294266; font-size: 11px; font-weight: 700; }
+/* Declared here as well as in the <=980px query below, which hides it. Without a
+   desktop rule this <span> defaults to inline and the name runs into the role
+   ("Dana WhitfieldOwner"). The later media query still wins when it applies. */
+.cq-account__copy { display: flex; min-width: 0; flex-direction: column; }
 .cq-account__name { overflow: hidden; font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .cq-account__role { color: var(--cq-text-muted); font-size: 11px; text-transform: capitalize; }
 .cq-app { min-width: 0; }
@@ -165,6 +214,45 @@ a.cq-object-list__item:hover { background: var(--cq-surface-subtle); text-decora
 .cq-centered-message { min-height: 65vh; display: grid; place-items: center; color: var(--cq-text-muted); }
 .cq-icon-button { width: 34px; height: 34px; display: inline-grid; place-items: center; border: 1px solid var(--cq-border-strong); border-radius: var(--cq-radius-button); background: var(--cq-surface); color: var(--cq-text-secondary); cursor: pointer; }
 .cq-icon-button:hover { background: var(--cq-surface-subtle); color: var(--cq-text); }
+
+/* Side panel (§40: "put filters and detail in side panels rather than nested cards").
+   A create form belongs here rather than pinned above the table it adds to — an
+   always-open form pushes the data it produces off the screen. This is an overlay, not
+   a second elevation level on the page: it is the one intended use of the floating
+   shadow token. */
+.cq-drawer-backdrop { position: fixed; z-index: 40; inset: 0; background: rgba(32, 36, 44, .34); }
+.cq-drawer { position: fixed; z-index: 41; top: 0; right: 0; width: min(560px, 100vw); height: 100vh; display: flex; flex-direction: column; border-left: 1px solid var(--cq-border); background: var(--cq-surface); box-shadow: var(--cq-shadow-floating); }
+.cq-drawer__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; min-height: 60px; padding: 14px 18px; border-bottom: 1px solid var(--cq-border); }
+.cq-drawer__description { margin: 3px 0 0; color: var(--cq-text-muted); font-size: 12px; }
+.cq-drawer__body { flex: 1; overflow-y: auto; padding: 18px; }
+.cq-drawer__footer { display: flex; align-items: center; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--cq-border); background: var(--cq-surface-subtle); }
+@media (max-width: 640px) {
+  .cq-drawer { width: 100vw; }
+}
+
+/* Record layout (§20: "sections of one record, not thirteen dashboards"). A persistent
+   left section rail plus a dense identity/figures strip — so Phases 7-12 add a rail entry
+   instead of another full-width panel on an ever-longer page. */
+.cq-record { display: grid; grid-template-columns: 194px minmax(0, 1fr); gap: 22px; align-items: start; }
+.cq-rail { position: sticky; top: 20px; display: flex; flex-direction: column; gap: 1px; }
+.cq-rail__group { padding: 14px 9px 5px; color: var(--cq-text-muted); font-size: 10px; font-weight: 700; letter-spacing: .075em; text-transform: uppercase; }
+.cq-rail__link { min-height: 32px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 9px; border: 0; border-radius: 6px; background: transparent; color: var(--cq-text-secondary); font: inherit; font-size: 13px; font-weight: 560; text-align: left; cursor: pointer; }
+.cq-rail__link:hover { background: var(--cq-surface-subtle); color: var(--cq-text); text-decoration: none; }
+.cq-rail__link[aria-current="true"] { background: #eef1f5; color: var(--cq-text); font-weight: 650; }
+.cq-rail__count { flex: 0 0 auto; color: var(--cq-text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.cq-rail__link[aria-current="true"] .cq-rail__count { color: var(--cq-text-secondary); }
+.cq-rail__link--empty { color: var(--cq-text-muted); font-weight: 500; }
+.cq-record-head { display: flex; align-items: stretch; flex-wrap: wrap; border: 1px solid var(--cq-border); border-radius: var(--cq-radius-panel); background: var(--cq-surface); }
+.cq-record-head__figure { flex: 1 1 150px; min-width: 0; padding: 11px 16px; border-right: 1px solid var(--cq-border); }
+.cq-record-head__figure:last-child { border-right: 0; }
+.cq-record-head__value { margin-top: 3px; font-size: 19px; line-height: 1.2; letter-spacing: -.02em; font-weight: 680; font-variant-numeric: tabular-nums; }
+.cq-record-head__note { margin-top: 2px; color: var(--cq-text-muted); font-size: 11.5px; }
+@media (max-width: 980px) {
+  .cq-record { grid-template-columns: 1fr; gap: 14px; }
+  .cq-rail { position: static; flex-direction: row; overflow-x: auto; gap: 3px; padding-bottom: 4px; }
+  .cq-rail__group { display: none; }
+  .cq-rail__link { min-width: max-content; }
+}
 
 /* Auth */
 .cq-auth { min-height: 100vh; display: grid; grid-template-rows: auto 1fr auto; background: var(--cq-surface); }

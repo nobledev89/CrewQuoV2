@@ -21,6 +21,13 @@ function card(overrides: Partial<RateCardView>): RateCardView {
     effectiveFrom: '2026-01-01',
     effectiveTo: null,
     active: true,
+    // Approved-version provenance (Phase 6). A hand-entered card is version 1,
+    // unlocked, sourced from no proposal, and inherits the company currency.
+    currency: null,
+    version: 1,
+    locked: false,
+    sourceProposalId: null,
+    supersedesRateCardId: null,
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     ...overrides,

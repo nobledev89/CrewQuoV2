@@ -17,6 +17,7 @@ import type {
   AuditSettings,
   AuthResponse,
   ClientView,
+  CommercialAgreement,
   CompanySummary,
   CreateAssignment,
   CreateClient,
@@ -30,8 +31,11 @@ import type {
   CreateProject,
   CreateProvider,
   CreateProviderResponse,
+  CreateRateProposal,
   CreateSubmission,
   CreateTimeLog,
+  DirectRateSchedule,
+  EngagementTermsView,
   EngagementView,
   EntitlementsResponse,
   ExpenseView,
@@ -45,6 +49,7 @@ import type {
   MeResponse,
   MemberView,
   MembershipSummary,
+  PendingAssignmentView,
   PortalProjectDetail,
   PortalProjectView,
   ProjectSummary,
@@ -56,6 +61,7 @@ import type {
   RateCardTemplateView,
   RateCardUpdate,
   RateCardView,
+  RateProposalView,
   RegisterRequest,
   ResolveRateResponse,
   RoleCatalogCreate,
@@ -65,6 +71,7 @@ import type {
   UpdateAuditSettings,
   UpdateCompany,
   UpdateEngagement,
+  UpdateEngagementTerms,
   UpdateExpense,
   UpdateInvoice,
   UpdateInvoiceItem,
@@ -72,6 +79,7 @@ import type {
   UpdateMe,
   UpdateMember,
   UpdateProject,
+  UpdateRateProposal,
   UpdateTimeLog,
   WorkContext,
   WorkStatus,
@@ -454,6 +462,86 @@ export const api = {
     request<{ invoice: InvoiceView }>('POST', `/v1/invoices/${id}/void`, {
       accessToken: t, companyId: c,
     }),
+
+  // ── Commercial agreements (§3.3.1) ──────────────────────────────────────────
+  /** One engagement's terms, live PAY schedule and proposal history in one call. */
+  getCommercialAgreement: (t: string, c: string, engagementId: string) =>
+    request<{ agreement: CommercialAgreement }>(
+      'GET', `/v1/commercial-agreements/${engagementId}`, { accessToken: t, companyId: c }
+    ),
+  /** Hiring-side direct entry for a schedule agreed outside CrewQuo. */
+  recordRateSchedule: (t: string, c: string, engagementId: string, body: Omit<DirectRateSchedule, 'engagementId'>) =>
+    request<{ rateCardIds: string[]; supersededRateCardIds: string[]; currency: string }>(
+      'POST', `/v1/commercial-agreements/${engagementId}/schedule`,
+      { accessToken: t, companyId: c, body }
+    ),
+  listRateProposals: (t: string, c: string, engagementId?: string) =>
+    request<ListResponse<RateProposalView>>('GET', '/v1/rate-proposals', {
+      accessToken: t, companyId: c, query: { engagementId },
+    }),
+  getRateProposal: (t: string, c: string, id: string) =>
+    request<{ proposal: RateProposalView }>('GET', `/v1/rate-proposals/${id}`, {
+      accessToken: t, companyId: c,
+    }),
+  createRateProposal: (t: string, c: string, body: CreateRateProposal) =>
+    request<{ proposal: RateProposalView }>('POST', '/v1/rate-proposals', {
+      accessToken: t, companyId: c, body,
+    }),
+  updateRateProposal: (t: string, c: string, id: string, body: UpdateRateProposal) =>
+    request<{ proposal: RateProposalView }>('PATCH', `/v1/rate-proposals/${id}`, {
+      accessToken: t, companyId: c, body,
+    }),
+  deleteRateProposal: (t: string, c: string, id: string) =>
+    request<void>('DELETE', `/v1/rate-proposals/${id}`, { accessToken: t, companyId: c }),
+  submitRateProposal: (t: string, c: string, id: string) =>
+    request<{ proposal: RateProposalView }>('POST', `/v1/rate-proposals/${id}/submit`, {
+      accessToken: t, companyId: c,
+    }),
+  withdrawRateProposal: (t: string, c: string, id: string) =>
+    request<{ proposal: RateProposalView }>('POST', `/v1/rate-proposals/${id}/withdraw`, {
+      accessToken: t, companyId: c,
+    }),
+  approveRateProposal: (t: string, c: string, id: string, retroactiveReason: string | null = null) =>
+    request<{ proposal: RateProposalView; rateCardIds: string[]; supersededRateCardIds: string[] }>(
+      'POST', `/v1/rate-proposals/${id}/approve`,
+      { accessToken: t, companyId: c, body: { retroactiveReason } }
+    ),
+  rejectRateProposal: (t: string, c: string, id: string, reason: string) =>
+    request<{ proposal: RateProposalView }>('POST', `/v1/rate-proposals/${id}/reject`, {
+      accessToken: t, companyId: c, body: { reason },
+    }),
+
+  // ── Engagement commercial terms + acceptance ────────────────────────────────
+  getEngagementTerms: (t: string, c: string, id: string) =>
+    request<{ terms: EngagementTermsView }>('GET', `/v1/engagements/${id}/terms`, {
+      accessToken: t, companyId: c,
+    }),
+  updateEngagementTerms: (t: string, c: string, id: string, body: UpdateEngagementTerms) =>
+    request<{ terms: EngagementTermsView }>('PATCH', `/v1/engagements/${id}/terms`, {
+      accessToken: t, companyId: c, body,
+    }),
+  acceptEngagement: (t: string, c: string, id: string, reason: string | null = null) =>
+    request<{ engagement: EngagementView }>('POST', `/v1/engagements/${id}/accept`, {
+      accessToken: t, companyId: c, body: { reason },
+    }),
+  declineEngagement: (t: string, c: string, id: string, reason: string | null = null) =>
+    request<{ engagement: EngagementView }>('POST', `/v1/engagements/${id}/decline`, {
+      accessToken: t, companyId: c, body: { reason },
+    }),
+  listPendingAssignments: (t: string, c: string) =>
+    request<ListResponse<PendingAssignmentView>>('GET', '/v1/projects/assignments/pending', {
+      accessToken: t, companyId: c,
+    }),
+  acceptAssignment: (t: string, c: string, assignmentId: string, reason: string | null = null) =>
+    request<{ assignment: PendingAssignmentView }>(
+      'POST', `/v1/projects/assignments/${assignmentId}/accept`,
+      { accessToken: t, companyId: c, body: { reason } }
+    ),
+  declineAssignment: (t: string, c: string, assignmentId: string, reason: string | null = null) =>
+    request<{ assignment: PendingAssignmentView }>(
+      'POST', `/v1/projects/assignments/${assignmentId}/decline`,
+      { accessToken: t, companyId: c, body: { reason } }
+    ),
 
   // ── Work: time logs ──────────────────────────────────────────────────────────
   workContext: (t: string, c: string) =>

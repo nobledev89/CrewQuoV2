@@ -64,6 +64,31 @@ export const INVOICE_STATUSES = ['DRAFT', 'ISSUED', 'PAID', 'VOID'] as const;
 export const invoiceStatusSchema = z.enum(INVOICE_STATUSES);
 export type InvoiceStatus = z.infer<typeof invoiceStatusSchema>;
 
+/**
+ * Cross-company PAY schedule negotiation (§3.3.1). `WITHDRAWN` is reachable only
+ * from `SUBMITTED` — a draft the hiring side has never seen is deleted outright,
+ * so there is nothing to withdraw and nothing to explain.
+ */
+export const RATE_PROPOSAL_STATUSES = [
+  'DRAFT',
+  'SUBMITTED',
+  'APPROVED',
+  'REJECTED',
+  'WITHDRAWN',
+] as const;
+export const rateProposalStatusSchema = z.enum(RATE_PROPOSAL_STATUSES);
+export type RateProposalStatus = z.infer<typeof rateProposalStatusSchema>;
+
+/** What one proposal line does to the approved schedule when the proposal lands. */
+export const RATE_PROPOSAL_OPERATIONS = ['CREATE', 'REPLACE', 'END'] as const;
+export const rateProposalOperationSchema = z.enum(RATE_PROPOSAL_OPERATIONS);
+export type RateProposalOperation = z.infer<typeof rateProposalOperationSchema>;
+
+/** A provider's answer to being put on a project (§3.4 + the Phase 6 acceptance rules). */
+export const ASSIGNMENT_ACCEPTANCES = ['PENDING', 'ACCEPTED', 'DECLINED'] as const;
+export const assignmentAcceptanceSchema = z.enum(ASSIGNMENT_ACCEPTANCES);
+export type AssignmentAcceptance = z.infer<typeof assignmentAcceptanceSchema>;
+
 export const INVITE_KINDS = ['MEMBER', 'ENGAGEMENT', 'CLIENT_PORTAL'] as const;
 export const inviteKindSchema = z.enum(INVITE_KINDS);
 export type InviteKind = z.infer<typeof inviteKindSchema>;

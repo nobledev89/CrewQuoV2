@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import {
   DEFAULT_CURRENCY,
+  acceptanceDecisionSchema,
   createClientSchema,
   createEngagementSchema,
   createProviderSchema,
   inviteMemberSchema,
   updateEngagementSchema,
+  updateEngagementTermsSchema,
   updateMemberSchema,
   type ClientView,
   type CreateClientResponse,
@@ -19,7 +21,9 @@ import { param, uuidParam } from '../../http/params';
 import { requireRole } from '../../http/middleware/auth';
 import { withTransaction } from '../../db';
 import {
+  canDecideAcceptance,
   canManage,
+  canManageEngagementTerms,
   isEngagementParticipant,
   membershipChangeRefusal,
   membershipRemovalRefusal,
@@ -36,6 +40,13 @@ import {
 } from '../memberships/repo';
 import { insertInvite } from '../invites/repo';
 import { recordAudit } from '../audit/record';
+import { recordRevision } from '../revisions/record';
+import {
+  decideEngagementAcceptance,
+  getEngagementTerms,
+  listCommittedInvoiceCents,
+  updateEngagementTerms,
+} from './terms.repo';
 import {
   findEngagementEdge,
   getEngagementView,
@@ -81,6 +92,11 @@ engagementsRouter.post(
       clientCompanyId: ctx.companyId,
       providerCompanyId: input.providerCompanyId,
       createdByCompanyId: ctx.companyId,
+      // PENDING until the provider accepts (Phase 6 acceptance rules). This used to
+      // be ACTIVE immediately, which let one company bind another to a commercial
+      // relationship it had never agreed to. The placeholder/invite path below was
+      // already PENDING-until-accepted, so the two paths now agree.
+      status: 'PENDING',
     }).catch((err: unknown) => {
       // The (client, provider) unique constraint → a friendly conflict.
       if (err && typeof err === 'object' && 'code' in err && err.code === '23505') {
@@ -95,7 +111,8 @@ engagementsRouter.post(
       action: 'engagement.created',
       entityType: 'ENGAGEMENT',
       entityId: edge.id,
-      description: `Engagement with ${provider.name} created`,
+      changes: { status: edge.status },
+      description: `Engagement with ${provider.name} created, awaiting their acceptance`,
     });
     res.status(201).json({ engagement: await getEngagementView(edge.id, ctx.companyId) });
   })
@@ -125,6 +142,126 @@ engagementsRouter.patch(
     res.json({ engagement: await getEngagementView(edge.id, ctx.companyId) });
   })
 );
+
+// ── Commercial terms + acceptance (Phase 6, §3.3.1 sibling rules) ────────────────
+
+/** Load an edge the active company is an endpoint of, or 404 (never "not yours"). */
+async function loadEngagementEdge(req: Parameters<typeof getCompanyCtx>[0], id: string) {
+  const ctx = getCompanyCtx(req);
+  const row = await findEngagementEdge(id);
+  if (!row || !isEngagementParticipant(ctx.companyId, toEdge(row))) {
+    throw new AppError('NOT_FOUND', 'Engagement not found');
+  }
+  return { ctx, row, edge: toEdge(row) };
+}
+
+/**
+ * Payment terms, PO reference and PO ceiling — the hiring company's to set, because
+ * it is the party that pays, holds the purchase order and carries the ceiling.
+ *
+ * Revision-tracked (§36) with an optional reason: these are commercial terms, and
+ * "who changed the ceiling from £50k to £5k, and why" is a question that gets asked.
+ */
+engagementsRouter.patch(
+  '/:id/terms',
+  asyncHandler(async (req, res) => {
+    const id = uuidParam(req, 'id');
+    const { ctx, edge } = await loadEngagementEdge(req, id);
+    if (!canManageEngagementTerms(ctx.companyId, ctx.role, edge)) {
+      throw new AppError(
+        'FORBIDDEN',
+        'Only a manager in the hiring company may set the commercial terms of an engagement'
+      );
+    }
+    const patch = updateEngagementTermsSchema.parse(req.body);
+    const before = await getEngagementTerms(id);
+    if (!before) throw new AppError('NOT_FOUND', 'Engagement not found');
+
+    const after = await updateEngagementTerms(id, patch);
+    const snapshot = (terms: typeof after) => ({
+      paymentTermsDays: terms.paymentTermsDays,
+      purchaseOrderReference: terms.purchaseOrderReference,
+      purchaseOrderCeilingCents: terms.purchaseOrderCeilingCents,
+    });
+    await recordRevision({
+      companyId: ctx.companyId,
+      entityType: 'engagement_terms',
+      entityId: id,
+      action: 'UPDATE',
+      before: snapshot(before),
+      after: snapshot(after),
+      reason: patch.reason ?? null,
+      changedByUserId: ctx.userId,
+    });
+    // Client-visible: the provider needs to know the terms it is working under, and
+    // its own payment days and PO are not a secret from it.
+    await recordAudit({
+      companyId: ctx.companyId,
+      actorUserId: ctx.userId,
+      action: 'engagement.terms_updated',
+      entityType: 'ENGAGEMENT',
+      entityId: id,
+      changes: { before: snapshot(before), after: snapshot(after), reason: patch.reason ?? null },
+      description: 'Engagement commercial terms updated',
+      visibleToClient: true,
+    });
+    res.json({ terms: after });
+  })
+);
+
+engagementsRouter.get(
+  '/:id/terms',
+  asyncHandler(async (req, res) => {
+    const id = uuidParam(req, 'id');
+    await loadEngagementEdge(req, id);
+    const [terms, committedCents] = await Promise.all([
+      getEngagementTerms(id),
+      listCommittedInvoiceCents(id),
+    ]);
+    if (!terms) throw new AppError('NOT_FOUND', 'Engagement not found');
+    res.json({ terms: { ...terms, committedCents } });
+  })
+);
+
+/**
+ * The provider accepts or declines an engagement it has been offered. Nobody
+ * accepts on the provider's behalf — that is the entire point of the step.
+ */
+for (const [path, accept] of [
+  ['/:id/accept', true],
+  ['/:id/decline', false],
+] as const) {
+  engagementsRouter.post(
+    path,
+    asyncHandler(async (req, res) => {
+      const id = uuidParam(req, 'id');
+      const { ctx, edge } = await loadEngagementEdge(req, id);
+      if (!canDecideAcceptance(ctx.companyId, ctx.role, edge)) {
+        throw new AppError(
+          'FORBIDDEN',
+          'Only a manager in the provider company may accept or decline an engagement'
+        );
+      }
+      const { reason } = acceptanceDecisionSchema.parse(req.body ?? {});
+      const terms = await decideEngagementAcceptance({
+        engagementId: id,
+        accept,
+        reason,
+        actorUserId: ctx.userId,
+      });
+      await recordAudit({
+        companyId: ctx.companyId,
+        actorUserId: ctx.userId,
+        action: accept ? 'engagement.accepted' : 'engagement.declined',
+        entityType: 'ENGAGEMENT',
+        entityId: id,
+        changes: { status: terms.status, reason },
+        description: accept ? 'Engagement accepted' : 'Engagement declined',
+      });
+      res.json({ engagement: await getEngagementView(id, ctx.companyId), terms });
+    })
+  );
+}
 
 // ── /v1/providers ────────────────────────────────────────────────────────────────
 

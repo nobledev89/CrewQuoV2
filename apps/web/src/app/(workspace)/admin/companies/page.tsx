@@ -121,64 +121,61 @@ function AdminCompanies() {
         description="Every account, what it resolves to, and the three support levers: overrides, comped trials and forced plan changes."
       />
 
-      <Notice>
-        These actions take effect immediately — the entitlement cache is invalidated on every
-        write — and each one is recorded in the subject company&apos;s own audit trail.
-      </Notice>
-
-      <Section title="Find a company">
+      {/*
+        The filters are a toolbar on the table they filter, not a panel above it. This
+        screen is read by support with a customer waiting, and the search form plus its
+        own panel header used to push the first result to 653px — one visible row.
+        The advisory that used to sit here as a page banner now sits on the actions it
+        qualifies, in the detail view where those actions are (§40: warnings inline and
+        specific, not a banner at the top of the page).
+      */}
+      <Section className="cq-section--table">
         <form
-          className="cq-stack"
+          className="cq-table-toolbar"
           onSubmit={(e) => {
             e.preventDefault();
             setApplied(search.trim());
             resetPaging();
           }}
         >
-          <div className="cq-form-grid">
-            <Field label="Name or member email">
-              <SearchInput
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Meridian, or someone@example.com"
-              />
-            </Field>
-            <Field label="Resolved plan">
-              <Select
-                value={planFilter}
-                onChange={(e) => {
-                  setPlanFilter(e.target.value);
-                  resetPaging();
-                }}
-              >
-                <option value="">Any plan</option>
-                {(plans.data ?? []).map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-          </div>
-          <label className="cq-row" style={{ gap: 8 }}>
-            <input
-              type="checkbox"
-              checked={includePlaceholders}
+          <Row>
+            <SearchInput
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Name or member email"
+              aria-label="Search by company name or member email"
+            />
+            <Select
+              value={planFilter}
               onChange={(e) => {
-                setIncludePlaceholders(e.target.checked);
+                setPlanFilter(e.target.value);
                 resetPaging();
               }}
-            />
-            <span>
-              Include placeholder companies (stubs for invited providers and clients that
-              nobody has accepted)
-            </span>
-          </label>
-          <Row>
-            <Button type="submit">Search</Button>
+              aria-label="Resolved plan"
+            >
+              <option value="">Any plan</option>
+              {(plans.data ?? []).map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </Select>
+            <label className="cq-row" style={{ gap: 6 }} title="Every invite creates a stub company, so these outnumber real accounts">
+              <input
+                type="checkbox"
+                checked={includePlaceholders}
+                onChange={(e) => {
+                  setIncludePlaceholders(e.target.checked);
+                  resetPaging();
+                }}
+              />
+              <span className="cq-muted">Include placeholders</span>
+            </label>
+            <Button type="submit" size="sm">Search</Button>
             {applied || planFilter || includePlaceholders ? (
               <Button
                 variant="secondary"
+                size="sm"
                 onClick={() => {
                   setSearch('');
                   setApplied('');
@@ -191,16 +188,11 @@ function AdminCompanies() {
               </Button>
             ) : null}
           </Row>
+          <span className="cq-table-toolbar__meta">
+            {applied ? `Matching “${applied}”` : 'Newest first'}
+          </span>
         </form>
-      </Section>
 
-      <Section
-        title="Accounts"
-        description={
-          applied ? `Matching “${applied}”.` : 'Newest first. Open a row for usage and overrides.'
-        }
-        className="cq-section--table"
-      >
         <ErrorText>{list.error}</ErrorText>
         {list.loading ? (
           <p className="cq-muted">Loading companies…</p>
@@ -217,9 +209,9 @@ function AdminCompanies() {
                 <tr>
                   <th scope="col">Company</th>
                   <th scope="col">Plan</th>
-                  <th scope="col">Members</th>
-                  <th scope="col">Overrides</th>
-                  <th scope="col">Created</th>
+                  <th scope="col" className="cq-numeric">Members</th>
+                  <th scope="col" className="cq-numeric">Overrides</th>
+                  <th scope="col" className="cq-numeric">Created</th>
                   <th scope="col">
                     <span className="cq-table__actions">Manage</span>
                   </th>
@@ -442,8 +434,8 @@ function CompanyDetail({
             <thead>
               <tr>
                 <th scope="col">Limit</th>
-                <th scope="col">Used</th>
-                <th scope="col">Allowance</th>
+                <th scope="col" className="cq-numeric">Used</th>
+                <th scope="col" className="cq-numeric">Allowance</th>
                 <th scope="col">State</th>
               </tr>
             </thead>
@@ -588,7 +580,7 @@ function SubscriptionLevers({
   return (
     <Section
       title="Plan & trial"
-      description="There is no merchant of record yet (Phase 6), so a platform operator changing a plan here is the billing system."
+      description="Takes effect immediately — the entitlement cache is invalidated on write — and is recorded in this company's own audit trail. There is no merchant of record yet (Phase 6), so changing a plan here is the billing system."
     >
       <Stack>
         <div className="cq-form-grid">
@@ -710,7 +702,7 @@ function Overrides({
   return (
     <Section
       title="Entitlement overrides"
-      description="Applied on top of the plan. A feature override wins over the plan; a limit override replaces the plan's number."
+      description="Applied on top of the plan and live on the next request. A feature override wins over the plan; a limit override replaces the plan's number. Each change is recorded in this company's own audit trail."
       className="cq-section--table"
     >
       <Stack>

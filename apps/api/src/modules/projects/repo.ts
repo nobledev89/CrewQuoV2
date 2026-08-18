@@ -155,6 +155,9 @@ export async function listAssignments(projectId: string): Promise<AssignmentView
   return query<AssignmentView>(
     `select a.id, a.project_id as "projectId", a.provider_company_id as "providerCompanyId",
             pc.name as "providerCompanyName", a.engagement_id as "engagementId",
+            a.acceptance as "acceptance",
+            to_char(a.accepted_at, 'YYYY-MM-DD"T"HH24:MI:SS.MSZ') as "acceptedAt",
+            a.decision_reason as "decisionReason",
             to_char(a.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.MSZ') as "createdAt"
        from project_assignments a
        join companies pc on pc.id = a.provider_company_id

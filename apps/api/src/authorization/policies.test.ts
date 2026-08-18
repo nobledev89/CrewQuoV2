@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  canApproveRetroactively,
+  canDecideAcceptance,
+  canDraftRateProposal,
   canEditLineItemNoteBody,
   canManage,
   canManageAuditSettings,
+  canManageEngagementTerms,
   canManageInvoice,
   canProviderEditWork,
   canProviderSubmit,
@@ -11,9 +15,11 @@ import {
   canReadInvoice,
   canReadPortal,
   canResolveLineItemNote,
+  canReviewRateProposal,
   canReviewWork,
   canWriteLineItemNote,
   decideMerge,
+  engagementSide,
   isEngagementClientSide,
   isEngagementParticipant,
   isEngagementProviderSide,
@@ -390,5 +396,62 @@ describe('membershipRemovalRefusal', () => {
     expect(
       membershipRemovalRefusal({ actorRole: 'OWNER', target: owner, activeOwnerCount: 2 })
     ).toBeNull();
+  });
+});
+
+// ── Commercial agreements (§3.3.1) ────────────────────────────────────────────
+
+describe('commercial agreement policies', () => {
+  const edge: EngagementEdge = { clientCompanyId: 'c-hirer', providerCompanyId: 'c-sub' };
+
+  it('reports which side of the edge a company is on, and null for an outsider', () => {
+    expect(engagementSide('c-sub', edge)).toBe('provider');
+    expect(engagementSide('c-hirer', edge)).toBe('client');
+    expect(engagementSide('c-stranger', edge)).toBeNull();
+  });
+
+  it('lets a provider manager draft, and nobody on the hiring side', () => {
+    expect(canDraftRateProposal('c-sub', 'MANAGER', edge)).toBe(true);
+    expect(canDraftRateProposal('c-sub', 'OWNER', edge)).toBe(true);
+    expect(canDraftRateProposal('c-sub', 'MEMBER', edge)).toBe(false);
+    expect(canDraftRateProposal('c-hirer', 'OWNER', edge)).toBe(false);
+    expect(canDraftRateProposal('c-stranger', 'OWNER', edge)).toBe(false);
+  });
+
+  it('lets a hiring manager review, and nobody on the provider side', () => {
+    expect(canReviewRateProposal('c-hirer', 'MANAGER', edge)).toBe(true);
+    expect(canReviewRateProposal('c-hirer', 'MEMBER', edge)).toBe(false);
+    // The provider can never approve its own rates, at any role.
+    expect(canReviewRateProposal('c-sub', 'OWNER', edge)).toBe(false);
+    expect(canReviewRateProposal('c-stranger', 'OWNER', edge)).toBe(false);
+  });
+
+  it('keeps drafting and reviewing mutually exclusive for every role', () => {
+    for (const role of ['OWNER', 'ADMIN', 'MANAGER', 'MEMBER'] as const) {
+      for (const company of ['c-sub', 'c-hirer', 'c-stranger']) {
+        expect(
+          canDraftRateProposal(company, role, edge) && canReviewRateProposal(company, role, edge)
+        ).toBe(false);
+      }
+    }
+  });
+
+  it('reserves retroactive approval for an owner', () => {
+    expect(canApproveRetroactively('OWNER')).toBe(true);
+    expect(canApproveRetroactively('ADMIN')).toBe(false);
+    expect(canApproveRetroactively('MANAGER')).toBe(false);
+    expect(canApproveRetroactively('MEMBER')).toBe(false);
+  });
+
+  it('gives engagement terms to the hiring side — the party that pays', () => {
+    expect(canManageEngagementTerms('c-hirer', 'ADMIN', edge)).toBe(true);
+    expect(canManageEngagementTerms('c-sub', 'OWNER', edge)).toBe(false);
+    expect(canManageEngagementTerms('c-hirer', 'MEMBER', edge)).toBe(false);
+  });
+
+  it('gives acceptance to the provider — nobody accepts on their behalf', () => {
+    expect(canDecideAcceptance('c-sub', 'MANAGER', edge)).toBe(true);
+    expect(canDecideAcceptance('c-hirer', 'OWNER', edge)).toBe(false);
+    expect(canDecideAcceptance('c-sub', 'MEMBER', edge)).toBe(false);
   });
 });

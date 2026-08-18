@@ -178,13 +178,37 @@ rateCardRouter.get(
   })
 );
 
+/**
+ * An approved version is immutable (§3.3.1). The database enforces it with a
+ * trigger, which is the guarantee that matters — but a trigger violation reaches
+ * the caller as a 500, so refuse it here too and say what to do instead.
+ *
+ * Deliberately not offering a "force" path: correcting an agreed rate is a new
+ * effective version, which is what the commercial-agreement workflow is for.
+ */
+async function assertRateCardEditable(companyId: string, id: string): Promise<void> {
+  const card = await getRateCard(companyId, id);
+  if (!card) throw new AppError('NOT_FOUND', 'Rate card not found');
+  if (card.locked) {
+    throw new AppError(
+      'CONFLICT',
+      'This rate is an approved commercial agreement version and cannot be edited. ' +
+        'Agree a new effective version instead — a provider can propose one, or you ' +
+        'can record a schedule you agreed elsewhere.',
+      { rateCardId: id, version: card.version, sourceProposalId: card.sourceProposalId }
+    );
+  }
+}
+
 rateCardRouter.patch(
   '/:id',
   canManage,
   asyncHandler(async (req, res) => {
     const ctx = getCompanyCtx(req);
+    const id = param(req, 'id');
     const patch = rateCardUpdateSchema.parse(req.body);
-    res.json({ rateCard: await updateRateCard(ctx.companyId, param(req, 'id'), patch) });
+    await assertRateCardEditable(ctx.companyId, id);
+    res.json({ rateCard: await updateRateCard(ctx.companyId, id, patch) });
   })
 );
 
@@ -193,7 +217,9 @@ rateCardRouter.delete(
   canManage,
   asyncHandler(async (req, res) => {
     const ctx = getCompanyCtx(req);
-    await deleteRateCard(ctx.companyId, param(req, 'id'));
+    const id = param(req, 'id');
+    await assertRateCardEditable(ctx.companyId, id);
+    await deleteRateCard(ctx.companyId, id);
     res.status(204).end();
   })
 );

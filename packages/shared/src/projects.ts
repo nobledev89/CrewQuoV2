@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { projectStatusSchema } from './enums';
+import { assignmentAcceptanceSchema, projectStatusSchema } from './enums';
 
 /**
  * Projects, assignments & the server-computed summary (CREWQUO_V2_PLAN.md §3.4, §7).
@@ -60,6 +60,16 @@ export const assignmentViewSchema = z.object({
   providerCompanyId: z.string().uuid(),
   providerCompanyName: z.string(),
   engagementId: z.string().uuid(),
+  /**
+   * The provider's answer to being put on this project (Phase 6 acceptance rules).
+   * Recorded and surfaced, and deliberately **not** a gate on work capture: gating
+   * it would stop a crew logging hours they had already worked, hours after a
+   * decision taken by a different company. See §9 of
+   * `docs/operating-model/commercial-agreements.md`.
+   */
+  acceptance: assignmentAcceptanceSchema,
+  acceptedAt: z.string().nullable(),
+  decisionReason: z.string().nullable(),
   createdAt: z.string(),
 });
 export type AssignmentView = z.infer<typeof assignmentViewSchema>;

@@ -3,10 +3,11 @@
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState, type ReactNode } from 'react';
-import { DEFAULT_CURRENCY } from '@crewquo/shared';
+import { DEFAULT_CURRENCY, type FeatureKey } from '@crewquo/shared';
 import { Button, ErrorText, Field, Input, Select } from '@crewquo/ui';
 import { useAuth } from '@/auth/AuthProvider';
 import { ApiError } from '@/api/client';
+import { useEntitlements } from '@/lib/useEntitlements';
 import { titleCase } from '@/lib/format';
 
 interface NavItem {
@@ -15,48 +16,63 @@ interface NavItem {
   icon: string;
   /** Platform-staff only (§5B super-admin console). */
   superAdmin?: boolean;
+  /**
+   * Hide unless the company's plan grants this feature. A link to a screen the plan
+   * refuses is not a discovery affordance — it is a promise the API breaks (§5B).
+   * `/plan` is where what-you-don't-have is on show; the sidebar is for work.
+   */
+  feature?: FeatureKey;
+  /** Hide unless the plan allows this company to engage subcontractors. */
+  requiresDownstream?: boolean;
 }
 
 const NAV: { label: string; items: NavItem[] }[] = [
   {
     label: 'Workspace',
-    items: [{ href: '/app', label: 'Overview', icon: 'overview' }],
-  },
-  {
-    label: 'Delivery',
     items: [
+      { href: '/app', label: 'Overview', icon: 'overview' },
       { href: '/projects', label: 'Projects', icon: 'template' },
-      { href: '/invoices', label: 'Invoices', icon: 'card' },
-      { href: '/review', label: 'Approvals', icon: 'check' },
       { href: '/work', label: 'Log work', icon: 'clock' },
+      { href: '/review', label: 'Approvals', icon: 'check', requiresDownstream: true },
+      { href: '/invoices', label: 'Invoices', icon: 'card', feature: 'invoicing' },
+      { href: '/portal', label: 'Shared with me', icon: 'portal' },
     ],
   },
   {
     label: 'Network',
     items: [
       { href: '/network/engagements', label: 'Engagements', icon: 'link' },
-      { href: '/network/providers', label: 'Subcontractors', icon: 'people' },
-      { href: '/network/clients', label: 'Clients', icon: 'building' },
+      {
+        href: '/network/providers',
+        label: 'Subcontractors',
+        icon: 'people',
+        requiresDownstream: true,
+      },
+      { href: '/network/clients', label: 'Clients', icon: 'building', feature: 'client_portal' },
     ],
   },
   {
-    label: 'Client portal',
-    items: [{ href: '/portal', label: 'Shared with me', icon: 'portal' }],
-  },
-  {
-    label: 'Rate management',
+    label: 'Rates',
     items: [
-      { href: '/rates/roles', label: 'Roles', icon: 'people' },
-      { href: '/rates/cards', label: 'Rate cards', icon: 'card' },
-      { href: '/rates/templates', label: 'Templates', icon: 'template' },
-      { href: '/rates/resolve', label: 'Rate resolver', icon: 'resolve' },
+      /**
+       * Deliberately ungated. Every other item here needs `rate_cards`, but a
+       * provider on the free Crew plan proposes its own PAY schedule — that is what
+       * the free tier is for (§5B), and the gate sits on the hiring company at
+       * approval time instead. Hiding this would hide the negotiation from exactly
+       * the people who start it.
+       */
+      { href: '/commercial', label: 'Agreements', icon: 'link' },
+      { href: '/rates/roles', label: 'Roles', icon: 'people', feature: 'rate_cards' },
+      { href: '/rates/cards', label: 'Rate cards', icon: 'card', feature: 'rate_cards' },
+      { href: '/rates/templates', label: 'Templates', icon: 'template', feature: 'rate_cards' },
+      { href: '/rates/resolve', label: 'Rate resolver', icon: 'resolve', feature: 'rate_cards' },
     ],
   },
   {
     label: 'Company',
     items: [
       { href: '/company/members', label: 'Members', icon: 'people' },
-      { href: '/audit', label: 'Audit trail', icon: 'list' },
+      { href: '/audit', label: 'Audit trail', icon: 'list', feature: 'audit_visibility' },
       { href: '/plan', label: 'Plan & usage', icon: 'gauge' },
       { href: '/settings', label: 'Settings', icon: 'settings' },
     ],
@@ -64,8 +80,8 @@ const NAV: { label: string; items: NavItem[] }[] = [
   {
     label: 'Platform',
     items: [
-      { href: '/admin/plans', label: 'Plans', icon: 'gauge', superAdmin: true },
       { href: '/admin/companies', label: 'Companies', icon: 'building', superAdmin: true },
+      { href: '/admin/plans', label: 'Plans', icon: 'gauge', superAdmin: true },
     ],
   },
 ];
@@ -80,6 +96,7 @@ const PAGE_NAMES: Record<string, string> = {
   '/network/providers': 'Subcontractors',
   '/network/clients': 'Clients',
   '/portal': 'Shared with me',
+  '/commercial': 'Commercial agreements',
   '/rates/roles': 'Roles',
   '/rates/cards': 'Rate cards',
   '/rates/templates': 'Templates',
@@ -108,6 +125,10 @@ export function Shell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const pageName = pageNameFor(pathname);
+  // The sidebar is entitlement-aware (§5B): the plan decides what work exists, so it
+  // decides what the navigation offers. This is the same resolver every gate reads, so
+  // the menu and the API cannot disagree about what this company may do.
+  const { data: entitlements } = useEntitlements();
 
   useEffect(() => {
     if (ready && !session) router.replace('/login');
@@ -129,9 +150,26 @@ export function Shell({ children }: { children: ReactNode }) {
    * still requires a membership, because every other screen reads company-scoped data.
    */
   const platformScreen = isSuperAdmin && pathname.startsWith('/admin');
+
+  /**
+   * Staff with no company get the platform group alone. Showing them the workspace
+   * navigation offers fifteen links that every one of them lands on "create a company",
+   * and buries the two that work below the fold.
+   */
+  const companyless = !activeMembership;
   const groups = NAV.map((group) => ({
     ...group,
-    items: group.items.filter((item) => !item.superAdmin || isSuperAdmin),
+    items: group.items.filter((item) => {
+      if (item.superAdmin) return isSuperAdmin;
+      if (companyless) return false;
+      // Until entitlements resolve, show the full set rather than flashing a short nav
+      // that grows a moment later — a menu that moves under the cursor is worse than a
+      // menu that briefly offers one refusal.
+      if (!entitlements) return true;
+      if (item.requiresDownstream && !entitlements.operatesDownstream) return false;
+      if (item.feature && !entitlements.features.includes(item.feature)) return false;
+      return true;
+    }),
   })).filter((group) => group.items.length > 0);
 
   return (

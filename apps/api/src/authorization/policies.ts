@@ -174,6 +174,81 @@ export function canManageInvoice(
   return isEngagementProviderSide(companyId, edge) && canManage(role) && status === 'DRAFT';
 }
 
+// ── Commercial agreements (§3.3.1, decision #23) ──────────────────────────────
+
+/**
+ * Which side of the edge this company is on, for the commercial state machine.
+ * Returns null for a company that is neither endpoint — the caller answers
+ * `NOT_FOUND` rather than distinguishing "not yours" from "does not exist".
+ */
+export function engagementSide(
+  companyId: string,
+  edge: EngagementEdge
+): 'client' | 'provider' | null {
+  if (companyId === edge.providerCompanyId) return 'provider';
+  if (companyId === edge.clientCompanyId) return 'client';
+  return null;
+}
+
+/**
+ * A draft schedule belongs to the provider that is proposing it. Deliberately
+ * separate from `canReviewRateProposal` below rather than one function with a
+ * side parameter: these are the two halves of a negotiation, and a change that
+ * widened one must not be able to widen the other by accident.
+ */
+export function canDraftRateProposal(
+  companyId: string,
+  role: MembershipRole,
+  edge: EngagementEdge
+): boolean {
+  return isEngagementProviderSide(companyId, edge) && canManage(role);
+}
+
+/** Approve/reject belongs to the hiring (client) side of the edge, managers only. */
+export function canReviewRateProposal(
+  companyId: string,
+  role: MembershipRole,
+  edge: EngagementEdge
+): boolean {
+  return isEngagementClientSide(companyId, edge) && canManage(role);
+}
+
+/**
+ * Retroactive activation needs an OWNER (§3.3.1: *"retroactive activation is
+ * refused by default and needs an owner override with a reason"*). MANAGER and
+ * ADMIN can approve a schedule; only an owner can back-date one, because
+ * already-approved time keeps its frozen PAY snapshot and the two then disagree
+ * about money already owed.
+ */
+export function canApproveRetroactively(role: MembershipRole): boolean {
+  return role === 'OWNER';
+}
+
+/**
+ * Payment terms, PO reference and PO ceiling are the hiring company's to set: it
+ * is the party that pays, holds the purchase order and carries the ceiling.
+ */
+export function canManageEngagementTerms(
+  companyId: string,
+  role: MembershipRole,
+  edge: EngagementEdge
+): boolean {
+  return isEngagementClientSide(companyId, edge) && canManage(role);
+}
+
+/**
+ * Accepting an engagement or a project assignment is the provider's decision.
+ * A hiring company cannot accept on the provider's behalf — that is the whole
+ * point of an acceptance step.
+ */
+export function canDecideAcceptance(
+  companyId: string,
+  role: MembershipRole,
+  edge: EngagementEdge
+): boolean {
+  return isEngagementProviderSide(companyId, edge) && canManage(role);
+}
+
 // ── Member management (§3.1, §7) ───────────────────────────────────────────────
 
 /**

@@ -34,6 +34,10 @@ import { auditLogsRouter, auditSettingsRouter } from './modules/audit/routes';
 import { portalRouter } from './modules/portal/routes';
 import { lineItemNotesRouter } from './modules/notes/routes';
 import { invoicesRouter } from './modules/invoices/routes';
+import {
+  commercialAgreementsRouter,
+  rateProposalsRouter,
+} from './modules/commercial/routes';
 
 /** Build the Express app. Kept separate from listen() so tests can import it. */
 export function buildApp(): Express {
@@ -88,6 +92,11 @@ export function buildApp(): Express {
   app.use('/v1/audit-logs', requireAuth, auditLogsRouter);
   app.use('/v1/audit-settings', requireAuth, auditSettingsRouter);
   app.use('/v1/invoices', requireAuth, invoicesRouter);
+
+  // Commercial agreements (§3.3.1): cross-company PAY schedule negotiation, and one
+  // engagement's whole commercial picture (terms + live rates + proposal history).
+  app.use('/v1/rate-proposals', requireAuth, rateProposalsRouter);
+  app.use('/v1/commercial-agreements', requireAuth, commercialAgreementsRouter);
 
   app.use('/v1/admin', requireAuth, requireSuperAdmin, adminRouter);
 

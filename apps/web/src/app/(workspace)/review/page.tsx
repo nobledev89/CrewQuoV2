@@ -518,12 +518,12 @@ function Review() {
                     aria-label="Select all visible time logs"
                   />
                 </th>
-                <th scope="col">Work date</th>
+                <th scope="col" className="cq-numeric">Work date</th>
                 <th scope="col">Subcontractor</th>
                 <th scope="col">Project</th>
                 <th scope="col">Shift</th>
-                <th scope="col">Hours</th>
-                <th scope="col">Cost to you</th>
+                <th scope="col" className="cq-numeric">Hours</th>
+                <th scope="col" className="cq-numeric">Cost to you</th>
               </tr>
             </thead>
             <tbody>
@@ -570,12 +570,12 @@ function Review() {
                     aria-label="Select all visible expenses"
                   />
                 </th>
-                <th scope="col">Logged</th>
+                <th scope="col" className="cq-numeric">Raised</th>
                 <th scope="col">Subcontractor</th>
                 <th scope="col">Project</th>
                 <th scope="col">Category</th>
                 <th scope="col">Description</th>
-                <th scope="col">Amount</th>
+                <th scope="col" className="cq-numeric">Amount</th>
               </tr>
             </thead>
             <tbody>

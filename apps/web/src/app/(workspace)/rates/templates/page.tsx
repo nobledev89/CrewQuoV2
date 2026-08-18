@@ -11,7 +11,7 @@ import {
   type ShiftType,
   type TimeframeDefinitionInput,
 } from '@crewquo/shared';
-import { Badge, Button, EmptyState, ErrorText, Field, Input, Notice, PageHeader, Row, SearchInput, Section, Select, Stack, Table } from '@crewquo/ui';
+import { Badge, Button, Drawer, EmptyState, ErrorText, Field, Input, Notice, PageHeader, Row, SearchInput, Section, Select, Stack, Table } from '@crewquo/ui';
 import { Shell } from '@/components/Shell';
 import { api, ApiError } from '@/api/client';
 import { useSessionCtx } from '@/auth/AuthProvider';
@@ -146,6 +146,7 @@ function Templates() {
   const [drafts, setDrafts] = useState<RuleDraft[]>([]);
   const [makeDefault, setMakeDefault] = useState(false);
   const [query, setQuery] = useUrlQuery();
+  const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -199,6 +200,7 @@ function Templates() {
       setMultiplier('2');
       setDrafts([]);
       setMakeDefault(false);
+      setAdding(false);
       reload();
     } catch (err) {
       setFormError(err instanceof ApiError ? err.message : 'Failed to create template');
@@ -276,9 +278,10 @@ function Templates() {
   return (
     <Stack>
       <PageHeader
-        eyebrow="Rate management"
+        eyebrow="Rates"
         title="Templates"
         description="Holiday calendars and the label rules the rate engine reads when it resolves a shift."
+        actions={<Button onClick={() => setAdding(true)}>New template</Button>}
       />
 
       {!loading && !error && items.length > 0 && !hasDefault ? (
@@ -288,13 +291,23 @@ function Templates() {
         </Notice>
       ) : null}
 
-      <Section
+      <Drawer
+        open={adding}
         title="Add template"
         description="A holiday schedule, any number of label rules, or both. The default template is the one the rate engine reads."
+        onClose={() => setAdding(false)}
+        footer={
+          <>
+            <Button type="submit" form="add-template" disabled={busy || name.trim() === ''}>
+              {busy ? 'Saving…' : 'Add template'}
+            </Button>
+            <Button variant="secondary" onClick={() => setAdding(false)}>Cancel</Button>
+          </>
+        }
       >
-        <form onSubmit={create}>
+        <form id="add-template" onSubmit={create}>
           <Stack>
-            <div className="cq-form-grid">
+            <div className="cq-form-grid cq-form-grid--drawer">
               <Field label="Template name">
                 <Input name="template-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. 2026 PH holidays…" required />
               </Field>
@@ -306,45 +319,46 @@ function Templates() {
               <Input name="holiday-dates" value={dates} onChange={(e) => setDates(e.target.value)} placeholder="2026-12-25, 2026-01-01…" />
             </Field>
 
-            <Section
-              title="Label rules"
-              description="Send a shift type to a different rate label on the days you choose — a night shift priced as a weekend night, for example. Add as many as you need; two rules may not claim the same shift type on the same day."
-            >
-              <Stack>
-                {drafts.length === 0 ? (
-                  <p className="cq-muted">
-                    No label rules. Without one, every shift resolves on the baseline mapping.
-                  </p>
-                ) : (
-                  drafts.map((draft, i) => (
-                    <div className="cq-card" key={i}>
-                      <Stack>
-                        <RuleFields
-                          idPrefix={`new-rule-${i}`}
-                          draft={draft}
-                          onChange={(next) =>
-                            setDrafts(drafts.map((d, j) => (j === i ? next : d)))
-                          }
-                        />
-                        <Row>
-                          <span className="cq-muted">
-                            {draft.shiftType} on {dayNames(draft.daysOfWeek)} → {draft.label}
-                          </span>
-                          <Button variant="secondary" size="sm" onClick={() => setDrafts(drafts.filter((_, j) => j !== i))}>
-                            Remove rule
-                          </Button>
-                        </Row>
-                      </Stack>
-                    </div>
-                  ))
-                )}
-                <Row>
-                  <Button variant="secondary" size="sm" onClick={() => setDrafts([...drafts, EMPTY_DRAFT])}>
-                    Add a label rule
-                  </Button>
-                </Row>
-              </Stack>
-            </Section>
+            {/* A labelled group, not a nested panel: §40 allows one elevation level, and
+                this used to be a bordered Section holding a bordered card per rule. */}
+            <div className="cq-fieldset">
+              <div>
+                <div className="cq-fieldset__legend">Label rules</div>
+                <p className="cq-fieldset__hint">
+                  Send a shift type to a different rate label on the days you choose — a night
+                  shift priced as a weekend night, for example. Two rules may not claim the same
+                  shift type on the same day.
+                </p>
+              </div>
+              {drafts.length === 0 ? (
+                <p className="cq-muted">
+                  No label rules. Without one, every shift resolves on the baseline mapping.
+                </p>
+              ) : (
+                drafts.map((draft, i) => (
+                  <div className="cq-subrow" key={i}>
+                    <RuleFields
+                      idPrefix={`new-rule-${i}`}
+                      draft={draft}
+                      onChange={(next) => setDrafts(drafts.map((d, j) => (j === i ? next : d)))}
+                    />
+                    <Row between>
+                      <span className="cq-muted">
+                        {draft.shiftType} on {dayNames(draft.daysOfWeek)} → {draft.label}
+                      </span>
+                      <Button variant="secondary" size="sm" onClick={() => setDrafts(drafts.filter((_, j) => j !== i))}>
+                        Remove
+                      </Button>
+                    </Row>
+                  </div>
+                ))
+              )}
+              <Row>
+                <Button variant="secondary" size="sm" onClick={() => setDrafts([...drafts, EMPTY_DRAFT])}>
+                  Add a label rule
+                </Button>
+              </Row>
+            </div>
 
             <Row>
               <label className="cq-row" style={{ gap: '0.4rem', alignItems: 'center' }}>
@@ -363,15 +377,10 @@ function Templates() {
               </label>
             </Row>
 
-            <Row>
-              <Button type="submit" disabled={busy || name.trim() === ''}>
-                {busy ? 'Saving…' : 'Add template'}
-              </Button>
-              <ErrorText>{formError}</ErrorText>
-            </Row>
+            <ErrorText>{formError}</ErrorText>
           </Stack>
         </form>
-      </Section>
+      </Drawer>
 
       {editing ? (
         <Section

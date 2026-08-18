@@ -22,11 +22,14 @@ import {
   Input,
   Notice,
   PageHeader,
+  RecordHeader,
   Row,
   Section,
+  SectionRail,
   Select,
   Stack,
   Table,
+  type RailSection,
 } from '@crewquo/ui';
 import { Shell } from '@/components/Shell';
 import { api, ApiError, refusedFeature } from '@/api/client';
@@ -34,6 +37,7 @@ import { useAuth, useSessionCtx } from '@/auth/AuthProvider';
 import { useAsyncData } from '@/lib/useAsyncData';
 import { useAsyncList } from '@/lib/useAsyncList';
 import { useEntitlements } from '@/lib/useEntitlements';
+import { useUrlQuery } from '@/lib/useUrlQuery';
 import { ProjectStatusBadge, WorkStatusBadge } from '@/components/Status';
 import { formatCents, formatDate, formatPct, titleCase, totalHours } from '@/lib/format';
 
@@ -91,6 +95,9 @@ function ProjectDetail() {
   );
 
   const currency = summary.data?.currency ?? activeMembership?.currency ?? 'USD';
+  // In the URL so a section is linkable and survives a reload — "look at the expenses on
+  // Pier 9" should be a link, not an instruction to click twice.
+  const [section, setSection] = useUrlQuery('section');
 
   if (project.loading) {
     return (
@@ -114,6 +121,28 @@ function ProjectDetail() {
   }
 
   const p = project.data;
+  const s = summary.data;
+
+  /**
+   * A project is one record with sections, not a stack of dashboards (§20). The rail
+   * carries the section list and marks which ones hold anything, which is §20's
+   * progressive-disclosure rule: an empty section says so in one dim line instead of
+   * shouting an empty panel at the same volume as a populated one.
+   *
+   * Phases 7-12 add Locations, Evidence, Documents, Site Diary, Assets, Sustainability,
+   * Variations, Schedule, Sign-Off and Reports here — as rail entries, not as ten more
+   * full-width panels on an ever-longer page. Only sections that exist are listed:
+   * advertising a section that is not built yet is a promise, not navigation.
+   */
+  const sections: RailSection[] = [
+    { id: 'overview', label: 'Overview' },
+    { id: 'crew', label: 'Crew', count: assignments.items.length, populated: assignments.items.length > 0 },
+    { id: 'time', label: 'Time & costs', count: timeLogs.items.length, populated: timeLogs.items.length > 0 },
+    { id: 'expenses', label: 'Expenses', count: expenses.items.length, populated: expenses.items.length > 0 },
+    { id: 'reports', label: 'Reports' },
+    ...(canManage ? [{ id: 'settings', label: 'Settings' } satisfies RailSection] : []),
+  ];
+  const active = sections.some((x) => x.id === section) ? section : 'overview';
 
   return (
     <Stack>
@@ -133,37 +162,82 @@ function ProjectDetail() {
         }
       />
 
-      <SummaryPanel summary={summary} currency={currency} />
-
-      <ExportPanel projectId={p.id} projectName={p.name} />
-
-      <AssignmentsPanel
-        projectId={p.id}
-        assignments={assignments}
-        canManage={canManage}
-        onChanged={() => {
-          assignments.reload();
-          summary.reload();
-        }}
+      {/* The dense figure strip §20 asks for: it belongs to the record, so it stays put
+          whichever section is open rather than scrolling away with the Overview. */}
+      <RecordHeader
+        figures={[
+          {
+            label: 'Cost to you',
+            value: s ? formatCents(s.totalCostCents, currency) : '—',
+            note: s
+              ? `Labour ${formatCents(s.laborCostCents, currency)} + expenses ${formatCents(s.expenseCostCents, currency)}`
+              : 'Loading',
+          },
+          {
+            label: 'Billed to client',
+            value: s ? formatCents(s.billCents, currency) : '—',
+            note:
+              s && s.billCents === null ? 'No client, or no BILL rate covers this work' : 'At your BILL rates',
+          },
+          {
+            label: 'Margin',
+            value: s ? formatCents(s.marginCents, currency) : '—',
+            note: s ? `${formatPct(s.marginPct)} of the billed total` : 'Loading',
+          },
+          {
+            label: 'Approved work',
+            value: s ? s.approvedTimeLogs : '—',
+            note: s
+              ? `${s.approvedExpenses} approved ${s.approvedExpenses === 1 ? 'expense' : 'expenses'}`
+              : 'Loading',
+          },
+        ]}
       />
 
-      <WorkPanel
-        timeLogs={timeLogs}
-        expenses={expenses}
-        assignments={assignments.items}
-        currency={currency}
-      />
+      <ErrorText>{summary.error}</ErrorText>
 
-      {canManage ? (
-        <EditPanel
-          project={p}
-          onSaved={() => {
-            project.reload();
-            summary.reload();
-          }}
-          onDeleted={() => router.replace('/projects')}
-        />
-      ) : null}
+      <div className="cq-record">
+        <SectionRail sections={sections} active={active} onSelect={setSection} groupLabel="Project" />
+
+        <Stack>
+          {active === 'overview' ? (
+            <SummaryPanel summary={summary} currency={currency} />
+          ) : null}
+
+          {active === 'crew' ? (
+            <AssignmentsPanel
+              projectId={p.id}
+              assignments={assignments}
+              canManage={canManage}
+              onChanged={() => {
+                assignments.reload();
+                summary.reload();
+              }}
+            />
+          ) : null}
+
+          {active === 'time' ? (
+            <TimePanel timeLogs={timeLogs} assignments={assignments.items} currency={currency} />
+          ) : null}
+
+          {active === 'expenses' ? (
+            <ExpensePanel expenses={expenses} assignments={assignments.items} currency={currency} />
+          ) : null}
+
+          {active === 'reports' ? <ExportPanel projectId={p.id} projectName={p.name} /> : null}
+
+          {active === 'settings' && canManage ? (
+            <EditPanel
+              project={p}
+              onSaved={() => {
+                project.reload();
+                summary.reload();
+              }}
+              onDeleted={() => router.replace('/projects')}
+            />
+          ) : null}
+        </Stack>
+      </div>
     </Stack>
   );
 }
@@ -181,43 +255,6 @@ function SummaryPanel({
 
   return (
     <>
-      <div className="cq-metrics" aria-label="Project financials">
-        <div className="cq-metric">
-          <div className="cq-overline">Cost to you</div>
-          <div className="cq-metric__value">
-            {s ? formatCents(s.totalCostCents, currency) : '—'}
-          </div>
-          <div className="cq-metric__context">
-            {s ? `Labour ${formatCents(s.laborCostCents, currency)} + expenses ${formatCents(s.expenseCostCents, currency)}` : 'Loading'}
-          </div>
-        </div>
-        <div className="cq-metric">
-          <div className="cq-overline">Billed to client</div>
-          <div className="cq-metric__value">{s ? formatCents(s.billCents, currency) : '—'}</div>
-          <div className="cq-metric__context">
-            {s && s.billCents === null
-              ? 'No client, or no BILL rate covers this work'
-              : 'At your BILL rates'}
-          </div>
-        </div>
-        <div className="cq-metric">
-          <div className="cq-overline">Margin</div>
-          <div className="cq-metric__value">{s ? formatCents(s.marginCents, currency) : '—'}</div>
-          <div className="cq-metric__context">
-            {s ? `${formatPct(s.marginPct)} of the billed total` : 'Loading'}
-          </div>
-        </div>
-        <div className="cq-metric">
-          <div className="cq-overline">Approved work</div>
-          <div className="cq-metric__value">{s ? s.approvedTimeLogs : '—'}</div>
-          <div className="cq-metric__context">
-            {s ? `${s.approvedExpenses} approved ${s.approvedExpenses === 1 ? 'expense' : 'expenses'}` : 'Loading'}
-          </div>
-        </div>
-      </div>
-
-      <ErrorText>{summary.error}</ErrorText>
-
       {s && s.billCents === null && s.totalCostCents > 0 ? (
         <Notice>
           This project has cost but no billable total. Either it has no client, or no BILL rate
@@ -439,6 +476,7 @@ function AssignmentsPanel({
             <tr>
               <th scope="col">Subcontractor</th>
               <th scope="col">Assigned</th>
+              <th scope="col">Accepted</th>
             </tr>
           </thead>
           <tbody>
@@ -446,6 +484,23 @@ function AssignmentsPanel({
               <tr key={a.id}>
                 <td className="cq-table__primary">{a.providerCompanyName}</td>
                 <td>{formatDate(a.createdAt.slice(0, 10))}</td>
+                <td>
+                  {/* Acceptance is the provider's to give and never blocks work
+                      capture, so this column reports where things stand rather than
+                      warning about a blocker. A decline is worth the reason inline. */}
+                  {a.acceptance === 'ACCEPTED' ? (
+                    <Badge tone="success">Yes</Badge>
+                  ) : a.acceptance === 'DECLINED' ? (
+                    <>
+                      <Badge tone="warning">Declined</Badge>
+                      {a.decisionReason ? (
+                        <span className="cq-table__note">{a.decisionReason}</span>
+                      ) : null}
+                    </>
+                  ) : (
+                    <Badge tone="neutral">Awaiting them</Badge>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -458,16 +513,14 @@ function AssignmentsPanel({
   );
 }
 
-// ── Work on this project ───────────────────────────────────────────────────────
+// ── Time & costs ───────────────────────────────────────────────────────────────
 
-function WorkPanel({
+function TimePanel({
   timeLogs,
-  expenses,
   assignments,
   currency,
 }: {
   timeLogs: ReturnType<typeof useAsyncList<TimeLogView>>;
-  expenses: ReturnType<typeof useAsyncList<ExpenseView>>;
   assignments: AssignmentView[];
   currency: string;
 }) {
@@ -478,8 +531,8 @@ function WorkPanel({
 
   return (
     <Section
-      title="Work logged"
-      description="Every time log and expense on this project, whatever its state."
+      title="Time & costs"
+      description="Every time log on this project, whatever its state. Costs are each log's frozen snapshot."
       className="cq-section--table"
       actions={
         pending > 0 ? (
@@ -489,7 +542,7 @@ function WorkPanel({
         ) : null
       }
     >
-      <ErrorText>{timeLogs.error ?? expenses.error}</ErrorText>
+      <ErrorText>{timeLogs.error}</ErrorText>
 
       {timeLogs.loading ? (
         <p className="cq-muted">Loading time logs…</p>
@@ -498,14 +551,14 @@ function WorkPanel({
           Assigned crews log time from their own workspace; it appears here as soon as they do.
         </EmptyState>
       ) : (
-        <Table label="Time logs">
+        <Table label="Time logs" compact>
           <thead>
             <tr>
-              <th scope="col">Date</th>
+              <th scope="col" className="cq-numeric">Work date</th>
               <th scope="col">Subcontractor</th>
               <th scope="col">Shift</th>
-              <th scope="col">Hours</th>
-              <th scope="col">Cost to you</th>
+              <th scope="col" className="cq-numeric">Hours</th>
+              <th scope="col" className="cq-numeric">Cost to you</th>
               <th scope="col">Status</th>
             </tr>
           </thead>
@@ -529,7 +582,7 @@ function WorkPanel({
                 <td>
                   <WorkStatusBadge status={l.status} />
                   {l.rejectReason ? (
-                    <div className="cq-muted">{l.rejectReason}</div>
+                    <div className="cq-table__note">{l.rejectReason}</div>
                   ) : null}
                 </td>
               </tr>
@@ -537,16 +590,49 @@ function WorkPanel({
           </tbody>
         </Table>
       )}
+    </Section>
+  );
+}
 
-      {expenses.items.length > 0 ? (
-        <Table label="Expenses">
+// ── Expenses ───────────────────────────────────────────────────────────────────
+
+function ExpensePanel({
+  expenses,
+  assignments,
+  currency,
+}: {
+  expenses: ReturnType<typeof useAsyncList<ExpenseView>>;
+  assignments: AssignmentView[];
+  currency: string;
+}) {
+  const providerName = (companyId: string) =>
+    assignments.find((a) => a.providerCompanyId === companyId)?.providerCompanyName ?? 'Unknown';
+
+  return (
+    <Section
+      title="Expenses"
+      description="Costs a subcontractor passed through, at the amount they entered."
+      className="cq-section--table"
+    >
+      <ErrorText>{expenses.error}</ErrorText>
+      {expenses.loading ? (
+        <p className="cq-muted">Loading expenses…</p>
+      ) : expenses.items.length === 0 ? (
+        <EmptyState title="No expenses on this project">
+          Expenses a subcontractor raises against this project appear here once they submit them.
+        </EmptyState>
+      ) : (
+        <Table label="Expenses" compact>
           <thead>
             <tr>
-              <th scope="col">Logged</th>
+              {/* "Raised" not "Date": this is when the expense was entered, which is not
+                  the work date a time log carries. One column heading cannot honestly
+                  cover both, so the two tables name their own. */}
+              <th scope="col" className="cq-numeric">Raised</th>
               <th scope="col">Subcontractor</th>
               <th scope="col">Category</th>
               <th scope="col">Description</th>
-              <th scope="col">Amount</th>
+              <th scope="col" className="cq-numeric">Amount</th>
               <th scope="col">Status</th>
             </tr>
           </thead>
@@ -562,13 +648,13 @@ function WorkPanel({
                 <td className="cq-numeric">{formatCents(x.amountCents, currency)}</td>
                 <td>
                   <WorkStatusBadge status={x.status} />
-                  {x.rejectReason ? <div className="cq-muted">{x.rejectReason}</div> : null}
+                  {x.rejectReason ? <div className="cq-table__note">{x.rejectReason}</div> : null}
                 </td>
               </tr>
             ))}
           </tbody>
         </Table>
-      ) : null}
+      )}
     </Section>
   );
 }

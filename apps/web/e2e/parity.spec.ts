@@ -35,8 +35,22 @@ const ROLE = 'Rigger';
 const PAY_HOURLY = '50.00';
 const BILL_HOURLY = '82.00';
 const HOURS = '8';
+// The rate the subcontractor proposes as a rise: 50.00 -> 55.00 is +$5.00 / 10.0%,
+// which is exactly what the reviewer's delta column is asserted to compute.
+const NEW_PAY_HOURLY = '55.00';
 const EXPECTED_COST = 40000;
 const EXPECTED_BILL = 65600;
+
+/**
+ * A date comfortably in the future, for a rate schedule. Computed rather than
+ * written down: a literal would quietly stop being in the future and turn a
+ * straightforward approval into the owner-only back-dated path.
+ */
+const FUTURE_DATE = (() => {
+  const d = new Date();
+  d.setDate(d.getDate() + 30);
+  return d.toISOString().slice(0, 10);
+})();
 
 /** A weekday, so the baseline MON_FRI_DAY label applies with no label rules set up. */
 const WORK_DATE = (() => {
@@ -93,7 +107,14 @@ test.describe('Web core workflows', () => {
   });
 
   test('rates are set up: a role, a PAY card and a BILL card', async () => {
+    /*
+     * Creating happens in a side panel, not in a form pinned above the register (§40).
+     * The header button opens it ("New role") and the panel's own button commits
+     * ("Add role") — deliberately different words, because two controls sharing one
+     * accessible name is ambiguous for a screen reader as much as for a test.
+     */
     await contractor.goto('/rates/roles');
+    await contractor.getByRole('button', { name: 'New role' }).click();
     await contractor.getByPlaceholder('e.g. Lighting technician…').fill(ROLE);
     await contractor.getByRole('button', { name: 'Add role' }).click();
     // `exact` matters: the row's action cell reads "Delete Rigger", so a loose name
@@ -105,13 +126,16 @@ test.describe('Web core workflows', () => {
       ['BILL (to client)', BILL_HOURLY, '$82.00'],
     ] as const) {
       await contractor.goto('/rates/cards');
-      const form = contractor.locator('form').first();
+      await contractor.getByRole('button', { name: 'New rate card' }).click();
+      const form = contractor.locator('#add-rate-card');
       await form.getByLabel('Kind').selectOption({ label: kind });
       await form.getByLabel('Role').selectOption({ label: ROLE });
       await form.getByLabel('Hourly rate ($)').fill(rate);
       // Backdate so the card covers the work date, which is in the past.
       await form.getByLabel('Effective from', { exact: true }).fill('2020-01-01');
-      await form.getByRole('button', { name: 'Add rate card' }).click();
+      await contractor.getByRole('button', { name: 'Add rate card' }).click();
+      // The panel stays open for the next card, so close it before reading the register.
+      await contractor.getByRole('button', { name: 'Done' }).click();
       await expect(contractor.getByText(expected).first()).toBeVisible();
     }
   });
@@ -161,6 +185,12 @@ test.describe('Web core workflows', () => {
     await expect(contractor).toHaveURL(/\/projects\/[0-9a-f-]{36}/);
     await expect(contractor.getByText('Shared with client')).toBeVisible();
 
+    /*
+     * A project is one record with sections (§20), so assignment lives under Crew
+     * rather than on an ever-growing single page. The rail is how you get there, and
+     * the section is in the URL so it stays linkable.
+     */
+    await contractor.getByRole('button', { name: 'Crew' }).click();
     await contractor.getByLabel('Subcontractor to assign').selectOption({ label: SUB_CO });
     await contractor.getByRole('button', { name: 'Assign', exact: true }).click();
     await expect(contractor.getByRole('cell', { name: SUB_CO })).toBeVisible();
@@ -168,14 +198,18 @@ test.describe('Web core workflows', () => {
 
   test('the subcontractor logs time and submits it', async () => {
     await sub.goto('/work');
+    // Entry is a side panel here too, so the daily list of what is still yours to fix
+    // is the first thing on the screen rather than the second form.
+    await sub.getByRole('button', { name: 'Log time' }).click();
     await expect(sub.getByRole('heading', { name: 'Log time', exact: true })).toBeVisible();
 
-    const form = sub.locator('form').first();
+    const form = sub.locator('#log-time');
     await form.getByLabel('Role').selectOption({ label: ROLE });
     await form.getByLabel('Work date').fill(WORK_DATE);
     await form.getByLabel('Regular hours').fill(HOURS);
-    await form.getByRole('button', { name: 'Save draft' }).click();
+    await sub.getByRole('button', { name: 'Save draft' }).click();
     await expect(sub.getByText(/Draft saved for/)).toBeVisible();
+    await sub.getByRole('button', { name: 'Done' }).click();
 
     // Submitting freezes the PAY snapshot server-side.
     await sub.getByRole('button', { name: /^Submit all/ }).click();
@@ -237,6 +271,9 @@ test.describe('Web core workflows', () => {
   test('an owner can export the project as PDF and as a spreadsheet', async () => {
     await contractor.goto('/projects');
     await contractor.getByRole('link', { name: new RegExp(`Atrium refit ${RUN}`) }).click();
+    // Exports live in the record's Reports section (§20), which is where §29's report
+    // engine lands in Phase 10 — so the rail entry is already the right home for it.
+    await contractor.getByRole('button', { name: 'Reports' }).click();
 
     for (const [button, extension] of [
       ['Download PDF', 'pdf'],
@@ -247,6 +284,138 @@ test.describe('Web core workflows', () => {
       const file = await download;
       expect(file.suggestedFilename()).toMatch(new RegExp(`\\.${extension}$`));
     }
+  });
+
+  /*
+   * Commercial agreements (§3.3.1). Two sides, one screen, and the property worth
+   * proving in a browser: the reviewer sees the rate in force beside the proposed
+   * one, and neither side can act for the other.
+   */
+  test('the subcontractor proposes a rate rise and sends it for approval', async () => {
+    await sub.goto('/commercial');
+    await expect(sub.getByRole('heading', { name: 'Commercial agreements' })).toBeVisible();
+
+    // The row says which way the money flows, because that decides who may propose.
+    const row = sub.getByRole('row', { name: new RegExp(CONTRACTOR_CO) });
+    await expect(row).toContainText('They pay you');
+    await row.getByRole('button', { name: 'Open' }).click();
+
+    await expect(sub.getByRole('heading', { name: CONTRACTOR_CO })).toBeVisible();
+    // The provider reads its own agreed PAY rate. That is not the hiring company's
+    // BILL side, so there is nothing here it should not see.
+    await expect(sub.getByRole('cell', { name: '$50.00' }).first()).toBeVisible();
+
+    await sub.getByRole('button', { name: 'Propose new rates' }).click();
+    const panel = sub.getByRole('dialog', { name: 'Propose new rates' });
+    await expect(panel).toBeVisible();
+
+    await panel.getByLabel('Effective from').fill(FUTURE_DATE);
+    await panel.getByLabel('Note').fill('Annual uplift');
+    /*
+     * A CREATE line, not a REPLACE, and that is the interesting part: the $50 rate in
+     * force here is the contractor's *company default* for the role, inherited by
+     * every engagement. Superseding it would reprice every other subcontractor at
+     * once, so the panel deliberately does not offer it as a REPLACE target. Asking
+     * for your own rate is a new engagement-specific card, which then beats the
+     * default on the resolver's own precedence (§6).
+     */
+    /*
+     * No `exact` here, deliberately. `Field` renders a *wrapping* `<label>`, so the
+     * label's accessible text is its caption plus the control's own rendered text —
+     * for a `<select>` that is every option. `exact: true` therefore matches nothing
+     * on any select in this design system, which is why the older log-time test also
+     * matches loosely. 'Role' is still unambiguous inside this panel.
+     */
+    await panel.getByLabel('Role').selectOption({ label: ROLE });
+    await panel.getByLabel('Rate (USD)').fill(NEW_PAY_HOURLY);
+    await expect(panel.getByLabel('Rate it supersedes')).toHaveCount(0);
+    await panel.getByRole('button', { name: 'Save draft' }).click();
+
+    await expect(sub.getByText(/Draft schedule created/)).toBeVisible();
+    // A draft shows the change it is asking for, against what is in force today.
+    await expect(sub.getByRole('cell', { name: '+$5.00 (10.0%)' })).toBeVisible();
+
+    await sub.getByRole('button', { name: 'Send for approval' }).click();
+    await expect(sub.getByText(/numbers are now frozen/)).toBeVisible();
+  });
+
+  test('the hiring company sees what changes, returns it, and the reason reaches the provider', async () => {
+    await contractor.goto('/commercial');
+    // The same screen, the other side of the same edge.
+    const row = contractor.getByRole('row', { name: new RegExp(SUB_CO) });
+    await expect(row).toContainText('You pay them');
+    await expect(row).toContainText('Submitted');
+    await row.getByRole('button', { name: 'Open' }).click();
+
+    // The reviewer's whole job is "what changes": now, proposed, and the delta.
+    await expect(contractor.getByRole('cell', { name: '$50.00' }).first()).toBeVisible();
+    await expect(contractor.getByRole('cell', { name: '$55.00' }).first()).toBeVisible();
+    await expect(contractor.getByRole('cell', { name: '+$5.00 (10.0%)' })).toBeVisible();
+
+    // Returning without a reason is not offered: the button stays disabled until
+    // there is something for the provider to work from.
+    await contractor.getByRole('button', { name: 'Return', exact: true }).click();
+    const returnIt = contractor.getByRole('button', { name: 'Return it' });
+    await expect(returnIt).toBeDisabled();
+    await contractor.getByLabel('Why are you returning this?').fill('Above the framework cap');
+    await expect(returnIt).toBeEnabled();
+    await returnIt.click();
+    await expect(contractor.getByText(/returned to the provider/)).toBeVisible();
+
+    // The provider gets the reason, and no way to edit what was already decided.
+    await sub.goto('/commercial');
+    await sub
+      .getByRole('row', { name: new RegExp(CONTRACTOR_CO) })
+      .getByRole('button', { name: 'Open' })
+      .click();
+    await expect(sub.getByText(/Returned: Above the framework cap/)).toBeVisible();
+    await expect(sub.getByText(/cannot be edited/)).toBeVisible();
+  });
+
+  test('the hiring company sets payment terms and a purchase order', async () => {
+    await contractor.goto('/commercial');
+    await contractor
+      .getByRole('row', { name: new RegExp(SUB_CO) })
+      .getByRole('button', { name: 'Open' })
+      .click();
+
+    await contractor.getByRole('button', { name: 'Edit terms' }).click();
+    const panel = contractor.getByRole('dialog', { name: 'Commercial terms' });
+    await panel.getByLabel('Payment terms (days)').fill('30');
+    await panel.getByLabel('Purchase order reference').fill('PO-9001');
+    await panel.getByLabel('Reason for the change').fill('Signed framework');
+    await panel.getByRole('button', { name: 'Save terms' }).click();
+
+    await expect(contractor.getByText('Commercial terms updated.')).toBeVisible();
+    await expect(contractor.getByText('30 days')).toBeVisible();
+    await expect(contractor.getByText('PO-9001')).toBeVisible();
+
+    // The provider works under these terms, so it reads them — and cannot set them.
+    await sub.goto('/commercial');
+    await sub
+      .getByRole('row', { name: new RegExp(CONTRACTOR_CO) })
+      .getByRole('button', { name: 'Open' })
+      .click();
+    await expect(sub.getByText('30 days')).toBeVisible();
+    await expect(sub.getByRole('button', { name: 'Edit terms' })).toHaveCount(0);
+  });
+
+  test('the subcontractor accepts the project assignment it was offered', async () => {
+    // Acceptance is recorded, never a gate: the time log in the earlier test was
+    // submitted and approved while this assignment was still unanswered.
+    await sub.goto('/work');
+    const offered = sub.getByRole('row', { name: new RegExp(`Atrium refit ${RUN}`) });
+    await expect(offered.first()).toBeVisible();
+    await offered.first().getByRole('button', { name: 'Accept' }).click();
+    await expect(
+      sub.getByRole('heading', { name: 'Projects you have been added to' })
+    ).toHaveCount(0);
+
+    // And the hiring company can see where it stands, on the Crew section.
+    await contractor.goto('/projects');
+    await contractor.getByRole('link', { name: new RegExp(`Atrium refit ${RUN}`) }).click();
+    await contractor.getByRole('button', { name: 'Crew' }).click();
+    await expect(contractor.getByRole('row', { name: new RegExp(SUB_CO) })).toContainText('Yes');
   });
 
   test('a user edits their own profile and the shell picks up the new name', async () => {

@@ -7,10 +7,12 @@ import type {
   UpdateInvoice,
   UpdateInvoiceItem,
 } from '@crewquo/shared';
+import { dueDateFromPaymentTerms, purchaseOrderCeilingRefusal } from '@crewquo/shared';
 import { query, queryOne, withTransaction, type Queryable } from '../../db';
 import { AppError } from '../../http/errors';
 import { findCompanyById } from '../companies/repo';
 import { findEngagementEdge } from '../engagements/repo';
+import { getEngagementTerms, listCommittedInvoiceCents } from '../engagements/terms.repo';
 import { resolveBillCentsForLog } from '../projects/billing';
 import { getProject } from '../projects/repo';
 import { getEffectiveTimeframeDefinitions } from '../rates/repo';
@@ -172,13 +174,20 @@ export async function createProjectInvoice(
     const company = await findCompanyById(issuerCompanyId, runner);
     if (!company) throw new AppError('NOT_FOUND', 'Company not found');
 
+    // Payment terms agreed on the engagement default the due date. Terms that never
+    // reach an invoice are a text field, not terms — so the edge's agreed days are
+    // applied whenever the caller did not name a date itself.
+    const terms = await getEngagementTerms(edge.id, runner);
+    const dueAt =
+      input.dueAt ?? dueDateFromPaymentTerms(new Date().toISOString(), terms?.paymentTermsDays ?? null);
+
     const invoiceId = await insertInvoice({
       engagementId: edge.id,
       issuerCompanyId,
       counterpartyCompanyId: project.clientCompanyId,
       projectId: project.id,
       currency: company.currency,
-      dueAt: input.dueAt,
+      dueAt,
       taxCents: input.taxCents,
     }, runner);
     if (input.includeApprovedWork) {
@@ -284,8 +293,38 @@ export async function removeInvoice(invoiceId: string) {
   return withTransaction((runner) => deleteInvoice(invoiceId, runner));
 }
 
+/**
+ * Issue a draft.
+ *
+ * This is where the engagement's purchase-order ceiling is enforced: issue is the
+ * point the amount becomes a claim on the PO, and a ceiling nobody checks is
+ * decoration. Drafts are excluded from the committed total on purpose — see
+ * `listCommittedInvoiceCents`.
+ */
 export async function issueDraftInvoice(invoiceId: string) {
   return withTransaction(async (runner) => {
+    const invoice = await getInvoice(invoiceId, runner);
+    if (!invoice) throw new AppError('NOT_FOUND', 'Invoice not found');
+
+    // Serialize against other issues on the same edge, so two invoices cannot each
+    // read a committed total that excludes the other and both slip under the cap.
+    await query(`select pg_advisory_xact_lock(hashtextextended($1, 0))`,
+      [`invoice-ceiling:${invoice.engagementId}`], runner);
+
+    const terms = await getEngagementTerms(invoice.engagementId, runner);
+    const refusal = purchaseOrderCeilingRefusal({
+      ceilingCents: terms?.purchaseOrderCeilingCents ?? null,
+      committedCents: await listCommittedInvoiceCents(invoice.engagementId, runner),
+      incomingCents: invoice.totalCents,
+      currency: invoice.currency,
+    });
+    if (refusal) {
+      throw new AppError('VALIDATION', refusal, {
+        purchaseOrderReference: terms?.purchaseOrderReference ?? null,
+        purchaseOrderCeilingCents: terms?.purchaseOrderCeilingCents ?? null,
+      });
+    }
+
     await issueInvoice(invoiceId, runner);
     return (await getInvoice(invoiceId, runner))!;
   });

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import {
   DEFAULT_CURRENCY,
+  acceptanceDecisionSchema,
   createAssignmentSchema,
   createProjectSchema,
   updateProjectSchema,
@@ -8,10 +9,19 @@ import {
 import { asyncHandler } from '../../http/asyncHandler';
 import { getCompanyCtx } from '../../http/context';
 import { AppError } from '../../http/errors';
-import { param } from '../../http/params';
-import { canManage } from '../../authorization/policies';
+import { param, uuidParam } from '../../http/params';
+import {
+  canDecideAcceptance,
+  canManage,
+  isEngagementParticipant,
+} from '../../authorization/policies';
 import { findCompanyById } from '../companies/repo';
-import { findEngagementByPair } from '../engagements/repo';
+import { findEngagementByPair, findEngagementEdge } from '../engagements/repo';
+import {
+  decideAssignmentAcceptance,
+  findAssignmentForDecision,
+  listPendingAssignmentsForProvider,
+} from '../engagements/terms.repo';
 import { recordAudit } from '../audit/record';
 import {
   createProject,
@@ -158,6 +168,79 @@ projectsRouter.post(
       description: `Provider assigned to "${project.name}"`,
     });
     res.status(201).json({ data: await listAssignments(project.id) });
+  })
+);
+
+/**
+ * The provider accepts or declines being put on a project.
+ *
+ * Addressed by assignment id and mounted here rather than under `/v1/projects/:id`
+ * because the *provider* is the actor and it cannot read the hiring company's
+ * projects: every other handler on this router scopes by `owner_company_id`, which
+ * is the hiring company by definition. The edge is resolved from the assignment.
+ *
+ * Deliberately not a gate on work capture — see §9 of
+ * `docs/operating-model/commercial-agreements.md`.
+ */
+for (const [path, accept] of [
+  ['/assignments/:assignmentId/accept', true],
+  ['/assignments/:assignmentId/decline', false],
+] as const) {
+  projectsRouter.post(
+    path,
+    asyncHandler(async (req, res) => {
+      const ctx = getCompanyCtx(req);
+      const assignmentId = uuidParam(req, 'assignmentId');
+      const assignment = await findAssignmentForDecision(assignmentId);
+      if (!assignment) throw new AppError('NOT_FOUND', 'Assignment not found');
+      const edgeRow = await findEngagementEdge(assignment.engagementId);
+      if (!edgeRow) throw new AppError('NOT_FOUND', 'Assignment not found');
+      const edge = {
+        clientCompanyId: edgeRow.client_company_id,
+        providerCompanyId: edgeRow.provider_company_id,
+      };
+      // An outsider gets the same answer a forged id gets.
+      if (!isEngagementParticipant(ctx.companyId, edge)) {
+        throw new AppError('NOT_FOUND', 'Assignment not found');
+      }
+      if (!canDecideAcceptance(ctx.companyId, ctx.role, edge)) {
+        throw new AppError(
+          'FORBIDDEN',
+          'Only a manager in the provider company may accept or decline an assignment'
+        );
+      }
+      const { reason } = acceptanceDecisionSchema.parse(req.body ?? {});
+      const updated = await decideAssignmentAcceptance({
+        assignmentId,
+        accept,
+        reason,
+        actorUserId: ctx.userId,
+      });
+      // Recorded against the provider — it is the provider's decision — and never
+      // client-visible, for the same reason assignment.created is not: which
+      // subcontractor works a project is not the end client's business.
+      await recordAudit({
+        companyId: ctx.companyId,
+        actorUserId: ctx.userId,
+        action: accept ? 'assignment.accepted' : 'assignment.declined',
+        entityType: 'ASSIGNMENT',
+        entityId: assignmentId,
+        changes: { projectId: updated.projectId, acceptance: updated.acceptance, reason },
+        description: accept
+          ? `Assignment to "${updated.projectName}" accepted`
+          : `Assignment to "${updated.projectName}" declined`,
+      });
+      res.json({ assignment: updated });
+    })
+  );
+}
+
+/** Assignments this provider company has been offered and not yet decided. */
+projectsRouter.get(
+  '/assignments/pending',
+  asyncHandler(async (req, res) => {
+    const ctx = getCompanyCtx(req);
+    res.json({ data: await listPendingAssignmentsForProvider(ctx.companyId) });
   })
 );
 

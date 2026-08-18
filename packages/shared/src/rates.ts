@@ -179,6 +179,24 @@ export type RateCardUpdate = z.infer<typeof rateCardUpdateSchema>;
 export const rateCardViewSchema = rateCardObjectSchema.extend({
   id: z.string().uuid(),
   companyId: z.string().uuid(),
+  /**
+   * Approved-version provenance (Phase 6 commercial hardening, §3.3.1).
+   *
+   * `locked` means this card is an approved immutable version — written either by
+   * an approved cross-company rate schedule or by the hiring company's direct
+   * entry. The database refuses to change its amounts, so a screen **must** read
+   * this before offering an edit: the alternative is a form that submits and gets
+   * a constraint violation back.
+   *
+   * `currency` is null on every card that predates the workflow, meaning "inherit
+   * the company default" (§3.3). `version` is 1 on those, and increments per
+   * (kind, counterparty, role, label) as successors are approved.
+   */
+  currency: z.string().regex(/^[A-Z]{3}$/).nullable(),
+  version: z.number().int().min(1),
+  locked: z.boolean(),
+  sourceProposalId: z.string().uuid().nullable(),
+  supersedesRateCardId: z.string().uuid().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });

@@ -59,6 +59,35 @@ function Engagements() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  /**
+   * The provider's decision on an engagement it has been offered (Phase 6
+   * acceptance rules). Only reachable on a PENDING edge where this company is the
+   * provider — a hiring company cannot accept on its counterparty's behalf, which
+   * is the entire point of the step.
+   */
+  async function decide(id: string, accept: boolean, counterpartyName: string) {
+    if (!ctx) return;
+    let reason: string | null = null;
+    if (!accept) {
+      const entered = window.prompt(
+        `Decline the engagement from ${counterpartyName}? They will see your reason.`
+      );
+      if (entered === null) return;
+      reason = entered.trim() === '' ? null : entered.trim();
+    }
+    setBusyId(id);
+    setError(null);
+    try {
+      if (accept) await api.acceptEngagement(ctx.accessToken, ctx.companyId, id);
+      else await api.declineEngagement(ctx.accessToken, ctx.companyId, id, reason);
+      list.reload();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not record your decision');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   async function setStatus(id: string, status: EngagementStatus) {
     if (!ctx) return;
     setBusyId(id);
@@ -110,7 +139,7 @@ function Engagements() {
           <div className="cq-metric__value">
             {list.loading ? '—' : list.items.filter((e) => e.status === 'PENDING').length}
           </div>
-          <div className="cq-metric__context">Invitations not yet accepted</div>
+          <div className="cq-metric__context">Not yet accepted by the subcontractor</div>
         </div>
       </div>
 
@@ -144,8 +173,10 @@ function Engagements() {
               {list.items.map((e) => {
                 const counterpartyName =
                   e.side === 'client' ? e.providerCompanyName : e.clientCompanyName;
-                // PENDING means nobody has accepted yet. `providerIsPlaceholder` cannot
-                // stand in for that: claiming a placeholder on accept leaves the flag set.
+                // PENDING means the provider has not accepted yet — whether the edge
+                // came from an invite or was created directly against a real company.
+                // `providerIsPlaceholder` cannot stand in for it: claiming a
+                // placeholder on accept leaves the flag set.
                 const awaitingAcceptance = e.status === 'PENDING';
                 return (
                   <tr key={e.id}>
@@ -170,6 +201,26 @@ function Engagements() {
                         <span className="cq-muted">Manager role required</span>
                       ) : e.status === 'ENDED' ? (
                         <span className="cq-muted">Ended</span>
+                      ) : awaitingAcceptance && e.side === 'provider' ? (
+                        <Row>
+                          <Button
+                            size="sm"
+                            disabled={busyId === e.id}
+                            onClick={() => void decide(e.id, true, counterpartyName)}
+                          >
+                            Accept
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            disabled={busyId === e.id}
+                            onClick={() => void decide(e.id, false, counterpartyName)}
+                          >
+                            Decline
+                          </Button>
+                        </Row>
+                      ) : awaitingAcceptance ? (
+                        <span className="cq-muted">Waiting on {counterpartyName}</span>
                       ) : (
                         <Row>
                           {e.status === 'PAUSED' ? (

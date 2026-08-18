@@ -1,7 +1,7 @@
 # CrewQuo v2 — Unified Build Specification
 
 > **Product decision:** CrewQuo v2 is one new, independent application. Its scope includes the commercial core, field operations, project evidence, asset and material tracking, sustainability, reporting, scheduling, compliance, the client experience, web and mobile. Together they define v2.
-> **Implementation status:** Phases 0–4 have produced reusable backend, shared-domain and prototype client code (see `PROGRESS.md`). That code is implementation progress, not a product or UX constraint. Keep correct, tested domain behavior; replace or reshape APIs, navigation, screens and workflows when the unified product requires it.
+> **Implementation status:** Phases 0–5 are built and verified, and Phase 6 has delivered the invoice foundation; the remaining Phase 6 work is tracked in `PROGRESS.md`. Existing code is implementation progress, not a product or UX constraint. Keep correct, tested domain behavior; replace or reshape APIs, navigation, screens and workflows when the unified product requires it.
 > **Relationship to v1:** v2 has no runtime connection to v1. v1 (Next.js + Firebase) may stay live while v2 is built, but it supplies neither the information architecture nor the acceptance criteria. There is no shared database, shared auth, dual-write, synchronization, parity requirement, or production-data migration in scope.
 
 ---
@@ -14,7 +14,7 @@ Before changing a module, inspect the implementation that already exists, then j
 
 Rules that hold across the whole build:
 
-1. **Build phase-by-phase (§42). Do not batch phases.** Each phase is independently demoable and testable. Ship and verify one before starting the next — that is how Phases 0–4 were built, and it worked.
+1. **Build phase-by-phase (§42). Do not batch phases.** Each phase is independently demoable and testable. Ship and verify one before starting the next — that is how Phases 0–5 were built, and it worked.
 2. **Database changes are forward-only.** Use numbered SQL files in `infra/migrations/`. Because this application has not launched, a cleaner unified model may replace an early pre-launch shape when necessary; make the change explicitly, update every caller, and prove it with tests. “Backward compatibility” with prototype data or prototype APIs is not a product goal.
 3. **Treat the DDL and API contracts in this document as canonical.** They are fully specified — do not invent alternative shapes.
 4. **Domain logic goes in `packages/shared` as pure functions** (no DB imports), the way the rate engine does. The API loads rows and passes them in. This is what makes it exhaustively testable, and the sustainability numbers *must* be exhaustively tested.
@@ -86,7 +86,7 @@ crewquo-v2/
 | Email | **Resend** | Invites, approvals, password reset. |
 | Web host | **Vercel** | Next.js. |
 | Mobile | **Expo + EAS** | OTA updates, managed builds. |
-| Billing | **Merchant of Record — Lemon Squeezy (primary), Paddle (alt)** | §5B. |
+| Billing | **Merchant of Record — Gumroad** | §5B; production seller/lifecycle verification remains a Phase 6 gate. |
 | Exports | **Server-side `jspdf` + `exceljs` in `apps/api`** | Identical files for web + mobile. `exceljs` replaced `xlsx`: SheetJS's last public-npm release (0.18.5) carries CVE-2023-30533/CVE-2024-22363 and current builds ship only from its own CDN. |
 | Monitoring | **Sentry** (api/web/mobile) | + structured logs + `/healthz`. |
 
@@ -115,7 +115,7 @@ create table users (
 create table companies (
   id            uuid primary key default gen_random_uuid(),
   name          text not null,
-  currency      text not null default 'GBP',   -- ISO 4217; set ONCE per company, rate cards inherit
+  currency      text not null default 'USD',   -- ISO 4217 company default; commercial agreements may override
   is_placeholder boolean not null default false, -- stub for a party not yet on CrewQuo (e.g. "PwC")
   claimed_by_company_id uuid references companies(id), -- when a placeholder is merged into a real co.
   settings      jsonb not null default '{}',
@@ -208,9 +208,32 @@ create table rate_cards (
 create index on rate_cards (company_id, kind, role_id, rate_label, effective_from desc);
 ```
 
-- **PAY** = what the owner pays a provider; **BILL** = what the owner charges a client. Margin = BILL − PAY. **Currency is inherited from `companies.currency` — never stored per card** (decision #5).
+- **PAY** = what the owner pays a provider; **BILL** = what the owner charges a client. Existing cards inherit `companies.currency`. **Migration 0009 added `currency`, `version`, `locked`, `source_proposal_id`, `supersedes_rate_card_id`, `created_by_user_id` and `updated_by_user_id`** — `currency` stays nullable, meaning “inherit the company default”, and only cards written by an approved agreement carry their own. The project reporting-currency/FX snapshot is still outstanding, so PAY and BILL must share the company currency and margin must never subtract unlike units (decision #5); an unlike agreement currency is refused at the edge with a message naming what is missing.
 - **Security-critical:** a provider must never read the client-side BILL card of an engagement (it reveals margin). Enforced in the API (§4), not the DB.
 - `rate_label` stores stable codes; the display strings ("Mon–Fri Day", etc.) live in the rate engine (§6). The v1→v2 code mapping is in §6.
+
+#### 3.3.1 Cross-company PAY proposals
+
+`rate_cards` remains the authoritative, approved resolution surface; pending negotiation never enters it. A separate proposal header + immutable submitted lines records an atomic schedule revision for one direct engagement:
+
+- header: engagement, provider proposer, currency, effective date, status (`DRAFT | SUBMITTED | APPROVED | REJECTED | WITHDRAWN`), predecessor proposal, submitter/reviewer, timestamps and decision reason;
+- lines: operation (`CREATE | REPLACE | END`), role, label, mode, amounts/minimums and the approved-card version it intends to replace;
+- provider `OWNER/ADMIN/MANAGER` may draft/withdraw/submit only for its own direct engagement; the hiring/main company `OWNER/ADMIN/MANAGER` may approve or reject;
+- submission freezes the payload; the reviewer cannot silently edit and approve different numbers—reject with a reason and let the provider clone a revision;
+- approval is one transaction: revalidate the complete schedule, close superseded effective windows, insert immutable approved rate-card versions, persist decision evidence and emit the durable event;
+- future-effective approval leaves the current schedule live until the date arrives; retroactive activation is refused by default and needs an owner override with a reason;
+- time already submitted remains unchanged because its PAY snapshot is frozen; BILL cards and margin are never present in provider responses.
+
+The hiring company retains a direct-entry path for schedules agreed outside CrewQuo. It creates the same immutable approved versions, not a mutable shortcut, and notifies the provider. Formal counteroffers/dual signature are later; the first workflow is provider proposal → main-company approve/reject.
+
+**Built 2026-08-18** (migration `0009_commercial_agreements.sql`). Four rules were settled during implementation and belong here, because they are decisions rather than mechanics:
+
+1. **`role_id` on a proposal line resolves in the *hiring* company's `role_catalog`**, because `rate_cards.company_id` is the card owner and PAY means “what this owner pays a provider”. It is the same catalog `time_logs.role_id` already points at. A provider therefore proposes against roles the hiring company defines, and picks from the rates already priced on the edge.
+2. **The company default (null-counterparty) PAY card is part of the agreement.** `selectEffectiveCard` falls back to it (§6), so a company that priced a role once for everybody has a rate in force on every engagement. It is shown as inherited and is **not** a valid `REPLACE` target — superseding it would reprice every other provider on that role. Overriding it is a `CREATE` line, which wins on the resolver's own counterparty precedence.
+3. **A draft is deleted; a submitted schedule is withdrawn.** `WITHDRAWN` is reachable only from `SUBMITTED`, so no state but `DRAFT` has a null `submitted_at`. At most one `DRAFT|SUBMITTED` proposal exists per engagement.
+4. **Approving is gated on the *hiring* company's `rate_cards`; proposing is gated on nothing.** The free Crew tier exists so a subcontractor can work for nothing (§5B), and a subcontractor who cannot ask for a rate is not a usable free tier. No new entitlement key was needed.
+
+Immutability is enforced by a **database trigger**, not only in the API: an `UPDATE` on a locked card may touch `effective_to`/`active`/`updated_*` and nothing else, and `DELETE` is refused. The route refuses first with an explanation, because a trigger violation would otherwise reach the caller as a 500.
 
 ### 3.4 Projects & work capture
 
@@ -529,13 +552,11 @@ Monthly (no annual commit) ≈ +20%. Trial: 14 days on paid plans, no card. Mete
 
 > **The placeholder-client exemption is live as of 2026-08-17.** `countClients` excludes engagements whose client side is still `is_placeholder`, which required first clearing that flag when an invitee *claims* a stub (§3.6 CLAIMED path) — until then the flag stayed true for companies that had genuinely joined, and filtering on it would have excluded real customers instead of stubs. `countActiveSubcontractors` deliberately does **not** get the same exemption and still counts `PENDING` edges: the exemption above names clients only, and a free pending subcontractor edge would let the `active_subcontractors` cap be walked past by inviting.
 
-### Billing — Merchant of Record (required: PH-based seller, no local business permit)
-Stripe-direct (PH unsupported) and local PH gateways (need DTI/SEC) are ruled out. Use an **MoR** — the provider is the legal seller, so no permit is needed and they handle global VAT/GST.
-- **Lemon Squeezy — primary** (SaaS-native, Stripe-owned as of 2026, bank/PayPal payouts, easy onboarding).
-- **Paddle — alternative at scale** (needs live pricing + ToS + Privacy + Refund pages to verify).
-- Backups: Polar, Dodo Payments.
+### Billing — Merchant of Record (Gumroad, owner decision 2026-08-17)
 
-CrewQuo plans are the source of truth; mirror each `plan_price` to a provider product (`provider_price_id`), use hosted checkout, consume webhooks to sync `company_subscriptions.status`. **Caveats:** MoR still needs KYC + W-8BEN + a payout method (bank/PayPal/Wise/Payoneer — verify PH is listed); fees ≈ 5%; launch with **hard caps** (MoR handles metered billing poorly); the seller's personal PH (BIR) income tax is separate — advise an accountant.
+Stripe-direct and local-gateway options are outside the decided launch path. Use Gumroad hosted checkout and membership lifecycle as the subscription boundary; CrewQuo plans, prices and effective entitlement snapshots remain the product source of truth.
+
+Mirror each `plan_price` to a Gumroad product/variant identifier, ingest signed events through the deduplicated webhook inbox, and reconcile provider state into `company_subscriptions` through replay-safe jobs. Do not treat a checkout redirect as payment truth. Before acceptance, the actual seller account must complete KYC/payout setup and a test membership must prove purchase, renewal, failed payment, cancellation, refund and reconciliation after duplicate/out-of-order delivery. Launch with hard caps; exact prices and provider fees are configuration, not calculation constants. Seller tax obligations remain separate professional-advice territory.
 
 ### Grandfathering
 On purchase/renewal, snapshot effective entitlements into `company_subscriptions.entitlements_snapshot`. A plan edit affects only new subscribers unless the super admin explicitly "apply to existing."
@@ -674,7 +695,7 @@ Driver messages never reach the client; the envelope carries a fixed message per
 - `(app)/company/providers` → my subcontractors → `/providers` → add provider (gated).
 - `(app)/settings` → profile, plan/usage, sign out → `/me`, `/entitlements`.
 
-Notifications: push on submit / approve / reject. Resilient offline draft capture is decided and implemented in Phase 13.
+Notifications: push on submit / approve / reject, backed by the durable notification/Action Centre foundation. Resilient offline draft capture is proved in Phase 7.7 and completed across the named field workflows in Phase 13.
 
 ---
 
@@ -733,7 +754,7 @@ The table is a **capability inventory**, not a parity checklist or a prescribed 
 
 **Phase 5 — Unified v2 web application.** Design and build the new information architecture, navigation, workspace shell and complete core workflows described in §9.1: onboarding, company context, dashboard, projects, counterparties, members, time and expense review, rate management, client collaboration, audit and administration. Existing screens may be replaced. *Milestone: a user can run the v2 core lifecycle through one coherent web product, with every empty/loading/error/locked/forbidden state designed.*
 
-**Phase 6 — Commercial readiness.** `invoices`/`invoice_items`; Merchant-of-Record checkout, webhooks, trial→paid and entitlement snapshots; subscription management; push + email notifications; public marketing, pricing and legal pages; production observability and launch operations. *Milestone: a company can discover, subscribe to and operate the product without manual platform intervention.*
+**Phase 6 — Commercial readiness.** `invoices`/`invoice_items`; commercial agreement/rate-proposal hardening; currency/FX/tax-invoice boundaries; Merchant-of-Record checkout and lifecycle; transactional outbox/webhook inbox/durable jobs; subscription management; Action Centre plus push/email notifications; time-zone/accessibility/security baselines; public/legal surfaces; production observability, support and recovery operations. *Milestone: a company can discover, subscribe to and operate the product without manual database or platform intervention.*
 
 > **Phases 5–13 are detailed in §42.** They are all v2: the new web application, commercial readiness, evidence, site diary, assets and materials, sustainability, reporting, variations, scheduling, compliance and the complete mobile field experience. Phase boundaries control delivery risk; they do not divide the product into separate scopes.
 
@@ -763,14 +784,14 @@ v2 is a **new Firebase-free product** with its own database, auth, information a
 | Authorization gaps | One policy module; explicit allow/deny tests for every role, capability, company edge and client boundary. |
 | One-hop leak (a company sees past its edge) | Central engagement-scope check; explicit deny tests at depth ≥ 2. |
 | `activeCompany` context bugs (v1's pain) | `memberships` rows + per-request context; nothing to go stale. |
-| MoR payout/verification friction | Confirm PH payout method up front; keep Paddle as fallback to Lemon Squeezy. |
+| Gumroad payout/verification or lifecycle gaps | Complete seller KYC/payout setup and the purchase→renewal/failure→cancel/refund rehearsal before coupling entitlements to production events; escalate any provider change as a new owner decision. |
 | Two apps during transition | v1 frozen (bug-fix only); no feature work on v1. |
 
 ---
 
 ## 15. Domain-model decisions
 
-The unified model makes these choices: (a) clients, contractors and subcontractors are `companies` connected by `engagements`, not separate party systems; (b) `time_logs`/`expenses`/`invoices` carry `engagement_id` and company-graph foreign keys; (c) rate cards inherit company currency; (d) subscription entitlements and `operates_downstream` are separate from OWNER/ADMIN/MANAGER/MEMBER permissions; (e) this file is self-contained and does not require v1 context to implement the product.
+The unified model makes these choices: (a) clients, contractors and subcontractors are `companies` connected by `engagements`, not separate party systems; (b) `time_logs`/`expenses`/`invoices` carry `engagement_id` and company-graph foreign keys; (c) current rate cards inherit the company default until commercial agreement versions carry currency and projects freeze any required FX normalization; (d) subscription entitlements and `operates_downstream` are separate from OWNER/ADMIN/MANAGER/MEMBER permissions; (e) this file is self-contained and does not require v1 context to implement the product.
 
 ---
 
@@ -780,7 +801,7 @@ The unified model makes these choices: (a) clients, contractors and subcontracto
 2. **App ↔ server:** REST + Zod.
 3. **File storage:** Cloudflare R2.
 4. **Login:** email/password + Google sign-in.
-5. **Currency:** one per company; rate cards inherit. Default **USD**, changeable via `PATCH /v1/companies/:id` (OWNER/ADMIN) — migration 0006, 2026-08-17. `DEFAULT_CURRENCY` in `packages/shared/src/me.ts` is the only place the default lives in code.
+5. **Currency:** `companies.currency` remains the company **default**, not the permanent currency of every commercial relationship. Existing rate cards inherit it until the multi-currency migration. Every new money-bearing agreement/document stores its own currency; PAY and BILL may differ only when the project stores an explicit FX snapshot and margin normalises both sides into the project reporting currency. No code may subtract unlike currencies. Default **USD**, changeable via `PATCH /v1/companies/:id` (OWNER/ADMIN) — migration 0006, 2026-08-17. `DEFAULT_CURRENCY` in `packages/shared/src/me.ts` remains the only code default.
 6. **Repo:** new `crewquo-v2`.
 7. **Parties are a company graph** (`companies` + `engagements`); client/subcontractor are relative, reversible; no separate client/sub tables.
 8. **One-hop visibility;** operate-downstream is a paid capability.
@@ -799,20 +820,29 @@ The unified model makes these choices: (a) clients, contractors and subcontracto
 18. **Storage is not an outcome.** An asset in storage stays `PENDING` and is excluded from reuse/recycling/diversion numerators *and* denominators until a final destination is recorded (§25.4).
 19. **Every generated report stores a reproducible snapshot** of its numbers, factor-set versions and source record ids, plus the rendered file. Re-rendering reads the snapshot; it never recalculates (§29.4).
 20. **Waste-hierarchy and destination semantics are configurable data, not code** — the `destination_types` table carries the tier and the counts-as flags, so an org can see and adjust its own assumptions (§25.4, §39).
-21. **Web-led delivery order.** Shared domain capabilities are proven through the web workspace before the complete mobile field experience is built in Phase 13. This is sequencing, not product hierarchy: mobile is first-class, receives its own interaction design, and is accepted against field jobs rather than against web screens. Existing prototype screens may be replaced.
+21. **Web-led, field-validated delivery order.** Shared domain capabilities are built through the web workspace, but Phase 7 ends with a thin mobile field pilot for photo capture, diary entry, background retry and offline drafts. The complete mobile workspace still lands in Phase 13. This is sequencing, not product hierarchy: mobile is first-class, receives its own interaction design, and is accepted against field jobs rather than against web screens. Existing prototype screens may be replaced.
+22. **Offline capture is in scope.** The sync contract is designed before Phase 7 storage/evidence APIs harden: client-generated ids, idempotent mutations, version/conflict semantics, tombstones, device/capture/upload timestamps and resumable retry. Phase 7.7 proves the queue in the field; Phase 13 completes it for diary, evidence and assets.
+23. **Cross-company PAY rates are proposed, not self-authorised.** A provider manager drafts a PAY schedule for its direct engagement; the hiring/main company approves or rejects it. Submission freezes the proposal; approval creates immutable effective-dated rate-card versions. Every later change is a successor proposal. BILL rates remain private to their owner. The main company retains a direct-entry path for externally negotiated schedules, with the same version and audit history.
+24. **Durable asynchronous work has one foundation.** MoR webhooks, email/push, file derivatives and mobile retry use a transactional outbox, signed/deduplicated webhook inbox, durable jobs, exponential retry, dead-letter state and operator replay. In-process timers are not a production delivery guarantee.
+25. **Decision evidence is transactional.** Financial/legal transitions—rate approval, invoice issue, report generation and sign-off—store actor, decision, immutable payload/hash and timestamps in the same transaction as the state change. `recordAudit` may remain a best-effort read projection; it is never the only evidence that the decision occurred.
+26. **Capabilities never imply every-project access.** A user needs both the capability and resource scope: explicit internal project assignment, direct provider assignment or granted client-project visibility. Temporary access expires. Ending membership/engagement access does not destroy historical records.
+27. **Evidence is private and location-minimised by default.** New evidence starts `client_visible = false`; a project may define a default and managers can batch-publish. GPS/EXIF location is off unless a project explicitly enables it with a stated purpose, worker notice and retention period. Originals follow artifact-class lifecycle rules with legal hold; evidence referenced by a frozen report/sign-off survives as long as that snapshot.
+28. **Sustainability defaults prefer an honest unknown.** Displacement defaults to `UNKNOWN`, never 100%. Enabling emissions are methodology-configurable and disclosed; no hidden universal deduction or omission may change a headline. Missing methodology/factor data produces a named gap, not a flattering assumption.
+29. **Time zone and accessibility are product data, not presentation polish.** Companies and projects carry IANA time zones before diary/scheduling work. Work dates, Close Day rules, due dates and notifications resolve against the documented zone. Web and mobile target WCAG 2.2 AA, keyboard/touch parity, non-colour status cues and alternatives to drag-only interactions.
+30. **Branding inheritance is client-first.** A client company supplies its default logo/brand details; a project may override them for a specific report. Generated reports freeze the resolved branding in their reproducible snapshot.
 
 ---
 
 ## 17. Open items (ask the user before building the affected phase)
 
 - **Exact seed pricing per currency** — §5B has USD anchors; confirm real numbers + which currencies to localize (affects `plan_prices`, Phase 6).
-- **MoR payout method** — confirm the PH payout route and Gumroad's subscription-webhook coverage before building against it (Phase 6).
-- **Per-rate-card currency** — company-level currency can't express "pay crew in PHP, bill a US client in USD"; mixing currencies inside one company makes `calculateMargin` subtract different units. Decide before multi-currency clients are real.
-- The domain-specific open items for evidence, carbon, offline capture and reports are listed in §45.
+- **Gumroad production verification** — official documentation currently lists Philippine bank payout in PHP, but the actual seller account must complete KYC/payout setup and a test membership must prove purchase, renewal, failed payment, cancellation, refund and replay-safe webhook/API reconciliation before the integration is accepted (Phase 6).
+- **Feature packaging for the new modules** — keep §43 provisional until design-partner evidence exists; decide before Phase 7 writes the first production entitlement gate.
+- **Emission-factor redistribution rights** — no bundled dataset until its licence is confirmed; Phase 9 can still ship the importer and organisation-owned factors.
 
 ---
 
-## 18. Where the build stands (2026-08-17)
+## 18. Where the build stands (2026-08-18)
 
 `PROGRESS.md` is the living checklist; this is the one-paragraph version.
 
@@ -822,7 +852,7 @@ The unified model makes these choices: (a) clients, contractors and subcontracto
 
 **The web workspace is built (Phase 5, 2026-08-17):** two route groups behind one auth provider, and every workflow reachable — auth and profile, plan and usage, engagements, providers and clients, members (invite, re-role, suspend, remove), projects with server-computed margin, work entry and bulk approval at scale, the client portal, the audit viewer, and the super-admin console over both plans and individual companies. `apps/mobile` remains a prototype proving parts of the core loop; Phase 13 designs the field product.
 
-**Next: Phase 6 — commercial readiness** (§42), then the remaining operational capabilities. Phase 13 completes the purpose-built mobile field experience.
+**Phase 6 is in progress:** the invoice foundation is built end to end; MoR, durable delivery, notifications, public/legal surfaces and launch operations remain. The 2026-08-18 planning pass added cross-company rate proposals, multi-currency/FX boundaries, transactional decision evidence, project-scoped capabilities, privacy/retention defaults and an early Phase 7.7 mobile field pilot. Phase 13 still completes the purpose-built mobile workspace.
 
 **Verification.** `pnpm --filter @crewquo/api verify:e2e` runs 163 live-Postgres checks over currency, label rules, the Phase 3/4 core-loop numbers (PAY 40000 / BILL 65550 / margin 24000 / 36.61%), the export engine (including the XLSX's own cells against `/summary`), malformed-identifier handling, both migration backfills, the portal's PAY-exclusion, the placeholder/meter rules, the super-admin console and member management. `pnpm --filter @crewquo/web test:e2e` runs 17 browser tests over the same loop through the real UI. Re-run both green at the end of every phase.
 
@@ -865,8 +895,29 @@ What they share: the client increasingly wants proof — photographic evidence o
 - **Not a certified carbon accounting platform.** CrewQuo calculates and discloses; it does not verify. §27.5 and §41 govern what may and may not be claimed.
 - **No bundled emission factor dataset** until redistribution terms are confirmed (§45).
 - **No item-level tracking requirement.** Bulk lines are the default; item-level is opt-in per line (§25.2).
-- **Offline capture is a deliberate Phase 13 decision**, not an assumption hidden inside early web work. It matters because supervisors work in basements and loading bays (§45).
+- **Offline capture is in scope**, but CrewQuo is not a general offline replica of the whole back office. Phase 7.7 proves offline drafts/retry for field capture; Phase 13 completes only the named mobile workflows (§32, §42).
 - **Not a replacement for a client's own ESG reporting system.** CrewQuo produces a project/client report and the underlying data; integration/export to third-party ESG platforms is later.
+
+### 19.5 Operating model & planning gates
+
+Before a phase hardens a new domain, its planning packet must answer the operating questions below. These are implementation inputs, not optional product documents. **The reusable packet lives in `docs/operating-model/` as of 2026-08-18**; `TEMPLATE.md` is the twelve headings, `README.md` records which domains have completed one, and `commercial-agreements.md` is the first.
+
+1. **Persona / job:** who is trying to complete which real-world job, on which device and connectivity level?
+2. **Resource responsibility:** creator, owner, reader, reviewer, publisher, corrector, exporter and retention owner.
+3. **State machine:** states, allowed actor per transition, rejection/withdraw/reopen path, terminal states and concurrency rule.
+4. **Permission + scope matrix:** feature entitlement, user capability, company edge and project/resource assignment are four independent checks.
+5. **Domain events:** event name, transactional payload, idempotency key, consumers and replay behavior.
+6. **Notification matrix:** recipient, channel, urgency, digest/quiet-hours rule, escalation and durable in-app Action Centre item.
+7. **Data classification + retention:** personal/commercial/evidence/reference classification, default visibility, lifecycle, legal hold and deletion/export behavior.
+8. **Offline/conflict policy:** client id, expected version, merge/refusal rule, tombstone and user-visible recovery.
+9. **Failure matrix:** retryable vs terminal failures, partial-success behavior, operator repair and what the user sees.
+10. **Security/threat model:** tenant boundary, forged identifiers, upload abuse, webhook spoofing, privileged/support access and secret rotation.
+11. **Analytics contract:** activation/outcome event, funnel, quality metric and explicit exclusion of sensitive payloads.
+12. **Acceptance script:** a real persona completes the job end to end, including empty, denied, rejected, offline/retry and correction paths.
+
+**Cross-product workflow catalog.** The project, engagement, rate proposal, work, invoice, evidence publication, diary, variation, report, sign-off, compliance and subscription state machines live beside this plan and are updated before their phase begins. Project lifecycle must define `PLANNED → ACTIVE → COMPLETED → ARCHIVED`, cancellation, reopen, what completion freezes and what later amendment requires.
+
+**Universal Action Centre.** Approvals and exceptions must not fragment into thirteen inboxes. Time/expense review, rate proposals, variations, invoice actions, expiring compliance, incomplete diary/evidence, report sign-off, failed uploads and subscription problems all project into one durable “what needs attention, why, by when, and who owns it” view. Email/push link to the item; they are not the only copy of the task.
 
 ---
 
@@ -1012,7 +1063,7 @@ create index on project_evidence (asset_id) where asset_id is not null;
 - **Direct camera capture on mobile**, with the current project, today's date and (if the supervisor is working in one) the current location pre-filled.
 - **Drag-and-drop on desktop**, including folder drops.
 - **Batch metadata:** category, date, location, caption and client-visible flag can be applied to a whole selection at once, then overridden per photo. Tagging 40 photos individually is the failure mode that kills evidence capture.
-- **GPS is optional and org-configurable** (§39). Where enabled, coordinates come from the device at capture, not from EXIF alone.
+- **GPS is off by default and project-governed** (§39). It may be enabled only with a stated purpose, worker notice, access rule and retention period; where enabled, coordinates come from the device at capture, not from EXIF alone.
 - **Non-image evidence** (a short video, a PDF scan) is accepted and stored; the gallery shows a type badge instead of a thumbnail. Video transcoding is out of scope — store and link only.
 
 ### 22.4 Views
@@ -1900,7 +1951,7 @@ create index on schedule_assignments (project_id, starts_at);
 
 ## 32. Supervisor mobile experience
 
-> **Built in Phase 13, after the shared domain is proven** (decision #21). This is a purpose-designed field experience, not a copy of the web workspace.
+> **Proved as a thin field slice in Phase 7.7, completed in Phase 13** (decision #21). This is a purpose-designed field experience, not a copy of the web workspace.
 
 A separate, simplified project screen for supervisors — **not** the desktop admin UI shrunk down. New expo-router group `apps/mobile/app/(app)/site/`.
 
@@ -1921,7 +1972,7 @@ TODAY
 - **Add Photo** is reachable in one tap from the site screen and defaults to camera capture.
 - **Complete Day** closes the diary (§23) and prompts for anything obviously missing: no photos today, assets with no destination, unsubmitted time.
 - Everything posts to the **same endpoints** the web app uses. No mobile-only write path, no divergent validation.
-- Offline capture is a Phase 13 decision and is a real gap for basements and lifts—flagged in §45.
+- Offline capture is in scope: Phase 7.7 validates drafts, retry and conflict recovery in low-connectivity conditions; Phase 13 extends that contract across the complete field workflow.
 
 ---
 
@@ -2015,6 +2066,8 @@ Someone who was not on site should be able to read the timeline and understand w
 ## 36. Auditability
 
 `audit_logs` + `recordAudit` (§3.6) already capture *that* something happened, on every Phase 3/4 mutation. Commercial and sustainability records additionally need *what changed*.
+
+**`record_revisions` exists as of migration 0009 (2026-08-18)**, created with the commercial-agreement domain — the first to reach the starred list below (“approved time and rates”). The writer is `apps/api/src/modules/revisions/record.ts`; `changedFields` is computed from before/after rather than declared by the caller, so a caller cannot over- or under-report a change. Revisions backing a financial record are retained for the life of the company rather than following `audit_retention_days`, which is the same carve-out this section already makes for report-attached revisions.
 
 ```sql
 create table record_revisions (
@@ -2199,11 +2252,11 @@ When a product decision and one of these principles conflict, the principle wins
 
 This is one v2 roadmap. Each phase is independently demoable and verified end to end before the next begins. The sequence manages implementation risk; every phase below belongs to the new application.
 
-**Current position.** Phase 4's domain and **export engine** are complete (2026-08-17); §29 builds on `apps/api/src/modules/exports/model.ts`, the single place a figure is formatted. **Phase 5 is built and verified** (2026-08-17) — every workflow, plus the endpoints the phase itself found missing (super-admin companies console, member management, `PATCH /v1/me`); its closing milestone is an owner judgement on information architecture and visual design. **Phase 6 is next**, and makes the product commercially operable; note that two of its inputs are still open owner decisions (real per-currency pricing, and the Gumroad payout/webhook confirmation — §17). Phases 7–12 then complete the operational scope.
+**Current position.** Phase 4's domain and **export engine** are complete (2026-08-17); §29 builds on `apps/api/src/modules/exports/model.ts`, the single place a figure is formatted. **Phase 5 is built and verified** (2026-08-17) — every workflow, plus the endpoints the phase itself found missing. **Phase 6 is in progress**: project invoicing is built; MoR, durable delivery, notifications, legal/public surfaces and launch operations remain. Real pricing and an actual Gumroad seller/subscription rehearsal are still gates (§17). The 2026-08-18 planning pass adds the operating-model foundations in §19.5 and a Phase 7.7 field-validation checkpoint before the later domains expand.
 
 ### Web-led sequencing (decision #21)
 
-> Phases 5–12 establish the complete web workspace and shared domain. Phase 13 delivers the complete mobile field workspace.
+> Phases 5–12 establish the complete web workspace and shared domain. Phase 7.7 deliberately interrupts that sequence with a **thin mobile field proof**—photo, diary, background retry and offline drafts—because capture assumptions must be tested where the work happens. Phase 13 delivers the complete mobile field workspace.
 >
 > This does not make mobile a port. Existing mobile code may be reused or replaced, and the field experience is designed for field jobs, device capabilities, intermittent connectivity and one-handed use.
 >
@@ -2228,11 +2281,17 @@ Create the new product experience described in §9 and §20. The existing API ca
 ### Phase 6 — Commercial readiness
 
 - [x] `invoices` and `invoice_items`, with totals derived from the same approved work calculations. Built 2026-08-17 with API + web workflow, immutable issue snapshots, issued-only client visibility and double-invoice protection. Phase 11 plugs approved variations into the same source builder when that domain exists.
+- [x] **Commercial agreement hardening.** Built 2026-08-18: `rate_proposals` + immutable `rate_proposal_lines`, versioned and DB-locked approved PAY cards, the full draft→submit→approve/reject/withdraw workflow with successor chaining, hiring-side direct entry, engagement payment terms and PO reference/ceiling (enforced at invoice issue), engagement and assignment acceptance, and `record_revisions` (§36). Operating-model packet: `docs/operating-model/commercial-agreements.md`.
+- [ ] **Money boundary:** company default currency plus currency on new commercial agreements/documents; project reporting currency and frozen FX snapshots before unlike PAY/BILL currencies are allowed. Define tax identity, addresses, line tax, credit notes and payment allocation before marketing project invoices as jurisdiction-compliant tax invoices.
 - [ ] Merchant-of-Record checkout, webhooks, trial-to-paid state and entitlement snapshots.
 - [ ] Super-admin price and subscription management.
-- [ ] Push and email notifications with user preferences and retry-safe delivery.
+- [ ] **Durable delivery foundation:** transactional outbox, signed/deduplicated webhook inbox, job runner, retry/dead-letter/replay tools and enforced idempotency on create/submit/approve. Move audit purge and derivatives off in-process-only timers.
+- [ ] Push and email notifications with user preferences, quiet hours/digests, delivery history and retry-safe delivery.
+- [ ] **Universal Action Centre foundation:** one durable task projection for approvals, exceptions and failed operations; later phases add their own task kinds rather than their own inbox architecture.
+- [ ] Company/project IANA time zones, locale-safe dates/numbers and a WCAG 2.2 AA accessibility gate.
+- [ ] Security hardening: MFA/recovery for privileged accounts, session/device management, rate limiting, secret rotation, support-access controls and tenant-boundary threat model.
 - [ ] Public marketing, pricing, terms, privacy and refund pages.
-- [ ] Production observability, support tooling, backup/restore rehearsal and launch runbook.
+- [ ] Production observability with tenant/request/job correlation, support tooling, data export/deletion workflow, documented RPO/RTO, backup **and restore** rehearsal and launch/incident runbooks.
 - *Milestone: a company can discover, subscribe to and operate CrewQuo without manual database or platform intervention.*
 
 ### Phase 7 — Evidence foundations
@@ -2242,8 +2301,10 @@ Create the new product experience described in §9 and §20. The existing API ca
 - **7.3 Project evidence** (§22): records, batch upload, camera capture, gallery/timeline/filters, selection.
 - **7.4 Project documents** (§24).
 - **7.5 Site diary** (§23) with attendance, Close Day and post-close revisions.
-- **7.6 Web UI:** the project section shell (§20) with these five sections — evidence gallery/timeline/filters with drag-and-drop batch upload, document manager, diary editor with Close Day. Desktop upload and batch metadata editing carry this phase; camera capture arrives in Phase 13.
-- *Milestone: a full day's evidence — photos, documents and a closed diary entry — captured and organised on the project from a desktop, attributed, dated and located.*
+- **7.6 Web UI:** the project section shell (§20) with these five sections — evidence gallery/timeline/filters with drag-and-drop batch upload, document manager, diary editor with Close Day. Desktop upload and batch metadata editing carry this slice.
+- **7.7 Thin mobile field validation:** establish the mobile shell/project context, direct photo capture, a basic diary entry, background upload retry and the offline draft queue contract (client ids, idempotency, expected versions, conflicts and tombstones). Run the acceptance script on a real site/low-connectivity simulation before Phase 8. This is a proof slice, not the complete Phase 13 product.
+- **Privacy/lifecycle defaults:** evidence private by default with per-project default + batch publish; GPS/EXIF location off unless explicitly enabled with purpose/notice/retention; checksum/MIME/malware controls; artifact-class R2 lifecycle + legal hold; report/sign-off evidence retained with its snapshot.
+- *Milestone: a full day's evidence—photos, documents and a closed diary entry—captured on desktop and through the thin phone flow, survives offline/retry, and is organised, attributed and selectively published.*
 
 ### Phase 8 — Assets & materials
 - `asset_types` (seeded, no invented weights), `project_assets` with bulk lines and weight provenance (§25.2, §25.3).
@@ -2286,16 +2347,16 @@ Create the new product experience described in §9 and §20. The existing API ca
 
 ### Phase 13 — Complete mobile field experience
 
-Build and validate the purpose-designed mobile workspace against the field jobs in §8 and §32. By this point the shared domain is proven, but the information architecture and interactions are mobile decisions—not copies of web screens.
+Build and validate the complete purpose-designed mobile workspace against the field jobs in §8 and §32. Phase 7.7 has already proved the shell, evidence/diary capture and offline contract; this phase expands and productionises them. The information architecture and interactions remain mobile decisions—not copies of web screens.
 
-- **13.1 Establish the mobile product shell:** navigation, authentication, company/project context, design system, accessibility and resilient API state. Reuse prototype code only where it fits the target experience.
+- **13.1 Complete the mobile product shell:** production navigation, authentication, company/project context, design system, accessibility and resilient API state, building on the Phase 7.7 proof.
 - **13.2 Supervisor site experience** (§32) — the `(app)/site/` group and its 11 actions. The flagship field screen.
-- **13.3 Evidence capture** — direct camera, multi-shot, project/date/location pre-fill, background upload with retry (§22.3).
+- **13.3 Complete evidence capture** — multi-shot, batch metadata, project/date/location pre-fill and production background upload/recovery (§22.3), building on Phase 7.7.
 - **13.4 Site diary** on mobile — write, attendance confirm, Close Day with its missing-data prompts (§23).
 - **13.5 Assets & waste** — Assets Removed and Waste/Reuse flows, destination assignment on site (§25).
 - **13.6 Read-and-confirm surfaces** — schedule (not drag, §31), project sections that make sense on a phone (§20), timeline, compliance flags.
 - **13.7 Sign-off capture** — signature on glass, the one interaction that is genuinely better on a tablet than a desktop (§34).
-- **13.8 Offline capture** (§45 open item) — draft queue for diary, evidence and assets; basements and loading bays have no signal. Decide here whether it is in scope or stays deferred.
+- **13.8 Complete offline capture** — extend the Phase 7.7 draft queue and conflict UX across diary, evidence and assets; prove recovery after app/process/device interruption.
 - **13.9 EAS store submission** — dev-client, production builds, OTA channels and store listings for the complete field app.
 - **13.10 Maestro E2E** on the supervisor day: start shift → photo → diary → assets → complete day.
 - *Milestone: a supervisor runs an entire site day from a phone through a coherent field product that shares data and rules with the web workspace.*
@@ -2340,28 +2401,43 @@ Extends §13; same gates, same CI.
 - **Reproducibility test:** generate a report, import a new factor set, correct a weight, re-render the report — assert byte-identical numbers and an unchanged `content_hash`; then regenerate-with-current-data and assert a new row plus `SUPERSEDED` on the old.
 - **The firewall test:** assert that no API response ever returns a total mixing the `AVOIDED` bucket with any other, and that no persisted `carbon_calculations` sum crosses buckets.
 - **Authorization tests per capability** (§37), following the existing one-test-per-rule discipline: Supervisor cannot read margin; Worker cannot set a destination; Finance cannot close a diary; a capability never widens company scope or the one-hop rule.
+- **Resource-scope authorization tests:** a valid company membership and capability still cannot read or mutate an unassigned project/resource; forged company/project/file identifiers fail closed and reveal no cross-tenant existence.
 - **Storage tests:** presign rejects oversize and wrong content type; complete verifies checksum; downloads 403 without the owning record's authorization; derivative failure leaves the original intact.
+- **State-machine tests:** every declared transition is covered by actor, source state, target state, rejection/withdraw/reopen behavior, terminal-state immutability and concurrent double-action cases.
+- **Durable-delivery tests:** domain write + outbox record commit atomically; duplicate webhook/event/job delivery has one business effect; transient failure retries; terminal failure reaches a visible dead-letter state; authorized replay is safe and auditable.
+- **Offline-sync tests:** client-generated IDs deduplicate creates, expected-version mismatches produce actionable conflicts, tombstones prevent resurrection, capture/device/server timestamps remain distinct, and uploads recover after app/process/network interruption.
+- **Time-zone tests:** company and project IANA zones survive DST gaps/overlaps, overnight shifts and date-bound reporting without changing stored instants.
+- **Accessibility tests:** automated WCAG checks plus keyboard-only acceptance for core web workflows; drag-and-drop always has an equivalent non-drag operation and focus/error announcements are asserted.
 - **Backward-compatibility suite:** the Phase 0–4 end-to-end scripts re-run unchanged at the end of every new phase. Existing endpoint response shapes are snapshot-tested so an additive change cannot silently become a breaking one.
 
 ---
 
-## 45. Domain open items (ask before building the affected phase)
+## 45. Domain decisions and remaining external gates
+
+### Remaining gates
 
 - **Emission factor dataset redistribution.** Confirm the licensing terms for the UK Government GHG Conversion Factors (and any WRAP/Defra resource dataset) before bundling one into the seed or a platform-wide factor set. Until confirmed, Phase 9 ships the importer and orgs upload their own. *(Phase 9)*
-- **Feature packaging for the new modules** — the §43 table is a proposal. Which tier sells sustainability? Is asset tracking a Starter feature or the Pro hook? *(Phase 7, before the first gate is written)*
-- **Enabling-emissions policy for avoided claims** — deduct refurbishment/transport/storage always, or only when the org's methodology requires it? Default matters because it changes headline numbers. *(Phase 9)*
-- **Default displacement assumption** — ship at 100% or at "unknown, ask"? 100% is the industry-common default and the more flattering one. *(Phase 9)*
-- **Offline capture for supervisors** — basements, lifts and loading bays have no signal, and §32 is the flagship mobile experience. Decide in Phase 13 (13.8) whether the first release includes the resilient draft queue or explicitly defers it. *(Phase 13)*
-- **Client visibility defaults for evidence** — every new evidence/document/report row defaults to `client_visible = false`. Confirm that is right for photos, which clients most want to see. *(Phase 7)*
-- **GPS capture** — off by default (§39). Confirm; it is worker-location data and some organisations will not want it recorded at all. *(Phase 7)*
-- **Retention for evidence and originals** — audit rows expire on the plan's `audit_retention_days`; photos and originals currently do not expire at all, which is a growing storage bill. Lifecycle policy? *(Phase 7)*
-- **Report branding** — contractor logo and client logo are specified (§29.1). Confirm where the client logo comes from: uploaded per client company, or per project? *(Phase 10)*
+- **Feature packaging for the new modules.** The §43 table remains a hypothesis until design-partner interviews and willingness-to-pay tests establish which tier sells sustainability and whether asset tracking belongs in Starter or is a Pro hook. Do not hard-code production gates before that evidence. *(Before Phase 7 production entitlement gates)*
+
+Exact localized prices and the real Gumroad seller/subscription rehearsal remain external commercial gates in §17.
+
+### Resolved in the 2026-08-18 planning pass
+
+- **Enabling emissions:** the organization selects a supported methodology; CrewQuo applies and discloses that methodology instead of silently forcing one universal deduction rule.
+- **Displacement:** defaults to `UNKNOWN`, never 100%. A claim requires an explicit, attributable assumption.
+- **Offline:** in scope. Design the sync contract before Phase 7 APIs harden, validate it in Phase 7.7 and complete it across field workflows in Phase 13.
+- **Evidence visibility:** private by default, with a per-project default and deliberate batch publication to clients.
+- **GPS/EXIF location:** off by default; enable only with a stated purpose, notice, access rule and retention period.
+- **Evidence retention:** lifecycle by artifact class and plan, with legal hold; evidence referenced by an issued report or sign-off remains addressable with that immutable snapshot.
+- **Report branding:** the linked client company supplies the default client logo; a project may override it, and generated-report snapshots freeze the chosen asset.
 
 ---
 
 ## 46. API contract additions
 
 Extends §7 — same conventions throughout, no exceptions: `Authorization: Bearer` + `X-Company-Id`, shared Zod schemas in `packages/shared` typing both sides, `{ data, nextCursor }` keyset lists, the `{ error: { code, message, details? } }` envelope, and `Idempotency-Key` on create/submit/approve. `CRUD` below means the usual five verbs.
+
+Offline-capable creates also carry a client-generated ID. Mutable records carry a server version; update/delete requests send the expected version (`If-Match` or the shared-schema equivalent), and a mismatch returns `409` with the current version plus safe recovery metadata. Deletes use tombstones for sync-participating records until every supported client can observe them. Business operations commit their domain row, transactional decision evidence and outbox event atomically; consumers and webhook handlers are idempotent and replay-safe.
 
 ```
 # Files & storage (§22.1)
@@ -2429,7 +2505,7 @@ GET    /v1/dashboard/sustainability          -- ?from&to&clientId&projectManager
 GET    /v1/clients/:clientCompanyId/sustainability -- period aggregation (§38.2)
 ```
 
-**Gating.** Every route above is guarded by `hasFeature` (does the plan sell it? §43) **and** `hasCapability` (may this person do it? §37), after the existing company-scope and one-hop checks — which are unchanged and always run first. Client-portal reads of any new resource go through the existing `/v1/portal/*` surface and return only `client_visible` rows; no new endpoint exposes a counterparty's data directly.
+**Gating.** Every route above is guarded independently by `hasFeature` (does the plan sell it? §43), `hasCapability` (may this person perform it? §37), company-edge/one-hop scope and the relevant project/resource assignment. Passing one check never widens another. Client-portal reads of any new resource go through the existing `/v1/portal/*` surface and return only deliberately published `client_visible` rows; no new endpoint exposes a counterparty's data directly.
 
 ---
 

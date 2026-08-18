@@ -1312,6 +1312,905 @@ async function main(): Promise<void> {
   check('a rename is audited in each of the user’s companies', Boolean(nameRow));
   eq('...with both sides of the change', nameRow?.changes?.name?.to, 'Renamed Owner');
 
+  // ── Commercial agreements (Phase 6, §3.3.1) ───────────────────────────────
+  // This section is the acceptance script from
+  // docs/operating-model/commercial-agreements.md §12, implemented.
+  section('Commercial agreements (§3.3.1 PAY proposals, terms, acceptance)');
+
+  const cEngagement = providerRes.json.provider.engagementId as string;
+
+  // Dates are computed, never hardcoded: this script is re-run at the end of every
+  // later phase, and a literal "2026-12-01" would silently stop being in the future.
+  const dayOffset = (days: number): string => {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() + days);
+    return d.toISOString().slice(0, 10);
+  };
+  const futureFrom = dayOffset(30);
+  const pastFrom = dayOffset(-30);
+
+  // 1 ── Empty. A provider with no proposals gets an empty list, not an error.
+  const noProposals = await call('GET', '/v1/rate-proposals', {
+    token: providerUser.token,
+    companyId: northgate,
+  });
+  eq('a provider with no rate schedules reads an empty list', noProposals.status, 200);
+  eq('...and it really is empty', noProposals.json.data.length, 0);
+
+  // 2 ── Terms belong to the hiring company.
+  const providerSetsTerms = await call('PATCH', `/v1/engagements/${cEngagement}/terms`, {
+    token: providerUser.token,
+    companyId: northgate,
+    body: { paymentTermsDays: 7 },
+  });
+  eq('the provider cannot set the terms it is paid under', providerSetsTerms.status, 403);
+
+  const setTerms = await call('PATCH', `/v1/engagements/${cEngagement}/terms`, {
+    token: owner.token,
+    companyId: meridian,
+    body: { paymentTermsDays: 30, purchaseOrderReference: 'PO-4417', reason: 'Signed MSA' },
+  });
+  eq('the hiring company sets payment terms and a PO reference', setTerms.status, 200);
+  eq('...payment days land', setTerms.json.terms.paymentTermsDays, 30);
+  eq('...and the PO reference lands', setTerms.json.terms.purchaseOrderReference, 'PO-4417');
+
+  const providerReadsTerms = await call('GET', `/v1/engagements/${cEngagement}/terms`, {
+    token: providerUser.token,
+    companyId: northgate,
+  });
+  eq('the provider may read the terms it works under', providerReadsTerms.status, 200);
+  eq('...including the payment days', providerReadsTerms.json.terms.paymentTermsDays, 30);
+
+  const outsiderTerms = await call('GET', `/v1/engagements/${cEngagement}/terms`, {
+    token: clientUser.token,
+    companyId: harbour,
+  });
+  eq('a company that is not an endpoint 404s on the terms', outsiderTerms.status, 404);
+
+  // 3 ── The existing PAY card is what a REPLACE line supersedes.
+  const payCards = await call('GET', '/v1/rate-cards?kind=PAY', {
+    token: owner.token,
+    companyId: meridian,
+  });
+  const livePayCard = payCards.json.data.find(
+    (c: any) => c.counterpartyCompanyId === northgate && c.rateLabel === 'MON_FRI_DAY'
+  );
+  check('the edge has a PAY rate in force to supersede', Boolean(livePayCard));
+  eq('...at the Phase 3 figure', livePayCard?.hourlyRateCents, 5000);
+  eq('...and it is not locked, because it predates the agreement workflow',
+    livePayCard?.locked, false);
+  eq('...at version 1', livePayCard?.version, 1);
+  eq('...inheriting the company currency rather than carrying its own',
+    livePayCard?.currency, null);
+
+  // 4 ── Denied: the hiring side cannot author the provider's proposal.
+  const hiringDrafts = await call('POST', '/v1/rate-proposals', {
+    token: owner.token,
+    companyId: meridian,
+    body: {
+      engagementId: cEngagement,
+      effectiveFrom: futureFrom,
+      lines: [{ operation: 'CREATE', roleId, rateLabel: 'SUNDAY', rateMode: 'HOURLY', hourlyRateCents: 9000 }],
+    },
+  });
+  eq('the hiring company cannot propose on the provider’s behalf', hiringDrafts.status, 403);
+
+  // 5 ── The provider drafts an atomic schedule: one raise, one new label.
+  const draft = await call('POST', '/v1/rate-proposals', {
+    token: providerUser.token,
+    companyId: northgate,
+    body: {
+      engagementId: cEngagement,
+      effectiveFrom: futureFrom,
+      note: 'April uplift as agreed on site',
+      lines: [
+        {
+          operation: 'REPLACE',
+          roleId,
+          rateLabel: 'MON_FRI_DAY',
+          rateMode: 'HOURLY',
+          hourlyRateCents: 5500,
+          otHourlyRateCents: 8250,
+          replacesRateCardId: livePayCard.id,
+        },
+        {
+          operation: 'CREATE',
+          roleId,
+          rateLabel: 'SUNDAY',
+          rateMode: 'HOURLY',
+          hourlyRateCents: 9000,
+        },
+      ],
+    },
+  });
+  eq('the provider drafts a rate schedule', draft.status, 201);
+  const draftId = draft.json.proposal.id as string;
+  eq('...as a DRAFT', draft.json.proposal.status, 'DRAFT');
+  eq('...in the hiring company currency', draft.json.proposal.currency, 'USD');
+  eq('...with both lines', draft.json.proposal.lines.length, 2);
+  const replaceLine = draft.json.proposal.lines.find((l: any) => l.operation === 'REPLACE');
+  eq('...and the reviewer is shown the rate in force beside the proposed one',
+    replaceLine.currentAmountCents, 5000);
+  const createLine = draft.json.proposal.lines.find((l: any) => l.operation === 'CREATE');
+  eq('...with no comparison where nothing is in force', createLine.currentAmountCents, null);
+
+  // 6 ── A draft is the provider's alone.
+  const hiringSeesDraft = await call('GET', `/v1/rate-proposals/${draftId}`, {
+    token: owner.token,
+    companyId: meridian,
+  });
+  eq('the hiring company cannot see a draft schedule', hiringSeesDraft.status, 404);
+  const hiringList = await call('GET', `/v1/rate-proposals?engagementId=${cEngagement}`, {
+    token: owner.token,
+    companyId: meridian,
+  });
+  eq('...nor does one appear in its list', hiringList.json.data.length, 0);
+
+  const outsiderSees = await call('GET', `/v1/rate-proposals/${draftId}`, {
+    token: clientUser.token,
+    companyId: harbour,
+  });
+  eq('an outsider 404s on a schedule', outsiderSees.status, 404);
+
+  // 7 ── One open negotiation per edge.
+  const secondOpen = await call('POST', '/v1/rate-proposals', {
+    token: providerUser.token,
+    companyId: northgate,
+    body: {
+      engagementId: cEngagement,
+      effectiveFrom: futureFrom,
+      lines: [{ operation: 'CREATE', roleId, rateLabel: 'DAILY', rateMode: 'DAILY', dailyRateCents: 40000 }],
+    },
+  });
+  eq('a second open schedule on the same edge is refused', secondOpen.status, 409);
+
+  // 8 ── Validation the DB alone could not express.
+  const foreignRole = await call('POST', '/v1/rate-proposals', {
+    token: providerUser.token,
+    companyId: northgate,
+    body: {
+      engagementId: cEngagement,
+      effectiveFrom: futureFrom,
+      lines: [{ operation: 'CREATE', roleId: randomUUID(), rateLabel: 'DAILY', rateMode: 'DAILY', dailyRateCents: 1 },],
+    },
+  });
+  eq('a line naming a role outside the hiring catalog is refused', foreignRole.status, 422);
+
+  const unlikeCurrency = await call('POST', '/v1/rate-proposals', {
+    token: providerUser.token,
+    companyId: northgate,
+    body: {
+      engagementId: cEngagement,
+      effectiveFrom: futureFrom,
+      currency: 'GBP',
+      lines: [{ operation: 'CREATE', roleId, rateLabel: 'DAILY', rateMode: 'DAILY', dailyRateCents: 40000 }],
+    },
+  });
+  eq('an unlike currency is refused until the FX boundary exists', unlikeCurrency.status, 422);
+  check('...and the refusal says what is missing',
+    /exchange rate|FX snapshot/i.test(unlikeCurrency.json?.error?.message ?? ''),
+    unlikeCurrency.json?.error?.message);
+
+  // 9 ── Submission freezes the payload.
+  const cSubmitted = await call('POST', `/v1/rate-proposals/${draftId}/submit`, {
+    token: providerUser.token,
+    companyId: northgate,
+  });
+  eq('the provider submits the schedule', cSubmitted.status, 200);
+  eq('...and it is SUBMITTED', cSubmitted.json.proposal.status, 'SUBMITTED');
+  check('...stamped with who submitted it', Boolean(cSubmitted.json.proposal.submittedAt));
+
+  const editFrozen = await call('PATCH', `/v1/rate-proposals/${draftId}`, {
+    token: providerUser.token,
+    companyId: northgate,
+    body: { lines: [{ operation: 'CREATE', roleId, rateLabel: 'DAILY', rateMode: 'DAILY', dailyRateCents: 1 }] },
+  });
+  eq('a submitted schedule cannot be edited by its author', editFrozen.status, 409);
+
+  const deleteSubmitted = await call('DELETE', `/v1/rate-proposals/${draftId}`, {
+    token: providerUser.token,
+    companyId: northgate,
+  });
+  eq('...nor deleted — a submitted schedule is withdrawn, not deleted', deleteSubmitted.status, 409);
+
+  const hiringEdits = await call('PATCH', `/v1/rate-proposals/${draftId}`, {
+    token: owner.token,
+    companyId: meridian,
+    body: { lines: [{ operation: 'CREATE', roleId, rateLabel: 'DAILY', rateMode: 'DAILY', dailyRateCents: 1 }] },
+  });
+  eq('the reviewer cannot edit the numbers it is approving', hiringEdits.status, 403);
+
+  const nowVisible = await call('GET', `/v1/rate-proposals/${draftId}`, {
+    token: owner.token,
+    companyId: meridian,
+  });
+  eq('a submitted schedule is visible to the hiring company', nowVisible.status, 200);
+  eq('...from its side of the edge', nowVisible.json.proposal.side, 'client');
+
+  // 10 ── Denied: the provider cannot approve its own rates, at any role.
+  const selfApprove = await call('POST', `/v1/rate-proposals/${draftId}/approve`, {
+    token: providerUser.token,
+    companyId: northgate,
+    body: {},
+  });
+  eq('the provider cannot approve its own schedule', selfApprove.status, 403);
+
+  const memberApprove = await call('POST', `/v1/rate-proposals/${draftId}/approve`, {
+    token: memberUser.token,
+    companyId: meridian,
+    body: {},
+  });
+  eq('a MEMBER in the hiring company cannot approve', memberApprove.status, 403);
+
+  // 11 ── Rejected → corrected. Rejection needs a reason.
+  const rejectNoReason = await call('POST', `/v1/rate-proposals/${draftId}/reject`, {
+    token: owner.token,
+    companyId: meridian,
+    body: {},
+  });
+  eq('a rejection without a reason is refused', rejectNoReason.status, 422);
+
+  const rejected = await call('POST', `/v1/rate-proposals/${draftId}/reject`, {
+    token: owner.token,
+    companyId: meridian,
+    body: { reason: 'Sunday rate is above the framework cap' },
+  });
+  eq('the hiring company rejects with a reason', rejected.status, 200);
+  eq('...and the reason is on the record', rejected.json.proposal.decisionReason,
+    'Sunday rate is above the framework cap');
+
+  const editRejected = await call('PATCH', `/v1/rate-proposals/${draftId}`, {
+    token: providerUser.token,
+    companyId: northgate,
+    body: { note: 'trying to fix it in place' },
+  });
+  eq('a rejected schedule cannot be edited — correction is a successor', editRejected.status, 409);
+
+  const successor = await call('POST', '/v1/rate-proposals', {
+    token: providerUser.token,
+    companyId: northgate,
+    body: {
+      engagementId: cEngagement,
+      effectiveFrom: futureFrom,
+      predecessorProposalId: draftId,
+      note: 'Sunday reduced to the cap',
+      lines: [
+        {
+          operation: 'REPLACE',
+          roleId,
+          rateLabel: 'MON_FRI_DAY',
+          rateMode: 'HOURLY',
+          hourlyRateCents: 5500,
+          otHourlyRateCents: 8250,
+          replacesRateCardId: livePayCard.id,
+        },
+        { operation: 'CREATE', roleId, rateLabel: 'SUNDAY', rateMode: 'HOURLY', hourlyRateCents: 7500 },
+      ],
+    },
+  });
+  eq('the provider clones the rejection into a successor', successor.status, 201);
+  const successorId = successor.json.proposal.id as string;
+  eq('...and the chain is walkable', successor.json.proposal.predecessorProposalId, draftId);
+
+  await call('POST', `/v1/rate-proposals/${successorId}/submit`, {
+    token: providerUser.token,
+    companyId: northgate,
+  });
+
+  // 12 ── Approval is one transaction that writes immutable versions.
+  const cApproved = await call('POST', `/v1/rate-proposals/${successorId}/approve`, {
+    token: owner.token,
+    companyId: meridian,
+    body: {},
+  });
+  eq('the hiring company approves the successor', cApproved.status, 200);
+  eq('...it is APPROVED', cApproved.json.proposal.status, 'APPROVED');
+  eq('...two new immutable versions were written', cApproved.json.rateCardIds.length, 2);
+  eq('...and the replaced version was superseded', cApproved.json.supersededRateCardIds, [livePayCard.id]);
+
+  // The chain stays linear. Checked *here* rather than right after the clone: while
+  // the successor was still open, the one-open-per-edge index fired first, so this
+  // branch is only reachable once the successor itself is terminal.
+  const secondSuccessor = await call('POST', '/v1/rate-proposals', {
+    token: providerUser.token,
+    companyId: northgate,
+    body: {
+      engagementId: cEngagement,
+      effectiveFrom: futureFrom,
+      predecessorProposalId: draftId,
+      lines: [{ operation: 'CREATE', roleId, rateLabel: 'DAILY', rateMode: 'DAILY', dailyRateCents: 1 }],
+    },
+  });
+  eq('a second correction of the same rejection is refused', secondSuccessor.status, 409);
+  check('...and names the successor rule, not the open-schedule rule',
+    /already been continued/i.test(secondSuccessor.json?.error?.message ?? ''),
+    secondSuccessor.json?.error?.message);
+
+  const cardsAfter = await db.query(
+    `select rate_label, hourly_rate_cents, version, locked, currency,
+            to_char(effective_from, 'YYYY-MM-DD') as effective_from,
+            to_char(effective_to, 'YYYY-MM-DD') as effective_to,
+            source_proposal_id, supersedes_rate_card_id
+       from rate_cards
+      where company_id = $1 and kind = 'PAY' and counterparty_company_id = $2
+      order by rate_label, version`,
+    [meridian, northgate]
+  );
+  const newMonFri = cardsAfter.rows.find(
+    (r: any) => r.rate_label === 'MON_FRI_DAY' && r.version === 2
+  );
+  eq('the successor version carries the approved amount', newMonFri?.hourly_rate_cents, 5500);
+  eq('...is locked', newMonFri?.locked, true);
+  eq('...carries the agreement currency', newMonFri?.currency, 'USD');
+  eq('...opens on the effective date', newMonFri?.effective_from, futureFrom);
+  eq('...is open-ended', newMonFri?.effective_to, null);
+  eq('...and points at the schedule that created it', newMonFri?.source_proposal_id, successorId);
+  eq('...and at the version it supersedes', newMonFri?.supersedes_rate_card_id, livePayCard.id);
+
+  const oldMonFri = cardsAfter.rows.find(
+    (r: any) => r.rate_label === 'MON_FRI_DAY' && r.version === 1
+  );
+  eq('the superseded version closes the day BEFORE the successor opens',
+    oldMonFri?.effective_to, dayOffset(29));
+
+  // 13 ── The one resolver agrees, on both sides of the effective date.
+  const resolveAfter = await call(
+    `GET`,
+    `/v1/rates/resolve?roleId=${roleId}&shiftType=WEEKDAY_DAY&date=${futureFrom}` +
+      `&kind=PAY&counterpartyId=${northgate}`,
+    { token: owner.token, companyId: meridian }
+  );
+  eq('on the effective date the resolver returns the new rate', resolveAfter.json.baseCents, 5500);
+  const resolveBefore = await call(
+    `GET`,
+    `/v1/rates/resolve?roleId=${roleId}&shiftType=WEEKDAY_DAY&date=${dayOffset(29)}` +
+      `&kind=PAY&counterpartyId=${northgate}`,
+    { token: owner.token, companyId: meridian }
+  );
+  eq('the day before, it still returns the old one', resolveBefore.json.baseCents, 5000);
+
+  // 14 ── Approved time keeps its frozen snapshot (§6). Repricing is not retroactive.
+  const snapshotAfter = await db.query(
+    `select resolved_rate from time_logs where id = $1`,
+    [logId]
+  );
+  eq('an already-approved time log keeps its frozen PAY snapshot',
+    snapshotAfter.rows[0]?.resolved_rate?.baseCents ?? null, 5000);
+
+  // 15 ── Immutability is the database's rule, not the route's.
+  const lockedCardId = cApproved.json.rateCardIds[0] as string;
+  let lockedAmountRefused = false;
+  try {
+    await db.query(`update rate_cards set hourly_rate_cents = 9999 where id = $1`, [lockedCardId]);
+  } catch {
+    lockedAmountRefused = true;
+  }
+  check('the database refuses to rewrite an approved rate', lockedAmountRefused);
+
+  let lockedDeleteRefused = false;
+  try {
+    await db.query(`delete from rate_cards where id = $1`, [lockedCardId]);
+  } catch {
+    lockedDeleteRefused = true;
+  }
+  check('...and refuses to delete one', lockedDeleteRefused);
+
+  let windowCloseAllowed = true;
+  try {
+    await db.query(
+      `update rate_cards set effective_to = effective_to where id = $1`,
+      [lockedCardId]
+    );
+  } catch {
+    windowCloseAllowed = false;
+  }
+  check('...while still allowing the window to be closed', windowCloseAllowed);
+
+  // The route refuses first, so an operator gets an explanation rather than a 500
+  // from the trigger, and is told what to do instead.
+  const patchLocked = await call('PATCH', `/v1/rate-cards/${lockedCardId}`, {
+    token: owner.token,
+    companyId: meridian,
+    body: { hourlyRateCents: 9999 },
+  });
+  eq('editing an approved rate through the API is refused', patchLocked.status, 409);
+  check('...and the refusal points at agreeing a new version',
+    /new effective version/i.test(patchLocked.json?.error?.message ?? ''),
+    patchLocked.json?.error?.message);
+  const deleteLocked = await call('DELETE', `/v1/rate-cards/${lockedCardId}`, {
+    token: owner.token,
+    companyId: meridian,
+  });
+  eq('deleting an approved rate through the API is refused', deleteLocked.status, 409);
+
+  const stillEditable = await call('PATCH', `/v1/rate-cards/${livePayCard.id}`, {
+    token: owner.token,
+    companyId: meridian,
+    body: { active: true },
+  });
+  eq('a hand-entered card that predates the workflow is still editable', stillEditable.status, 200);
+
+  const reApprove = await call('POST', `/v1/rate-proposals/${successorId}/approve`, {
+    token: owner.token,
+    companyId: meridian,
+    body: {},
+  });
+  eq('approving twice is a conflict, not a second set of rates', reApprove.status, 409);
+
+  // 16 ── Retroactive activation is refused by default, and needs an owner + reason.
+  const backdated = await call('POST', '/v1/rate-proposals', {
+    token: providerUser.token,
+    companyId: northgate,
+    body: {
+      engagementId: cEngagement,
+      effectiveFrom: pastFrom,
+      lines: [{ operation: 'CREATE', roleId, rateLabel: 'SHIFT', rateMode: 'SHIFT', shiftRateCents: 36000 }],
+    },
+  });
+  eq('a back-dated schedule can be drafted', backdated.status, 201);
+  const backdatedId = backdated.json.proposal.id as string;
+  await call('POST', `/v1/rate-proposals/${backdatedId}/submit`, {
+    token: providerUser.token,
+    companyId: northgate,
+  });
+
+  // A MANAGER in the hiring company may approve, but not back-date.
+  const managerInvite = await call('POST', '/v1/members/invite', {
+    token: owner.token,
+    companyId: meridian,
+    body: { email: `mgr+${RUN}@verify.crewquo.test`, role: 'MANAGER' },
+  });
+  const managerUser = await register('mgr', undefined, `mgr+${RUN}@verify.crewquo.test`);
+  await call('POST', `/v1/invites/${managerInvite.json.inviteToken}/accept`, {
+    token: managerUser.token,
+  });
+
+  const managerBackdates = await call('POST', `/v1/rate-proposals/${backdatedId}/approve`, {
+    token: managerUser.token,
+    companyId: meridian,
+    body: {},
+  });
+  eq('a manager cannot back-date a schedule', managerBackdates.status, 403);
+
+  const ownerBackdatesNoReason = await call('POST', `/v1/rate-proposals/${backdatedId}/approve`, {
+    token: owner.token,
+    companyId: meridian,
+    body: {},
+  });
+  eq('an owner back-dating without a reason is refused', ownerBackdatesNoReason.status, 422);
+
+  const ownerBackdates = await call('POST', `/v1/rate-proposals/${backdatedId}/approve`, {
+    token: owner.token,
+    companyId: meridian,
+    body: { retroactiveReason: 'Uplift agreed verbally on 1 July, papered late' },
+  });
+  eq('an owner may back-date with a reason', ownerBackdates.status, 200);
+  eq('...and the override is evidence on the record',
+    ownerBackdates.json.proposal.retroactiveReason,
+    'Uplift agreed verbally on 1 July, papered late');
+
+  // 17 ── Direct entry: the hiring company records a schedule agreed elsewhere.
+  const directEntry = await call('POST', `/v1/commercial-agreements/${cEngagement}/schedule`, {
+    token: owner.token,
+    companyId: meridian,
+    body: {
+      effectiveFrom: dayOffset(60),
+      note: 'Negotiated over email, recorded for the record',
+      lines: [
+        { operation: 'CREATE', roleId, rateLabel: 'MON_THU_NIGHT', rateMode: 'HOURLY', hourlyRateCents: 6500 },
+      ],
+    },
+  });
+  eq('the hiring company records an externally agreed schedule', directEntry.status, 201);
+  const directCard = await db.query(
+    `select locked, source_proposal_id from rate_cards where id = $1`,
+    [directEntry.json.rateCardIds[0]]
+  );
+  eq('...as a real immutable version, not a mutable shortcut', directCard.rows[0]?.locked, true);
+  eq('...with no source proposal, because there was no negotiation here',
+    directCard.rows[0]?.source_proposal_id, null);
+
+  const providerDirectEntry = await call('POST', `/v1/commercial-agreements/${cEngagement}/schedule`, {
+    token: providerUser.token,
+    companyId: northgate,
+    body: {
+      effectiveFrom: dayOffset(90),
+      lines: [{ operation: 'CREATE', roleId, rateLabel: 'DAILY', rateMode: 'DAILY', dailyRateCents: 99000 }],
+    },
+  });
+  eq('the provider cannot write its own rate through direct entry', providerDirectEntry.status, 403);
+
+  // 18 ── The agreement view is one request, from either side.
+  const agreementProvider = await call('GET', `/v1/commercial-agreements/${cEngagement}`, {
+    token: providerUser.token,
+    companyId: northgate,
+  });
+  eq('the provider reads the whole agreement', agreementProvider.status, 200);
+  eq('...from its own side', agreementProvider.json.agreement.side, 'provider');
+  eq('...seeing the terms it works under', agreementProvider.json.agreement.terms.paymentTermsDays, 30);
+  check('...and the PAY schedule in force is its own agreed rate',
+    agreementProvider.json.agreement.liveRates.length > 0);
+  const providerPayload = JSON.stringify(agreementProvider.json);
+  check('the provider payload carries no BILL amount and no margin',
+    !/"kind":"BILL"|margin/i.test(providerPayload));
+  eq('...and the rejected schedule is still in its history',
+    agreementProvider.json.agreement.proposals.some((p: any) => p.status === 'REJECTED'), true);
+
+  const agreementOutsider = await call('GET', `/v1/commercial-agreements/${cEngagement}`, {
+    token: clientUser.token,
+    companyId: harbour,
+  });
+  eq('an outsider 404s on the agreement', agreementOutsider.status, 404);
+
+  // 18b ── A company *default* PAY rate is agreed on this engagement too.
+  //
+  // The resolver falls back to a null-counterparty card (§6), so a company that
+  // priced a role once for everybody has a rate in force on every engagement. The
+  // agreement view has to say so: showing "no agreed rate" while the engine prices
+  // the work at the default is the screen and the engine disagreeing about money.
+  const sharedRole = await db.query(
+    `insert into role_catalog (company_id, name) values ($1, $2) returning id`,
+    [meridian, `Banksman ${RUN}`]
+  );
+  const sharedRoleId = sharedRole.rows[0].id as string;
+  const defaultCard = await call('POST', '/v1/rate-cards', {
+    token: owner.token,
+    companyId: meridian,
+    body: {
+      kind: 'PAY',
+      counterpartyCompanyId: null,
+      roleId: sharedRoleId,
+      rateMode: 'HOURLY',
+      rateLabel: 'MON_FRI_DAY',
+      hourlyRateCents: 4100,
+      effectiveFrom: dayOffset(-1),
+    },
+  });
+  eq('a company-default PAY rate is created', defaultCard.status, 201);
+
+  const withDefault = await call('GET', `/v1/commercial-agreements/${cEngagement}`, {
+    token: providerUser.token,
+    companyId: northgate,
+  });
+  const inherited = withDefault.json.agreement.liveRates.find(
+    (r: any) => r.roleId === sharedRoleId
+  );
+  check('the agreement shows a rate the engagement inherits from the company default',
+    Boolean(inherited), withDefault.json.agreement.liveRates.map((r: any) => r.roleName));
+  eq('...at the default amount', inherited?.amountCents, 4100);
+  eq('...marked as inherited rather than engagement-specific', inherited?.scope, 'COMPANY_DEFAULT');
+
+  const specific = withDefault.json.agreement.liveRates.find(
+    (r: any) => r.roleId === roleId && r.rateLabel === 'MON_FRI_DAY' && r.scope === 'ENGAGEMENT'
+  );
+  check('...while a counterparty-specific rate is marked as this engagement\u2019s own',
+    Boolean(specific));
+
+  // And a proposal against the inherited rate sees it as the current amount, so the
+  // reviewer's "now" column matches what the resolver would actually charge.
+  const overrideDraft = await call('POST', '/v1/rate-proposals', {
+    token: providerUser.token,
+    companyId: northgate,
+    body: {
+      engagementId: cEngagement,
+      effectiveFrom: dayOffset(120),
+      lines: [
+        {
+          operation: 'CREATE',
+          roleId: sharedRoleId,
+          rateLabel: 'MON_FRI_DAY',
+          rateMode: 'HOURLY',
+          hourlyRateCents: 4500,
+        },
+      ],
+    },
+  });
+  eq('a provider proposes its own rate over the company default', overrideDraft.status, 201);
+  eq('...and the reviewer is shown the inherited default as the current amount',
+    overrideDraft.json.proposal.lines[0].currentAmountCents, 4100);
+  await call('DELETE', `/v1/rate-proposals/${overrideDraft.json.proposal.id}`, {
+    token: providerUser.token,
+    companyId: northgate,
+  });
+
+  // 19 ── Entitlement: approving writes the HIRING company's cards, so its plan
+  // gates it — and the provider's plan never does. Proven on a purpose-built edge
+  // whose hiring company has `rate_cards` removed by override, set before anything
+  // reads its entitlements (the resolver memoizes for 60s).
+  const gatedOwner = await register('gatedhirer', `Tinbridge Works ${RUN}`);
+  const tinbridge = gatedOwner.companyId!;
+  await subscribe(tinbridge, 'pro'); // operates_downstream, so it can hire at all
+  await db.query(
+    `insert into company_entitlement_overrides (company_id, feature_key, feature_enabled, note)
+     values ($1, 'rate_cards', false, 'verify-e2e: prove the hiring-side gate')`,
+    [tinbridge]
+  );
+
+  const gatedProviderRes = await call('POST', '/v1/providers', {
+    token: gatedOwner.token,
+    companyId: tinbridge,
+    body: { name: `Ledbury Hire ${RUN}`, email: `ledbury+${RUN}@verify.crewquo.test` },
+  });
+  eq('the gated hiring company can still add a subcontractor', gatedProviderRes.status, 201);
+  const ledburyUser = await register('ledbury', undefined, `ledbury+${RUN}@verify.crewquo.test`);
+  await call('POST', `/v1/invites/${gatedProviderRes.json.inviteToken}/accept`, {
+    token: ledburyUser.token,
+  });
+  const ledbury = gatedProviderRes.json.provider.providerCompanyId as string;
+  const gatedEdge = gatedProviderRes.json.provider.engagementId as string;
+
+  // A role in the HIRING company's catalog — the catalog a PAY card resolves in.
+  const gatedRole = await db.query(
+    `insert into role_catalog (company_id, name) values ($1, $2) returning id`,
+    [tinbridge, `Banksman ${RUN}`]
+  );
+  const gatedRoleId = gatedRole.rows[0].id as string;
+
+  const gatedDraft = await call('POST', '/v1/rate-proposals', {
+    token: ledburyUser.token,
+    companyId: ledbury,
+    body: {
+      engagementId: gatedEdge,
+      effectiveFrom: futureFrom,
+      lines: [
+        { operation: 'CREATE', roleId: gatedRoleId, rateLabel: 'MON_FRI_DAY', rateMode: 'HOURLY', hourlyRateCents: 4200 },
+      ],
+    },
+  });
+  // The whole point of the free tier is that a subcontractor can ask for a rate.
+  eq('a provider proposes without any feature of its own', gatedDraft.status, 201);
+  await call('POST', `/v1/rate-proposals/${gatedDraft.json.proposal.id}/submit`, {
+    token: ledburyUser.token,
+    companyId: ledbury,
+  });
+
+  const gatedApprove = await call('POST', `/v1/rate-proposals/${gatedDraft.json.proposal.id}/approve`, {
+    token: gatedOwner.token,
+    companyId: tinbridge,
+    body: {},
+  });
+  eq('a hiring company without rate_cards cannot hold an agreed schedule', gatedApprove.status, 403);
+  eq('...and the refusal names the feature that would unlock it',
+    gatedApprove.json?.error?.details?.feature, 'rate_cards');
+
+  // 20 ── Payment terms reach the invoice, and the PO ceiling is enforced at issue.
+  // This edge is meridian(provider) ⇄ harbour(client): harbour is the hiring side,
+  // so harbour sets the ceiling and meridian is the one refused. Which is the real
+  // shape — a client hands you a PO with a cap on it.
+  const invoiceEdge = clientRes.json.client.engagementId as string;
+  const harbourTerms = await call('PATCH', `/v1/engagements/${invoiceEdge}/terms`, {
+    token: clientUser.token,
+    companyId: harbour,
+    body: { paymentTermsDays: 45, purchaseOrderReference: 'HG-PO-88', purchaseOrderCeilingCents: 70000 },
+  });
+  eq('the hiring client sets a PO reference and ceiling', harbourTerms.status, 200);
+
+  const termsInvoice = await call('POST', '/v1/invoices', {
+    token: owner.token,
+    companyId: meridian,
+    body: { projectId, includeApprovedWork: false },
+  });
+  eq('a new draft invoice is created', termsInvoice.status, 201);
+  const termsInvoiceId = termsInvoice.json.invoice.id as string;
+  check('...and its due date defaults from the engagement’s payment terms',
+    Boolean(termsInvoice.json.invoice.dueAt), termsInvoice.json.invoice.dueAt);
+  const dueDays = termsInvoice.json.invoice.dueAt
+    ? Math.round(
+        (new Date(termsInvoice.json.invoice.dueAt).getTime() - Date.now()) / 86_400_000
+      )
+    : null;
+  eq('...45 days out, as agreed', dueDays, 45);
+
+  await call('POST', `/v1/invoices/${termsInvoiceId}/items`, {
+    token: owner.token,
+    companyId: meridian,
+    body: { sourceType: 'MANUAL', description: 'Standby crew', quantity: 1, unitAmountCents: 1000 },
+  });
+  const breached = await call('POST', `/v1/invoices/${termsInvoiceId}/issue`, {
+    token: owner.token,
+    companyId: meridian,
+  });
+  // 69550 already issued and paid on this edge + 1000 = 70550, over the 70000 cap.
+  eq('issuing over the PO ceiling is refused', breached.status, 422);
+  check('...and the refusal names the ceiling and what is already committed',
+    /700\.00/.test(breached.json?.error?.message ?? '') &&
+      /695\.50/.test(breached.json?.error?.message ?? ''),
+    breached.json?.error?.message);
+
+  const raised = await call('PATCH', `/v1/engagements/${invoiceEdge}/terms`, {
+    token: clientUser.token,
+    companyId: harbour,
+    body: { purchaseOrderCeilingCents: 100000, reason: 'PO varied to $1,000' },
+  });
+  eq('the hiring client raises the ceiling', raised.status, 200);
+  const nowIssues = await call('POST', `/v1/invoices/${termsInvoiceId}/issue`, {
+    token: owner.token,
+    companyId: meridian,
+  });
+  eq('...and the same invoice now issues', nowIssues.status, 200);
+
+  // 21 ── §36 record_revisions: before/after on the terms, with the reason.
+  const revisions = await db.query(
+    `select revision, changed_fields, reason, before, after
+       from record_revisions
+      where entity_type = 'engagement_terms' and entity_id = $1
+      order by revision`,
+    [invoiceEdge]
+  );
+  eq('both terms changes wrote a revision', revisions.rows.length, 2);
+  eq('...the second records only the field that moved',
+    revisions.rows[1]?.changed_fields, ['purchaseOrderCeilingCents']);
+  eq('...with both sides of the change',
+    [revisions.rows[1]?.before?.purchaseOrderCeilingCents, revisions.rows[1]?.after?.purchaseOrderCeilingCents],
+    [70000, 100000]);
+  eq('...and the reason the operator gave', revisions.rows[1]?.reason, 'PO varied to $1,000');
+
+  const rateRevisions = await db.query(
+    `select count(*)::int as n from record_revisions
+      where entity_type = 'rate_card' and reason is not null`
+  );
+  check('every approved rate revision carries a reason (§36 starred)', rateRevisions.rows[0].n > 0);
+
+  // 22 ── Acceptance: a direct-created engagement is PENDING until the provider agrees.
+  const standalone = await register('standalone', `Fenwick Plant ${RUN}`);
+  const fenwick = standalone.companyId!;
+  const directEdge = await call('POST', '/v1/engagements', {
+    token: owner.token,
+    companyId: meridian,
+    body: { providerCompanyId: fenwick },
+  });
+  eq('a hiring company creates an engagement to a real company', directEdge.status, 201);
+  eq('...and it is PENDING, not ACTIVE — you cannot bind another company',
+    directEdge.json.engagement.status, 'PENDING');
+  const directEdgeId = directEdge.json.engagement.id as string;
+
+  const hirerAccepts = await call('POST', `/v1/engagements/${directEdgeId}/accept`, {
+    token: owner.token,
+    companyId: meridian,
+    body: {},
+  });
+  eq('the hiring company cannot accept on the provider’s behalf', hirerAccepts.status, 403);
+
+  const providerAccepts = await call('POST', `/v1/engagements/${directEdgeId}/accept`, {
+    token: standalone.token,
+    companyId: fenwick,
+    body: {},
+  });
+  eq('the provider accepts', providerAccepts.status, 200);
+  eq('...and the edge goes ACTIVE', providerAccepts.json.engagement.status, 'ACTIVE');
+  check('...stamped with when', Boolean(providerAccepts.json.terms.providerAcceptedAt));
+
+  const acceptTwice = await call('POST', `/v1/engagements/${directEdgeId}/accept`, {
+    token: standalone.token,
+    companyId: fenwick,
+    body: {},
+  });
+  eq('accepting an already-active engagement is a conflict', acceptTwice.status, 409);
+
+  // 23 ── Assignment acceptance, recorded and NOT gating work capture.
+  const assign = await call('POST', `/v1/projects/${projectId}/assignments`, {
+    token: owner.token,
+    companyId: meridian,
+    body: { providerCompanyId: fenwick },
+  });
+  eq('the provider is assigned to a project', assign.status, 201);
+  const fenwickAssignment = assign.json.data.find((a: any) => a.providerCompanyId === fenwick);
+  eq('...and the assignment awaits their acceptance', fenwickAssignment?.acceptance, 'PENDING');
+
+  const pending = await call('GET', '/v1/projects/assignments/pending', {
+    token: standalone.token,
+    companyId: fenwick,
+  });
+  eq('the provider sees it in its pending list', pending.status, 200);
+  eq('...exactly once', pending.json.data.length, 1);
+
+  const declined = await call(
+    'POST',
+    `/v1/projects/assignments/${fenwickAssignment.id}/decline`,
+    { token: standalone.token, companyId: fenwick, body: { reason: 'No plant free that week' } }
+  );
+  eq('the provider declines with a reason', declined.status, 200);
+  eq('...which is on the record', declined.json.assignment.decisionReason, 'No plant free that week');
+  eq('...and a decline leaves no acceptedAt, because it was not accepted',
+    declined.json.assignment.acceptedAt, null);
+
+  const reAccepted = await call(
+    'POST',
+    `/v1/projects/assignments/${fenwickAssignment.id}/accept`,
+    { token: standalone.token, companyId: fenwick, body: {} }
+  );
+  eq('a declined assignment can still be accepted later', reAccepted.status, 200);
+  eq('...and reads as accepted', reAccepted.json.assignment.acceptance, 'ACCEPTED');
+
+  const hirerDecides = await call(
+    'POST',
+    `/v1/projects/assignments/${fenwickAssignment.id}/decline`,
+    { token: owner.token, companyId: meridian, body: {} }
+  );
+  eq('the hiring company cannot decide an assignment for the provider', hirerDecides.status, 403);
+
+  // Work capture must still function while an assignment is unaccepted — the whole
+  // reason acceptance is not a gate (§9 of the packet).
+  const northgateAssignment = await db.query(
+    `select id from project_assignments where project_id = $1 and provider_company_id = $2`,
+    [projectId, northgate]
+  );
+  await db.query(
+    `update project_assignments set acceptance = 'PENDING', accepted_at = null,
+            accepted_by_user_id = null where id = $1`,
+    [northgateAssignment.rows[0].id]
+  );
+  const logWhileUnaccepted = await call('POST', '/v1/time-logs', {
+    token: providerUser.token,
+    companyId: northgate,
+    body: {
+      projectId,
+      roleId,
+      shiftType: 'WEEKDAY_DAY',
+      workDate: dayOffset(-2),
+      hoursRegular: 4,
+      hoursOt: 0,
+    },
+  });
+  eq('a crew can still log time on an unaccepted assignment', logWhileUnaccepted.status, 201);
+  await db.query(
+    `update project_assignments set acceptance = 'ACCEPTED', accepted_at = now() where id = $1`,
+    [northgateAssignment.rows[0].id]
+  );
+
+  // 24 ── The trail, and a real consequence of where these actions are recorded.
+  //
+  // `rate_proposal.*` rows are written against the company whose record moved: the
+  // provider for submit/withdraw, the hiring company for approve/reject. But a
+  // provider is usually on the free Crew plan, which has `audit_retention_days: 0`
+  // and no `audit_visibility` — so `recordAudit` writes nothing for it and it cannot
+  // read a trail either. Both halves are asserted, because this is a product gap
+  // worth seeing rather than a bug to paper over: the negotiation is recorded only
+  // on the side that pays for retention.
+  const providerTrail = await call('GET', '/v1/audit-logs?entityType=RATE_PROPOSAL', {
+    token: providerUser.token,
+    companyId: northgate,
+  });
+  eq('a free-plan provider cannot read a trail at all', providerTrail.status, 403);
+  eq('...and the refusal names the feature', providerTrail.json?.error?.details?.feature,
+    'audit_visibility');
+  const providerRows = await db.query(
+    `select count(*)::int as n from audit_logs where company_id = $1`,
+    [northgate]
+  );
+  eq('...consistently, zero rows were written for it (retention 0 ⇒ nothing written)',
+    providerRows.rows[0].n, 0);
+
+  const hiringTrail = await call('GET', '/v1/audit-logs?entityType=RATE_PROPOSAL', {
+    token: owner.token,
+    companyId: meridian,
+  });
+  eq('the hiring company reads its own trail', hiringTrail.status, 200);
+  check('...holding both of its decisions',
+    ['rate_proposal.approved', 'rate_proposal.rejected'].every((action) =>
+      hiringTrail.json.data.some((r: any) => r.action === action)),
+    hiringTrail.json.data.map((r: any) => r.action));
+  // Keyed on the proposal id, not just the action: the trail is newest-first and
+  // this section approves twice, so `find` by action alone returns the back-dated
+  // single-line schedule rather than the two-line successor.
+  const successorApproval = hiringTrail.json.data.find(
+    (r: any) => r.action === 'rate_proposal.approved' && r.entityId === successorId
+  );
+  check('...and the approval names the versions it wrote',
+    (successorApproval?.changes?.rateCardIds ?? []).length === 2,
+    successorApproval?.changes);
+  eq('...and the version it superseded', successorApproval?.changes?.supersededRateCardIds,
+    [livePayCard.id]);
+
+  const termsTrail = await call('GET', '/v1/audit-logs?entityType=ENGAGEMENT', {
+    token: owner.token,
+    companyId: meridian,
+  });
+  check('a terms change is audited with both sides of the change',
+    termsTrail.json.data.some(
+      (r: any) => r.action === 'engagement.terms_updated' && r.changes?.after?.paymentTermsDays === 30
+    ));
+
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);
   if (failures.length === 0) {
