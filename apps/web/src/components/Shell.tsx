@@ -13,11 +13,8 @@ import { useAuth } from '@/auth/AuthProvider';
 import { ApiError } from '@/api/client';
 import { useEntitlements } from '@/lib/useEntitlements';
 import { titleCase } from '@/lib/format';
-import {
-  landingForWorkspaceView,
-  useWorkspace,
-  WORKSPACE_VIEW_LABELS,
-} from '@/workspaces/WorkspaceProvider';
+import { resolveLandingRoute } from '@crewquo/shared';
+import { useWorkspace, WORKSPACE_VIEW_LABELS } from '@/workspaces/WorkspaceProvider';
 
 interface NavItem {
   href: string;
@@ -284,7 +281,7 @@ export function Shell({ children }: { children: ReactNode }) {
   const showViewSwitcher = platformScreen || Boolean(workspace.activeWorkspace);
   const brandHref = platformScreen
     ? '/admin'
-    : landingForWorkspaceView(workspace.selectedView);
+    : resolveLandingRoute({ view: workspace.selectedView });
   const companySelectorValue = platformScreen ? 'PLATFORM' : (companyId ?? '');
 
   return (

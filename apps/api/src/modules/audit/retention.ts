@@ -8,8 +8,8 @@
  * storage decision. Pure function, no I/O, so the mapping is unit-tested.
  */
 export type AuditExpiry =
-  /** Retention is 0 (or unconfigured): the company keeps no trail — skip the write. */
-  | { kind: 'skip' }
+  /** Retention is 0 (or unconfigured): purge every row for the company. */
+  | { kind: 'none' }
   /** The plan grants unlimited retention: stamped 'infinity', never purged. */
   | { kind: 'infinity' }
   | { kind: 'days'; days: number };
@@ -21,6 +21,6 @@ export type AuditExpiry =
  */
 export function auditExpiry(retentionDays: number | null | undefined): AuditExpiry {
   if (retentionDays === null) return { kind: 'infinity' };
-  if (retentionDays === undefined || retentionDays <= 0) return { kind: 'skip' };
+  if (retentionDays === undefined || retentionDays <= 0) return { kind: 'none' };
   return { kind: 'days', days: Math.floor(retentionDays) };
 }

@@ -9,6 +9,25 @@ export const WORKSPACE_VIEWS = ['OPERATIONS', 'SUBCONTRACTOR', 'CLIENT'] as cons
 export const workspaceViewSchema = z.enum(WORKSPACE_VIEWS);
 export type WorkspaceView = z.infer<typeof workspaceViewSchema>;
 
+/** One canonical post-auth/view-switch destination decision for every client. */
+export function resolveLandingRoute(input: {
+  view?: WorkspaceView | null;
+  isSuperAdmin?: boolean;
+  requestedPath?: string | null;
+}): string {
+  const requested = input.requestedPath;
+  // A single leading slash is an internal path. Reject protocol-relative URLs
+  // and backslashes so an auth `next` value cannot become an open redirect.
+  if (requested?.startsWith('/') && !requested.startsWith('//') && !requested.includes('\\')) {
+    return requested;
+  }
+  if (input.isSuperAdmin) return '/admin';
+  if (input.view === 'SUBCONTRACTOR') return '/work';
+  if (input.view === 'CLIENT') return '/portal';
+  if (input.view === 'OPERATIONS') return '/app';
+  return '/profile';
+}
+
 export interface WorkspaceEligibilityFacts {
   operationsEntitled: boolean;
   hasProviderRelationship: boolean;

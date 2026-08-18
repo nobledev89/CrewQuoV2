@@ -23,6 +23,12 @@ function Operations() {
     <Section title="Service health"><div className="cq-kpi-grid">{data.services.map((service) => (
       <div className="cq-kpi" key={service.name}><span className="cq-overline">{service.name}</span><Badge tone={service.status === 'HEALTHY' ? 'success' : service.status === 'ATTENTION' ? 'warning' : 'neutral'}>{titleCase(service.status)}</Badge><span className="cq-muted">{service.detail}</span></div>
     ))}</div></Section>
+    <Section title="Durable delivery"><div className="cq-kpi-grid">
+      <div className="cq-kpi"><span className="cq-overline">Outbox ready</span><strong>{data.delivery.pendingOutbox}</strong><span className="cq-muted">{data.delivery.processingOutbox} processing</span></div>
+      <div className="cq-kpi"><span className="cq-overline">Webhooks ready</span><strong>{data.delivery.receivedWebhooks}</strong><span className="cq-muted">{data.delivery.processingWebhooks} processing</span></div>
+      <div className="cq-kpi"><span className="cq-overline">Dead letters</span><strong>{data.delivery.deadOutbox + data.delivery.deadWebhooks}</strong><span className="cq-muted">Outbox and webhook failures</span></div>
+    </div></Section>
+    <DeadLetters rows={data.deadLetters} onChanged={operations.reload} />
     <CompanyCreationQueue />
     <Section title="Pending invitations" className="cq-section--table">{data.pendingInvites.length ? <Table label="Pending invitations" compact><thead><tr><th>Company</th><th>Kind</th><th>Recipient</th><th>Expires</th></tr></thead><tbody>
       {data.pendingInvites.map((invite) => <tr key={invite.id}><td>{invite.companyName}</td><td>{titleCase(invite.kind)}</td><td>{invite.email}</td><td>{formatDateTime(invite.expiresAt)}</td></tr>)}
@@ -31,6 +37,41 @@ function Operations() {
       {data.expiringOverrides.map((override) => <tr key={override.id}><td>{override.companyName}</td><td>{titleCase(override.subject)}</td><td>{formatDateTime(override.expiresAt)}</td></tr>)}
     </tbody></Table> : <p className="cq-muted">No overrides expire in the next 30 days.</p>}</Section>
   </Stack>;
+}
+
+function DeadLetters({ rows, onChanged }: {
+  rows: AdminOperations['deadLetters'];
+  onChanged: () => void;
+}) {
+  const { session } = useAuth();
+  const [reason, setReason] = useState('');
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function replay(source: 'OUTBOX' | 'WEBHOOK', id: string) {
+    if (!session || reason.trim().length < 3) {
+      setError('Give a reason before replaying a failed delivery.');
+      return;
+    }
+    setBusyId(id); setError(null);
+    try {
+      await api.adminReplayDelivery(session.accessToken, source, id, reason.trim());
+      setReason('');
+      onChanged();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not replay the delivery');
+    } finally { setBusyId(null); }
+  }
+
+  return <Section title="Dead-letter queue" description="Terminal failures stay here until a Super Admin deliberately replays them." className="cq-section--table">
+    {rows.length ? <>
+      <div className="cq-table-toolbar"><Input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Replay reason (required)" aria-label="Replay reason" maxLength={1000} /></div>
+      <ErrorText>{error}</ErrorText>
+      <Table label="Dead-letter deliveries" compact><thead><tr><th>Source</th><th>Kind</th><th>Attempts</th><th>Failure</th><th>Failed</th><th><span className="cq-table__actions">Action</span></th></tr></thead><tbody>
+        {rows.map((row) => <tr key={`${row.source}:${row.id}`}><td>{titleCase(row.source)}</td><td>{row.kind}</td><td>{row.attempts}</td><td>{row.lastError ?? 'No error detail'}</td><td>{formatDateTime(row.failedAt)}</td><td className="cq-table__actions"><Button size="sm" variant="secondary" disabled={busyId === row.id || reason.trim().length < 3} onClick={() => void replay(row.source, row.id)}>Replay</Button></td></tr>)}
+      </tbody></Table>
+    </> : <p className="cq-muted">No dead-lettered deliveries.</p>}
+  </Section>;
 }
 
 /**

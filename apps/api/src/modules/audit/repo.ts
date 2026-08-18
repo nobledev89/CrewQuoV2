@@ -54,17 +54,9 @@ export interface InsertAuditLog {
   changes: Record<string, unknown> | null;
   description: string | null;
   visibleToClient: boolean;
-  expiry: Exclude<AuditExpiry, { kind: 'skip' }>;
 }
 
 export async function insertAuditLog(input: InsertAuditLog, runner?: Queryable): Promise<void> {
-  // 'infinity' is a real timestamptz in Postgres, so unlimited retention needs no
-  // sentinel date and never matches the purge's `expires_at < now()`.
-  const expiresAt =
-    input.expiry.kind === 'infinity'
-      ? `'infinity'::timestamptz`
-      : `now() + ($9 || ' days')::interval`;
-
   const params: unknown[] = [
     input.companyId,
     input.actorUserId,
@@ -75,12 +67,11 @@ export async function insertAuditLog(input: InsertAuditLog, runner?: Queryable):
     input.description,
     input.visibleToClient,
   ];
-  if (input.expiry.kind === 'days') params.push(String(input.expiry.days));
 
   await query(
     `insert into audit_logs (company_id, actor_user_id, action, entity_type, entity_id,
                              changes, description, visible_to_client, expires_at)
-     values ($1,$2,$3,$4,$5,$6::jsonb,$7,$8, ${expiresAt})`,
+     values ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,'infinity'::timestamptz)`,
     params,
     runner
   );
@@ -145,10 +136,25 @@ async function runAuditQuery(
   return rows.map(toAuditLogView);
 }
 
+/** Companies currently holding audit rows, used by the policy-driven purge. */
+export async function listAuditCompanyIds(): Promise<string[]> {
+  const rows = await query<{ company_id: string }>('select distinct company_id from audit_logs');
+  return rows.map((row) => row.company_id);
+}
+
 /** Retention purge — the only delete path for audit_logs. Returns rows removed. */
-export async function deleteExpiredAuditLogs(): Promise<number> {
+export async function deleteExpiredAuditLogsForCompany(
+  companyId: string,
+  expiry: AuditExpiry
+): Promise<number> {
+  if (expiry.kind === 'infinity') return 0;
+  const predicate = expiry.kind === 'none'
+    ? 'true'
+    : `created_at < now() - ($2 || ' days')::interval`;
+  const params = expiry.kind === 'days' ? [companyId, String(expiry.days)] : [companyId];
   const rows = await query<{ id: string }>(
-    `delete from audit_logs where expires_at < now() returning id`
+    `delete from audit_logs where company_id = $1 and ${predicate} returning id`,
+    params
   );
   return rows.length;
 }

@@ -490,6 +490,7 @@ function CompanyDetail({
       </Section>
 
       <SubscriptionLevers
+        key={company.id}
         token={token}
         company={company}
         plans={plans}
@@ -524,21 +525,6 @@ function SubscriptionLevers({
   const [busy, setBusy] = useState<'plan' | 'trial' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
-
-  /*
-   * Re-seed only when a *different* company is opened.
-   *
-   * Keyed on `company.id` alone on purpose: the plan and status are exactly what these
-   * controls change, so depending on them would make every successful action re-seed the
-   * form and clear the confirmation it had just set.
-   */
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    setPlanId(company.planId);
-    setStatus(company.subscriptionStatus ?? 'ACTIVE');
-    setDone(null);
-    setError(null);
-  }, [company.id]);
 
   async function forcePlan() {
     setBusy('plan');

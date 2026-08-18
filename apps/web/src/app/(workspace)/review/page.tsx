@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import Link from 'next/link';
 import type {
   EngagementView,
@@ -151,12 +151,12 @@ function Review() {
     return [...names.entries()].sort((a, b) => a[1].localeCompare(b[1]));
   }, [timeLogs.items, expenses.items, clientEngagements]);
 
-  function inScope(row: { engagementId: string; projectId: string; providerCompanyId: string }): boolean {
+  const inScope = useCallback((row: { engagementId: string; projectId: string; providerCompanyId: string }): boolean => {
     if (!clientEngagements.has(row.engagementId)) return false;
     if (projectFilter !== 'ALL' && row.projectId !== projectFilter) return false;
     if (providerFilter !== 'ALL' && row.providerCompanyId !== providerFilter) return false;
     return true;
-  }
+  }, [clientEngagements, projectFilter, providerFilter]);
 
   const visibleTime = useMemo(
     () =>
@@ -165,17 +165,17 @@ function Review() {
         .filter((l) => (fromDate ? l.workDate >= fromDate : true))
         .filter((l) => (toDate ? l.workDate <= toDate : true))
         .sort((a, b) => a.workDate.localeCompare(b.workDate) || a.id.localeCompare(b.id)),
-    [timeLogs.items, clientEngagements, projectFilter, providerFilter, fromDate, toDate]
+    [timeLogs.items, inScope, fromDate, toDate]
   );
 
   const visibleExpenses = useMemo(
     () => expenses.items.filter(inScope),
-    [expenses.items, clientEngagements, projectFilter, providerFilter]
+    [expenses.items, inScope]
   );
 
   const visibleSubmissions = useMemo(
     () => submissions.items.filter(inScope),
-    [submissions.items, clientEngagements, projectFilter, providerFilter]
+    [submissions.items, inScope]
   );
 
   const visibleIds =

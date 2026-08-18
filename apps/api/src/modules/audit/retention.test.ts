@@ -6,13 +6,13 @@ describe('auditExpiry', () => {
     expect(auditExpiry(null)).toEqual({ kind: 'infinity' });
   });
 
-  it('skips the write when the plan grants no retention', () => {
-    expect(auditExpiry(0)).toEqual({ kind: 'skip' });
+  it('marks every row for deletion when the plan grants no retention', () => {
+    expect(auditExpiry(0)).toEqual({ kind: 'none' });
   });
 
   it('skips when the plan has no audit_retention_days at all', () => {
     // Misconfiguration: fail closed rather than silently retaining forever.
-    expect(auditExpiry(undefined)).toEqual({ kind: 'skip' });
+    expect(auditExpiry(undefined)).toEqual({ kind: 'none' });
   });
 
   it('maps the seeded plan windows to day counts', () => {
@@ -23,6 +23,6 @@ describe('auditExpiry', () => {
 
   it('floors fractional days and rejects negatives', () => {
     expect(auditExpiry(7.9)).toEqual({ kind: 'days', days: 7 });
-    expect(auditExpiry(-5)).toEqual({ kind: 'skip' });
+    expect(auditExpiry(-5)).toEqual({ kind: 'none' });
   });
 });

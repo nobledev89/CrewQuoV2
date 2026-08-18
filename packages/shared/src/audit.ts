@@ -54,10 +54,7 @@ export const AUDIT_ACTIONS = [
   'note.updated',
   'note.deleted',
   'company.merged',
-  // No `company.created`: a company has no subscription at the instant it is
-  // created, so it resolves to the free plan and `audit_retention_days: 0` would
-  // discard the row anyway. Creation is recorded in `platform_audit_logs`, which
-  // no plan can suppress (§3.1.1).
+  'company.created',
   'company.updated',
   'membership.updated',
   'membership.removed',

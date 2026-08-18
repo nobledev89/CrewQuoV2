@@ -16,11 +16,12 @@ import {
   type AdminCompaniesResponse,
 } from '@crewquo/shared';
 import { asyncHandler } from '../../http/asyncHandler';
+import { withTransaction } from '../../db';
 import { getCtx } from '../../http/context';
 import { AppError } from '../../http/errors';
 import { param, uuidParam } from '../../http/params';
-import { clearEntitlementsCache, invalidateEntitlements } from '../entitlements/cache';
 import { recordAudit } from '../audit/record';
+import { replayDeliveryDeadLetter } from '../delivery/repo';
 import {
   createPlan,
   getPlan,
@@ -64,10 +65,8 @@ import {
 /**
  * Super-admin console API (§5B). Mounted behind requireAuth + requireSuperAdmin.
  *
- * Every write that can change what a company is allowed to do clears or
- * invalidates the entitlement cache, so a gate re-resolves on the next request
- * rather than up to 60 seconds later — a support action nobody can see take
- * effect gets performed twice.
+ * Entitlements resolve from Postgres on every request, so a successful plan,
+ * subscription or override write is observable by the very next gate.
  */
 export const adminRouter = Router();
 
@@ -158,6 +157,32 @@ adminRouter.get(
   })
 );
 
+adminRouter.post(
+  '/delivery/:source/:id/replay',
+  asyncHandler(async (req, res) => {
+    const ctx = getCtx(req);
+    const sourceParam = param(req, 'source').toUpperCase();
+    if (sourceParam !== 'OUTBOX' && sourceParam !== 'WEBHOOK') {
+      throw new AppError('VALIDATION', 'Delivery source must be OUTBOX or WEBHOOK');
+    }
+    const id = uuidParam(req, 'id');
+    const { reason } = adminReasonSchema.parse(req.body);
+    await withTransaction(async (client) => {
+      const replayed = await replayDeliveryDeadLetter(sourceParam, id, client);
+      if (!replayed) throw new AppError('CONFLICT', 'This delivery is not currently dead-lettered');
+      await recordPlatformAudit({
+        actorUserId: ctx.userId,
+        action: 'delivery.dead_letter_replayed',
+        entityType: sourceParam,
+        entityId: id,
+        changes: { reason },
+        description: `${sourceParam.toLowerCase()} delivery was queued for replay`,
+      }, client);
+    });
+    res.json({ replayed: true });
+  })
+);
+
 adminRouter.get(
   '/plans',
   asyncHandler(async (_req, res) => {
@@ -171,7 +196,6 @@ adminRouter.post(
     const ctx = getCtx(req);
     const input = adminPlanCreateSchema.parse(req.body);
     const plan = await createPlan(input);
-    clearEntitlementsCache();
     await recordPlatformAudit({ actorUserId: ctx.userId, action: 'plan.created', entityType: 'PLAN', entityId: plan.id, changes: { plan }, description: `Plan ${plan.name} was created` });
     res.status(201).json({ plan });
   })
@@ -192,7 +216,6 @@ adminRouter.patch(
     const ctx = getCtx(req);
     const patch = adminPlanUpdateSchema.parse(req.body);
     const plan = await updatePlan(param(req, 'id'), patch);
-    clearEntitlementsCache();
     await recordPlatformAudit({ actorUserId: ctx.userId, action: 'plan.updated', entityType: 'PLAN', entityId: plan.id, changes: { patch }, description: `Plan ${plan.name} was updated` });
     res.json({ plan });
   })
@@ -205,7 +228,6 @@ adminRouter.post(
     const price = adminPlanPriceSchema.parse(req.body);
     const planId = param(req, 'id');
     const saved = await upsertPlanPrice(planId, price);
-    clearEntitlementsCache();
     await recordPlatformAudit({ actorUserId: ctx.userId, action: 'plan.price_updated', entityType: 'PLAN', entityId: planId, changes: { price: saved }, description: `A ${saved.currency} ${saved.interval.toLowerCase()} price was updated` });
     res.status(201).json({ price: saved });
   })
@@ -250,7 +272,6 @@ adminRouter.post(
 
     if (!(await companyExists(companyId))) throw new AppError('NOT_FOUND', 'Company not found');
     const override = await insertOverride(companyId, input);
-    invalidateEntitlements(companyId);
 
     await recordAudit({
       companyId,
@@ -282,7 +303,6 @@ adminRouter.delete(
     const companyId = uuidParam(req, 'id');
     const removed = await deleteOverride(companyId, uuidParam(req, 'overrideId'));
     if (!removed) throw new AppError('NOT_FOUND', 'Override not found');
-    invalidateEntitlements(companyId);
 
     await recordAudit({
       companyId,
@@ -312,7 +332,6 @@ adminRouter.post(
     await assertPlanExists(input.planId);
     const before = await getSubscription(companyId);
     await setSubscription(companyId, input);
-    invalidateEntitlements(companyId);
 
     await recordAudit({
       companyId,
@@ -377,7 +396,6 @@ adminRouter.post(
     }
 
     const { trialEnd } = await compTrial(companyId, input.planId, input.days);
-    invalidateEntitlements(companyId);
 
     // An extension is not a grant: the same company's trial getting longer must
     // not read later as a second trial for that identity.

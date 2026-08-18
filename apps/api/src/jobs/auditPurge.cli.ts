@@ -3,8 +3,8 @@ import { purgeExpiredAuditLogs } from './auditPurge';
 
 /**
  * One-shot entry point for an external scheduler (Render Cron, GitHub Actions):
- * `pnpm --filter @crewquo/api purge-audit`. The API also runs this daily
- * in-process unless AUDIT_PURGE_ENABLED=false — see ./auditPurge.ts.
+ * `pnpm --filter @crewquo/api purge-audit`. Production invokes this from an
+ * external scheduler so cleanup does not depend on one API process staying up.
  */
 try {
   const removed = await purgeExpiredAuditLogs();

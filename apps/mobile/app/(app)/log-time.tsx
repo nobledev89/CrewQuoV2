@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
@@ -29,9 +29,8 @@ export default function LogTimeScreen() {
   const [hours, setHours] = useState('8');
   const [error, setError] = useState<string | null>(null);
 
-  const selected: WorkContextAssignment | undefined = useMemo(
-    () => assignments.find((a) => a.projectId === projectId),
-    [assignments, projectId]
+  const selected: WorkContextAssignment | undefined = assignments.find(
+    (assignment) => assignment.projectId === projectId
   );
 
   const submit = useMutation({

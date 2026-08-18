@@ -11,6 +11,7 @@ import {
 } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import {
+  resolveLandingRoute,
   resolveSelectedWorkspaceView,
   type CompanyWorkspace,
   type WorkspaceView,
@@ -25,13 +26,6 @@ export const WORKSPACE_VIEW_LABELS: Record<WorkspaceView, string> = {
   SUBCONTRACTOR: 'Subcontractor',
   CLIENT: 'Client',
 };
-
-export function landingForWorkspaceView(view: WorkspaceView | null): string {
-  if (view === 'SUBCONTRACTOR') return '/work';
-  if (view === 'CLIENT') return '/portal';
-  if (view === 'OPERATIONS') return '/app';
-  return '/profile';
-}
 
 /** Customer lenses allowed to render a route; null means a shared account utility. */
 export function allowedViewsForPath(pathname: string): WorkspaceView[] | null {
@@ -137,7 +131,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [session?.accessToken, membershipKey, nonce]);
+  }, [session, membershipKey, nonce]);
 
   const activeWorkspace = useMemo(
     () => workspaces.find((workspace) => workspace.companyId === companyId) ?? null,
@@ -166,7 +160,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     // to a view this company does not have, return to its valid landing page. This
     // is a navigation boundary only; the API remains the authorization boundary.
     if (allowedForRoute && !hasEligibleRouteView) {
-      router.replace(landingForWorkspaceView(next));
+      router.replace(resolveLandingRoute({ view: next }));
     }
   }, [activeWorkspace, companyId, pathname, router, selectedView]);
 
@@ -175,7 +169,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       rememberView(nextCompanyId, view);
       setSelectedView(view);
       if (nextCompanyId !== companyId) setCompanyId(nextCompanyId);
-      router.push(landingForWorkspaceView(view));
+      router.push(resolveLandingRoute({ view }));
     },
     [companyId, router, setCompanyId]
   );

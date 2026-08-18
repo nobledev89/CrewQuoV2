@@ -87,7 +87,7 @@ function Audit() {
         setLoadingMore(false);
       }
     },
-    [ctx?.accessToken, ctx?.companyId, entityType]
+    [ctx, entityType]
   );
 
   useEffect(() => {
@@ -290,7 +290,7 @@ function EngagementSettings({ engagement }: { engagement: EngagementView }) {
     return () => {
       cancelled = true;
     };
-  }, [ctx?.accessToken, ctx?.companyId, engagement.id]);
+  }, [ctx, engagement.id]);
 
   async function update(patch: { clientCanComment?: boolean; showAuditTrail?: boolean }) {
     if (!ctx) return;

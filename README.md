@@ -41,14 +41,15 @@ pnpm --filter @crewquo/api dev
 |---|---|
 | `pnpm dev` | Run all apps in dev (turbo) |
 | `pnpm type-check` | Type-check every package |
+| `pnpm lint` | Run the type-aware promise and React Hooks lint gates |
 | `pnpm test` | Run unit tests |
 | `pnpm db:migrate` | Apply pending SQL migrations |
 | `pnpm db:seed` | Run the seed script |
 | `pnpm --filter @crewquo/web dev` | Run the web console (http://localhost:3000) |
 | `pnpm --filter @crewquo/api purge-audit` | Delete audit rows past their retention window |
 
-The API also runs the audit purge daily in-process; set `AUDIT_PURGE_ENABLED=false`
-to drive it from an external scheduler with the command above instead.
+Run the audit-retention purge from an external daily scheduler with
+`pnpm --filter @crewquo/api purge-audit`; it is intentionally not process-local.
 
 ## Layout
 
@@ -155,4 +156,4 @@ build, and redeploy after changing it, or the browser will keep calling
 ## Notes
 
 - The API runs via `tsx` in both dev and production for now; a bundled build step is added when needed. This is why the Render build installs with `--prod=false`: `tsx` is a devDependency, and `NODE_ENV=production` would otherwise make pnpm skip it.
-- ESLint is intentionally not wired up yet (added in a later step); `type-check` + `test` are the current CI gates.
+- CI runs focused type-aware ESLint, TypeScript and unit tests. API verification scripts are included in the API TypeScript project.

@@ -8,6 +8,8 @@ import { AppError } from '../../http/errors';
 import { findCompanyById, insertCompany, type CompanyRow } from '../companies/repo';
 import { insertMembership } from '../memberships/repo';
 import { recordPlatformAudit } from '../admin/platform.repo';
+import { recordAudit } from '../audit/record';
+import { enqueueOutboxEvent } from '../delivery/repo';
 import { getCompanyCreationSettings } from './settings';
 import {
   claimAllowance,
@@ -71,21 +73,26 @@ async function insertOwnedCompany(
   );
   await insertMembership({ userId: input.userId, companyId: company.id, role: 'OWNER' }, client);
 
-  /**
-   * The durable record is the **platform** trail, and deliberately the only one.
-   *
-   * `recordAudit` would resolve the new company's entitlements to read its
-   * `audit_retention_days` — and at the instant of creation a company has no
-   * subscription, so it resolves to the free plan, whose retention is `0`. The
-   * row could therefore never be written, whatever the company later pays for.
-   * Calling it anyway had one real effect: `resolveEntitlements` memoises for 60
-   * seconds, so creating a company and immediately putting it on a plan left the
-   * API serving free-plan entitlements to a paying tenant until the TTL lapsed.
-   * Found by the e2e suite on 2026-08-18, one migration after this was written.
-   *
-   * `platform_audit_logs` has no retention rule and no cache, which is what a
-   * creation decision needs.
-   */
+  // The company trail records the customer's own history. The platform trail is
+  // separate evidence for the allowance/approval decision. Neither write reads
+  // plan entitlements; retention is enforced later by the purge.
+  await recordAudit(
+    {
+      companyId: company.id,
+      actorUserId: input.userId,
+      action: 'company.created',
+      entityType: 'COMPANY',
+      entityId: company.id,
+      changes: {
+        name: company.name,
+        currency: company.currency,
+        country: company.country ?? null,
+        path: input.path,
+      },
+      description: `${company.name} was created`,
+    },
+    client
+  );
   await recordPlatformAudit(
     {
       actorUserId: input.userId,
@@ -100,6 +107,21 @@ async function insertOwnedCompany(
         requestId: input.requestId ?? null,
       },
       description: `${company.name} was created via ${input.path.toLowerCase()}`,
+    },
+    client
+  );
+  await enqueueOutboxEvent(
+    {
+      topic: 'company.created',
+      aggregateType: 'COMPANY',
+      aggregateId: company.id,
+      companyId: company.id,
+      payload: {
+        companyId: company.id,
+        ownerUserId: input.userId,
+        path: input.path,
+      },
+      idempotencyKey: `company.created:${company.id}`,
     },
     client
   );

@@ -224,6 +224,8 @@ export function useAuth(): AuthState {
 /** Convenience: the tokens+company a screen needs, or null when signed out. */
 export function useSessionCtx(): { accessToken: string; companyId: string } | null {
   const { session, companyId } = useAuth();
-  if (!session || !companyId) return null;
-  return { accessToken: session.accessToken, companyId };
+  return useMemo(
+    () => session && companyId ? { accessToken: session.accessToken, companyId } : null,
+    [session, companyId]
+  );
 }

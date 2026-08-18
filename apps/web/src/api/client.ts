@@ -779,6 +779,11 @@ export const api = {
     }),
   adminOperations: (t: string) =>
     request<AdminOperations>('GET', '/v1/admin/operations', { accessToken: t }),
+  adminReplayDelivery: (t: string, source: 'OUTBOX' | 'WEBHOOK', id: string, reason: string) =>
+    request<{ replayed: true }>('POST', `/v1/admin/delivery/${source}/${id}/replay`, {
+      accessToken: t,
+      body: { reason },
+    }),
   adminPlatformSettings: (t: string) =>
     request<AdminPlatformSettings>('GET', '/v1/admin/settings', { accessToken: t }),
   adminUpdatePlatformSettings: (t: string, body: AdminPlatformSettingsUpdate) =>

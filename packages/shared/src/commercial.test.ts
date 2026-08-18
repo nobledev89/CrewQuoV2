@@ -126,7 +126,6 @@ describe('rate proposal state machine', () => {
   it('rejects an unknown verb rather than defaulting to allow', () => {
     expect(
       ok({
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         verb: 'delete' as any,
         status: 'DRAFT',
         actorSide: 'provider',

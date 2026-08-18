@@ -8,7 +8,7 @@ import type {
 } from '@crewquo/shared';
 import { query, queryOne } from '../../db';
 import { AppError } from '../../http/errors';
-import { resolveEntitlements } from '../entitlements/cache';
+import { resolveEntitlements } from '../entitlements/resolve';
 import { getAllUsage } from '../entitlements/usage';
 
 /**

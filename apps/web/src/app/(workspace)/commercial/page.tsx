@@ -905,8 +905,13 @@ function TermsDrawer({
     setCeiling(centsToInput(agreement.terms.purchaseOrderCeilingCents));
     setReason('');
     setError(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, agreement.engagementId]);
+  }, [
+    open,
+    agreement.engagementId,
+    agreement.terms.paymentTermsDays,
+    agreement.terms.purchaseOrderReference,
+    agreement.terms.purchaseOrderCeilingCents,
+  ]);
 
   async function save() {
     if (!ctx) return;
@@ -1037,7 +1042,6 @@ function ScheduleDrawer({
     setRetroReason('');
     setLines([BLANK_LINE]);
     setError(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, agreement.engagementId]);
 
   const retro = effectiveFrom !== '' && isRetroactive(effectiveFrom, todayIso());

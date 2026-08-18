@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  resolveLandingRoute,
   resolveSelectedWorkspaceView,
   resolveWorkspaceViews,
   type WorkspaceEligibilityFacts,
@@ -76,4 +77,23 @@ describe('workspace selection', () => {
     expect(resolveSelectedWorkspaceView([], ['OPERATIONS'], 'OPERATIONS', 'CLIENT')).toBeNull();
   });
 
+});
+
+describe('resolveLandingRoute', () => {
+  it('maps every customer view and account setup explicitly', () => {
+    expect(resolveLandingRoute({ view: 'OPERATIONS' })).toBe('/app');
+    expect(resolveLandingRoute({ view: 'SUBCONTRACTOR' })).toBe('/work');
+    expect(resolveLandingRoute({ view: 'CLIENT' })).toBe('/portal');
+    expect(resolveLandingRoute({ view: null })).toBe('/profile');
+  });
+
+  it('routes platform staff to the platform and preserves a safe requested path', () => {
+    expect(resolveLandingRoute({ isSuperAdmin: true })).toBe('/admin');
+    expect(resolveLandingRoute({ isSuperAdmin: true, requestedPath: '/invite/token' })).toBe('/invite/token');
+  });
+
+  it('rejects protocol-relative and backslash redirect values', () => {
+    expect(resolveLandingRoute({ requestedPath: '//evil.example' })).toBe('/profile');
+    expect(resolveLandingRoute({ requestedPath: '/\\evil.example' })).toBe('/profile');
+  });
 });

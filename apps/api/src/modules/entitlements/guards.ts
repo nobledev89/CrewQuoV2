@@ -2,7 +2,7 @@ import type { RequestHandler } from 'express';
 import type { FeatureKey, LimitKey } from '@crewquo/shared';
 import { AppError } from '../../http/errors';
 import { getCompanyCtx } from '../../http/context';
-import { resolveEntitlements } from './cache';
+import { resolveEntitlements } from './resolve';
 import { getUsage } from './usage';
 
 /** Does the company's plan (± overrides) enable this feature? */

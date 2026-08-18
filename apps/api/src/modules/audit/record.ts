@@ -1,8 +1,6 @@
 import type { AuditAction, AuditEntityType } from '@crewquo/shared';
 import type { Queryable } from '../../db';
-import { resolveEntitlements } from '../entitlements/cache';
 import { insertAuditLog } from './repo';
-import { auditExpiry } from './retention';
 
 /**
  * The single write path into the audit trail (CREWQUO_V2_PLAN.md §3.6).
@@ -29,10 +27,6 @@ export interface AuditEvent {
 
 export async function recordAudit(event: AuditEvent, runner?: Queryable): Promise<void> {
   try {
-    const ent = await resolveEntitlements(event.companyId);
-    const expiry = auditExpiry(ent.limits.audit_retention_days);
-    if (expiry.kind === 'skip') return; // plan keeps no trail — nothing to write
-
     await insertAuditLog(
       {
         companyId: event.companyId,
@@ -43,7 +37,6 @@ export async function recordAudit(event: AuditEvent, runner?: Queryable): Promis
         changes: event.changes ?? null,
         description: event.description ?? null,
         visibleToClient: event.visibleToClient ?? false,
-        expiry,
       },
       runner
     );

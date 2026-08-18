@@ -58,7 +58,7 @@ export function useEntitlements(): EntitlementState {
     return () => {
       cancelled = true;
     };
-  }, [ctx?.accessToken, ctx?.companyId, nonce]);
+  }, [ctx, nonce]);
 
   const has = useCallback(
     (key: FeatureKey) => data?.features.includes(key) ?? false,

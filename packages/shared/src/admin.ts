@@ -363,6 +363,22 @@ export const adminReportingSchema = z.object({
 export type AdminReporting = z.infer<typeof adminReportingSchema>;
 
 export const adminOperationsSchema = z.object({
+  delivery: z.object({
+    pendingOutbox: z.number().int().nonnegative(),
+    processingOutbox: z.number().int().nonnegative(),
+    deadOutbox: z.number().int().nonnegative(),
+    receivedWebhooks: z.number().int().nonnegative(),
+    processingWebhooks: z.number().int().nonnegative(),
+    deadWebhooks: z.number().int().nonnegative(),
+  }),
+  deadLetters: z.array(z.object({
+    id: z.string().uuid(),
+    source: z.enum(['OUTBOX', 'WEBHOOK']),
+    kind: z.string(),
+    attempts: z.number().int().nonnegative(),
+    lastError: z.string().nullable(),
+    failedAt: z.string(),
+  })),
   pendingInvites: z.array(z.object({
     id: z.string().uuid(),
     kind: z.string(),

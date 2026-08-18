@@ -42,7 +42,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Restore a session on launch: use the refresh token to get a fresh pair.
   useEffect(() => {
-    (async () => {
+    void (async () => {
       const [tokens, activeCompanyId] = await Promise.all([loadTokens(), loadActiveCompanyId()]);
       if (!tokens) {
         setState({ ...EMPTY, ready: true });

@@ -16,7 +16,7 @@ Normal company/view contexts remain Contractor, Subcontractor and Client. Select
 | Users | identity search, verification/membership/session visibility | revoke sessions; grant/revoke Super Admin |
 | Companies | customer support, subscription, trials and entitlement overrides | existing company controls |
 | Plans & pricing | plan, feature, limit and price catalog | existing catalog controls |
-| Operations | API/config health, pending invites, expiring overrides, recent admin actions | none until durable jobs exist |
+| Operations | API/config health, durable-delivery queues/dead letters, pending invites and expiring overrides | reason-required dead-letter replay |
 | Reporting | acquisition, plan/subscription distribution, workflow volume | none |
 | Platform audit | immutable platform-administration history | none |
 | Settings | platform name/support identity and explicit access-state flags | typed setting update |
@@ -30,7 +30,7 @@ Normal company/view contexts remain Contractor, Subcontractor and Client. Select
 - Both the admin screen and bootstrap command accept only an existing, email-verified user; neither creates an identity, sets a password or bypasses verification.
 - Settings accept only the typed branding/access contract. Secrets and arbitrary configuration keys never enter the browser.
 - Company/subscription/entitlement changes continue writing the subject company's audit where applicable and additionally record the platform operator.
-- Operations reports unimplemented infrastructure as `NOT_CONFIGURED`; it does not present fake queue or delivery health.
+- Operations reads real outbox/webhook queue counts and exposes audited dead-letter replay. MoR and email remain truthfully `NOT_CONFIGURED` until their handlers exist.
 
 ## API inventory
 

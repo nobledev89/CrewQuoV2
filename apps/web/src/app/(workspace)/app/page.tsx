@@ -25,7 +25,8 @@ import { useAsyncList } from '@/lib/useAsyncList';
 import { useAsyncData } from '@/lib/useAsyncData';
 import { useEntitlements } from '@/lib/useEntitlements';
 import { formatUsage, titleCase } from '@/lib/format';
-import { landingForWorkspaceView, useWorkspace } from '@/workspaces/WorkspaceProvider';
+import { resolveLandingRoute } from '@crewquo/shared';
+import { useWorkspace } from '@/workspaces/WorkspaceProvider';
 
 /**
  * Overview — deliberately role-aware rather than one fixed dashboard.
@@ -42,7 +43,7 @@ export default function OverviewPage() {
 
   useEffect(() => {
     if (selectedView && selectedView !== 'OPERATIONS') {
-      router.replace(landingForWorkspaceView(selectedView));
+      router.replace(resolveLandingRoute({ view: selectedView }));
     } else if (activeWorkspace?.views.length === 0) {
       router.replace('/profile');
     }

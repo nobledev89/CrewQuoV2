@@ -2,7 +2,7 @@ import { Router } from 'express';
 import type { EntitlementsResponse } from '@crewquo/shared';
 import { asyncHandler } from '../../http/asyncHandler';
 import { getCompanyCtx } from '../../http/context';
-import { resolveEntitlements } from './cache';
+import { resolveEntitlements } from './resolve';
 import { getAllUsage } from './usage';
 
 export const entitlementsRouter = Router();

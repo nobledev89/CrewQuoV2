@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Button, ErrorText, Field, Input, Row } from '@crewquo/ui';
+import { resolveLandingRoute } from '@crewquo/shared';
 import { useAuth } from '@/auth/AuthProvider';
 import { ApiError } from '@/api/client';
 import { AuthPanel } from '@/components/AuthPanel';
@@ -36,11 +37,11 @@ function Login() {
    * sign-in instead of dropping them on the dashboard with a lost token.
    */
   const next = params.get('next');
-  const destination = next && next.startsWith('/')
-    ? next
-    : session?.user.isSuperAdmin
-      ? '/admin'
-      : '/app';
+  const destination = resolveLandingRoute({
+    requestedPath: next,
+    isSuperAdmin: session?.user.isSuperAdmin,
+    view: session ? 'OPERATIONS' : null,
+  });
 
   useEffect(() => {
     if (ready && session) router.replace(destination);
@@ -52,7 +53,11 @@ function Login() {
     setError(null);
     try {
       const user = await login(email.trim(), password);
-      router.replace(next && next.startsWith('/') ? next : user.isSuperAdmin ? '/admin' : '/app');
+      router.replace(resolveLandingRoute({
+        requestedPath: next,
+        isSuperAdmin: user.isSuperAdmin,
+        view: 'OPERATIONS',
+      }));
     } catch (err) {
       setError(
         err instanceof ApiError

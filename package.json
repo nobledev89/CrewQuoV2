@@ -11,7 +11,8 @@
   "scripts": {
     "dev": "turbo run dev",
     "build": "turbo run build",
-    "lint": "turbo run lint",
+    "lint": "eslint . --max-warnings=0",
+    "lint:fix": "eslint . --fix",
     "type-check": "turbo run type-check",
     "test": "turbo run test",
     "db:migrate": "tsx infra/migrations/run.ts",
@@ -20,9 +21,12 @@
   "devDependencies": {
     "@types/node": "^22.10.2",
     "dotenv": "^16.4.7",
+    "eslint": "^9.35.0",
+    "eslint-plugin-react-hooks": "^5.2.0",
     "pg": "^8.13.1",
     "tsx": "^4.19.2",
     "turbo": "^2.3.3",
+    "typescript-eslint": "^8.41.0",
     "typescript": "^5.7.2"
   }
 }

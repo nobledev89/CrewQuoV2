@@ -128,8 +128,8 @@ async function subscribe(companyId: string, planId: string): Promise<void> {
      on conflict (company_id) do update set plan_id = excluded.plan_id, status = 'ACTIVE'`,
     [companyId, planId]
   );
-  // The API memoizes entitlements for 60s; wait it out or restart. Instead we
-  // subscribe before the company is ever asked about, so nothing is cached yet.
+  // Entitlements resolve directly from Postgres, so the next request observes
+  // this subscription without a process-local cache or manual invalidation.
 }
 
 async function main(): Promise<void> {
@@ -544,7 +544,9 @@ async function main(): Promise<void> {
 
   // The point of the export engine: the file and the screen cannot disagree.
   const wb = new ExcelJS.Workbook();
-  await wb.xlsx.load(xlsx.buffer!);
+  // ExcelJS ships against an older non-generic Node Buffer declaration; the
+  // runtime value is the exact buffer returned by fetch.
+  await wb.xlsx.load(xlsx.buffer! as unknown as Parameters<typeof wb.xlsx.load>[0]);
   eq(
     'the workbook has the four expected sheets',
     wb.worksheets.map((w) => w.name),
@@ -1040,7 +1042,7 @@ async function main(): Promise<void> {
     companyId: meridian,
   });
   eq(
-    'the raised limit is live at once, not after the 60s TTL',
+    'the raised limit is live on the very next request',
     afterOverride.json.limits.internal_seats,
     99
   );
@@ -2162,11 +2164,9 @@ async function main(): Promise<void> {
   //
   // `rate_proposal.*` rows are written against the company whose record moved: the
   // provider for submit/withdraw, the hiring company for approve/reject. But a
-  // provider is usually on the free Crew plan, which has `audit_retention_days: 0`
-  // and no `audit_visibility` — so `recordAudit` writes nothing for it and it cannot
-  // read a trail either. Both halves are asserted, because this is a product gap
-  // worth seeing rather than a bug to paper over: the negotiation is recorded only
-  // on the side that pays for retention.
+  // provider is usually on the free Crew plan, which has no `audit_visibility`.
+  // The event must still be written: visibility and the nightly retention purge
+  // are separate from recording whether the negotiation happened.
   const providerTrail = await call('GET', '/v1/audit-logs?entityType=RATE_PROPOSAL', {
     token: providerUser.token,
     companyId: northgate,
@@ -2178,8 +2178,8 @@ async function main(): Promise<void> {
     `select count(*)::int as n from audit_logs where company_id = $1`,
     [northgate]
   );
-  eq('...consistently, zero rows were written for it (retention 0 ⇒ nothing written)',
-    providerRows.rows[0].n, 0);
+  check('...but its authoritative events were still recorded before retention cleanup',
+    providerRows.rows[0].n > 0, providerRows.rows[0]);
 
   const hiringTrail = await call('GET', '/v1/audit-logs?entityType=RATE_PROPOSAL', {
     token: owner.token,
@@ -2237,6 +2237,18 @@ async function main(): Promise<void> {
   eq('...and it is ledgered permanently against the identity',
     danaLedger.rows[0]?.company_id, northlight);
   eq('...recording how it was claimed', danaLedger.rows[0]?.source, 'SELF_SERVE');
+  const creationEvidence = await db.query(
+    `select
+       (select count(*)::int from audit_logs where company_id = $1 and action = 'company.created') as customer_rows,
+       (select count(*)::int from platform_audit_logs where entity_id = $1::text and action = 'company.created') as platform_rows,
+       (select count(*)::int from delivery_outbox where aggregate_id = $1::text and topic = 'company.created') as outbox_rows`,
+    [northlight]
+  );
+  eq('company creation records the customer event even before a paid plan exists',
+    creationEvidence.rows[0].customer_rows, 1);
+  eq('...keeps separate platform decision evidence', creationEvidence.rows[0].platform_rows, 1);
+  eq('...and commits one idempotent outbox event with the company',
+    creationEvidence.rows[0].outbox_rows, 1);
 
   // 2. Exactly once.
   const danaSecond = await call('POST', '/v1/me/companies', {
@@ -2729,6 +2741,40 @@ async function main(): Promise<void> {
     body: { name: `Doomed Again ${RUN}` },
   });
   eq('...so deleting a company does not restore the allowance', doomedAgain.status, 409);
+
+  // ── Durable delivery foundation ───────────────────────────────────────────
+  section('Durable delivery foundation');
+  const deadDeliveryId = randomUUID();
+  await db.query(
+    `insert into delivery_outbox
+       (id, topic, aggregate_type, aggregate_id, payload, idempotency_key,
+        status, attempts, last_error)
+     values ($1, 'verify.failure', 'VERIFY', $2, '{}', $3, 'DEAD_LETTER', 8, 'fixture failure')`,
+    [deadDeliveryId, RUN, `verify.failure:${RUN}`]
+  );
+  const deliveryOps = await call('GET', '/v1/admin/operations', { token: staff.token });
+  eq('operations exposes durable-delivery health', deliveryOps.status, 200);
+  check('...and the dead letter is visible to platform staff',
+    deliveryOps.json.deadLetters.some((row: any) => row.id === deadDeliveryId));
+  const replayDelivery = await call(
+    'POST',
+    `/v1/admin/delivery/OUTBOX/${deadDeliveryId}/replay`,
+    { token: staff.token, body: { reason: 'Retry after correcting the fixture dependency' } }
+  );
+  eq('a Super Admin can replay it with a reason', replayDelivery.status, 200);
+  const replayedDelivery = await db.query(
+    `select status, attempts, last_error from delivery_outbox where id = $1`,
+    [deadDeliveryId]
+  );
+  eq('...which safely resets it to pending', replayedDelivery.rows[0], {
+    status: 'PENDING', attempts: 0, last_error: null,
+  });
+  const replayAudit = await db.query(
+    `select count(*)::int as n from platform_audit_logs
+      where action = 'delivery.dead_letter_replayed' and entity_id = $1`,
+    [deadDeliveryId]
+  );
+  eq('...and records the operator decision atomically', replayAudit.rows[0].n, 1);
 
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);

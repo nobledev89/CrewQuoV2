@@ -49,7 +49,7 @@ function Settings() {
     } finally {
       setLoading(false);
     }
-  }, [ctx?.accessToken, ctx?.companyId]);
+  }, [ctx]);
 
   useEffect(() => {
     void load();

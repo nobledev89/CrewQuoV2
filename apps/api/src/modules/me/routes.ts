@@ -15,7 +15,7 @@ import { listMembershipSummaries } from '../memberships/repo';
 import { toCompanySummary } from '../companies/repo';
 import { createCompanyForUser } from '../company-creation/service';
 import { recordAudit } from '../audit/record';
-import { resolveEntitlements } from '../entitlements/cache';
+import { resolveEntitlements } from '../entitlements/resolve';
 import { listWorkspaceFacts } from './workspaces.repo';
 
 export const meRouter = Router();
