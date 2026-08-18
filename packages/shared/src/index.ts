@@ -14,3 +14,4 @@ export * from './portal';
 export * from './invoices';
 export * from './commercial';
 export * from './workspace';
+export * from './company-creation';

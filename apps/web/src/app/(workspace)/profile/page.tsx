@@ -1,7 +1,12 @@
 'use client';
 
 import { useState } from 'react';
-import type { MeResponse, PublicUser } from '@crewquo/shared';
+import type {
+  CompanyCreationRequestView,
+  CompanyCreationState,
+  MeResponse,
+  PublicUser,
+} from '@crewquo/shared';
 import { DEFAULT_CURRENCY } from '@crewquo/shared';
 import {
   Badge,
@@ -21,7 +26,7 @@ import { Shell } from '@/components/Shell';
 import { api, ApiError } from '@/api/client';
 import { useAuth, useSessionCtx } from '@/auth/AuthProvider';
 import { useAsyncData } from '@/lib/useAsyncData';
-import { titleCase } from '@/lib/format';
+import { formatDate, titleCase } from '@/lib/format';
 
 /**
  * Profile — the signed-in account, its companies, and the one action that is
@@ -215,7 +220,106 @@ function AccountForm({ user, onSaved }: { user: PublicUser; onSaved: () => void 
   );
 }
 
+/**
+ * Starting another company (§3.1.1).
+ *
+ * One section, three states, chosen by the server rather than by the screen:
+ *
+ *  · **Allowance available** — the included company. Two fields, no ceremony;
+ *    this is the person the safeguard is not aimed at.
+ *  · **Allowance spent** — the advanced flow. Legal identity, an attestation and
+ *    a password, because the next company is a separate subscription and a
+ *    separate set of books.
+ *  · **A request in flight or decided** — its status, and the reason if it was
+ *    refused. No email or push exists yet (Resend is a later Phase 6 bullet), so
+ *    this row *is* the notification and has to say everything.
+ */
 function CreateCompany() {
+  const { session, createCompany } = useAuth();
+  const state = useAsyncData<CompanyCreationState>(
+    session ? () => api.companyCreationState(session.accessToken) : null,
+    [session?.accessToken]
+  );
+
+  if (state.loading && !state.data) {
+    return (
+      <Section title="Another company">
+        <p className="cq-muted">Loading…</p>
+      </Section>
+    );
+  }
+  if (state.error || !state.data) {
+    return (
+      <Section title="Another company">
+        <EmptyState title="Could not load company options">
+          {state.error ?? 'Nothing was returned.'}
+        </EmptyState>
+      </Section>
+    );
+  }
+
+  const data = state.data;
+  const approved = data.openRequest?.status === 'APPROVED' ? data.openRequest : null;
+
+  return (
+    <Stack>
+      {data.allowanceAvailable ? (
+        <FirstCompany onDone={() => state.reload()} />
+      ) : approved ? (
+        <ApprovedCompany request={approved} onDone={() => state.reload()} />
+      ) : (
+        <RequestCompany state={data} onDone={() => state.reload()} />
+      )}
+      {data.history.length ? (
+        <Section
+          title="Company requests"
+          description="Every additional-company request on this account."
+          className="cq-section--table"
+        >
+          <Table label="Company creation requests" compact>
+            <thead>
+              <tr>
+                <th scope="col">Business</th>
+                <th scope="col">Filed</th>
+                <th scope="col">Status</th>
+                <th scope="col">Decision</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.history.map((request) => (
+                <tr key={request.id}>
+                  <td className="cq-table__primary">
+                    {request.legalName}
+                    <span className="cq-muted"> · {request.country}</span>
+                  </td>
+                  <td>{formatDate(request.createdAt)}</td>
+                  <td>
+                    <Badge tone={REQUEST_TONE[request.status] ?? 'neutral'}>
+                      {titleCase(request.status.replace('_', ' '))}
+                    </Badge>
+                  </td>
+                  <td>{request.decisionReason ?? <span className="cq-muted">—</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        </Section>
+      ) : null}
+    </Stack>
+  );
+}
+
+const REQUEST_TONE: Record<string, 'success' | 'warning' | 'danger' | 'neutral' | 'accent'> = {
+  PENDING_CHECKOUT: 'warning',
+  PENDING_REVIEW: 'warning',
+  APPROVED: 'accent',
+  REJECTED: 'danger',
+  EXPIRED: 'neutral',
+  CONSUMED: 'success',
+};
+
+/** The included company: the one creation that needs no permission at all. */
+function FirstCompany({ onDone }: { onDone: () => void }) {
   const { createCompany } = useAuth();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState('');
@@ -233,6 +337,7 @@ function CreateCompany() {
       setCreated(name.trim());
       setName('');
       setOpen(false);
+      onDone();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not create the company');
     } finally {
@@ -242,8 +347,8 @@ function CreateCompany() {
 
   return (
     <Section
-      title="Start another company"
-      description="You become its owner. Companies are separate books: rates, projects and work never cross between them."
+      title="Start your company"
+      description="Your account includes one company. You become its owner, and companies are separate books: rates, projects and work never cross between them."
       actions={
         open ? null : (
           <Button size="sm" variant="secondary" onClick={() => setOpen(true)}>
@@ -276,6 +381,257 @@ function CreateCompany() {
           <Row>
             <Button type="submit" disabled={busy || !name.trim()}>
               {busy ? 'Creating…' : 'Create company'}
+            </Button>
+            <Button variant="secondary" onClick={() => setOpen(false)} disabled={busy}>
+              Cancel
+            </Button>
+          </Row>
+        </form>
+      ) : null}
+    </Section>
+  );
+}
+
+/**
+ * An approval in hand.
+ *
+ * The legal identity is fixed to what was reviewed and is not re-asked: the
+ * approval was granted for *that* business, and the server overrides anything the
+ * create body claims anyway. Only the trading name and currency are still open.
+ */
+function ApprovedCompany({
+  request,
+  onDone,
+}: {
+  request: CompanyCreationRequestView;
+  onDone: () => void;
+}) {
+  const { createCompany } = useAuth();
+  const [name, setName] = useState(request.displayName);
+  const [currency, setCurrency] = useState(request.currency);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await createCompany(name.trim(), currency.toUpperCase(), request.id);
+      onDone();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not create the company');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Section
+      title="Your additional company is approved"
+      description={`Approved for ${request.legalName} (${request.country}). Create it by ${formatDate(
+        request.expiresAt
+      )} — after that the approval lapses and you would need a new request.`}
+    >
+      <form onSubmit={submit} className="cq-stack" aria-busy={busy}>
+        <div className="cq-form-grid">
+          <Field label="Trading name" hint="What the workspace shows. The legal identity is fixed.">
+            <Input value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
+          </Field>
+          <Field label="Currency (ISO 4217)">
+            <Input
+              value={currency}
+              onChange={(e) => setCurrency(e.target.value.toUpperCase().slice(0, 3))}
+              maxLength={3}
+              required
+            />
+          </Field>
+        </div>
+        <ErrorText>{error}</ErrorText>
+        <Row>
+          <Button type="submit" disabled={busy || !name.trim()}>
+            {busy ? 'Creating…' : 'Create company'}
+          </Button>
+        </Row>
+      </form>
+    </Section>
+  );
+}
+
+/** The advanced flow, and the status of a request already filed. */
+function RequestCompany({ state, onDone }: { state: CompanyCreationState; onDone: () => void }) {
+  const { session } = useAuth();
+  const [open, setOpen] = useState(false);
+  const [legalName, setLegalName] = useState('');
+  const [country, setCountry] = useState('');
+  const [registrationId, setRegistrationId] = useState('');
+  const [currency, setCurrency] = useState(DEFAULT_CURRENCY);
+  const [attestation, setAttestation] = useState(false);
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
+  const [routes, setRoutes] = useState<string[]>([]);
+
+  const pending = state.openRequest;
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!session) return;
+    setBusy(true);
+    setError(null);
+    setWarning(null);
+    setRoutes([]);
+    try {
+      const res = await api.createCompanyCreationRequest(session.accessToken, {
+        legalName: legalName.trim(),
+        country: country.trim().toUpperCase(),
+        registrationId: registrationId.trim() || null,
+        currency: currency.toUpperCase(),
+        attestation: true,
+        password,
+      });
+      setWarning(res.warning);
+      setPassword('');
+      setOpen(false);
+      onDone();
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setError(err.message);
+        // A registration collision is not a dead end — the refusal carries the
+        // routes out of it, and swallowing them would leave the user with nothing
+        // but a "no".
+        const details = err.details as { routes?: string[] } | undefined;
+        if (Array.isArray(details?.routes)) setRoutes(details.routes);
+      } else {
+        setError('Could not file the request');
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function withdraw() {
+    if (!session || !pending) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.deleteCompanyCreationRequest(session.accessToken, pending.id);
+      onDone();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not withdraw the request');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (pending) {
+    return (
+      <Section
+        title="Your company request is with us"
+        description={`${pending.legalName} (${pending.country}) — filed ${formatDate(
+          pending.createdAt
+        )}. It lapses on ${formatDate(pending.expiresAt)} if nobody decides it.`}
+        actions={
+          <Button size="sm" variant="secondary" onClick={() => void withdraw()} disabled={busy}>
+            Withdraw
+          </Button>
+        }
+      >
+        <Row>
+          <Badge tone="warning">{titleCase(pending.status.replace('_', ' '))}</Badge>
+        </Row>
+        <ErrorText>{error}</ErrorText>
+      </Section>
+    );
+  }
+
+  return (
+    <Section
+      title="Start another company"
+      description="Your account's included company has been used. A second legal business is a separate subscription, a separate set of books and a separate data boundary, so it is approved before it is created."
+      actions={
+        open || !state.canRequest ? null : (
+          <Button size="sm" variant="secondary" onClick={() => setOpen(true)}>
+            Request a company
+          </Button>
+        )
+      }
+    >
+      {warning ? <Notice>{warning}</Notice> : null}
+      {!state.canRequest ? (
+        <Notice>{state.blockedReason}</Notice>
+      ) : open ? (
+        <form onSubmit={submit} className="cq-stack" aria-busy={busy}>
+          <div className="cq-form-grid">
+            <Field label="Registered legal name">
+              <Input
+                value={legalName}
+                onChange={(e) => setLegalName(e.target.value)}
+                required
+                autoFocus
+              />
+            </Field>
+            <Field label="Country" hint="Two-letter code, e.g. GB.">
+              <Input
+                value={country}
+                onChange={(e) => setCountry(e.target.value.toUpperCase().slice(0, 2))}
+                maxLength={2}
+                required
+              />
+            </Field>
+            <Field
+              label="Registration number"
+              hint="Optional, where the business has one. Used to spot a company already on CrewQuo."
+            >
+              <Input
+                value={registrationId}
+                onChange={(e) => setRegistrationId(e.target.value)}
+                spellCheck={false}
+              />
+            </Field>
+            <Field label="Currency (ISO 4217)">
+              <Input
+                value={currency}
+                onChange={(e) => setCurrency(e.target.value.toUpperCase().slice(0, 3))}
+                maxLength={3}
+                required
+              />
+            </Field>
+            <Field
+              label="Confirm your password"
+              hint="Re-entered because this starts a separate subscription."
+            >
+              <Input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                autoComplete="current-password"
+              />
+            </Field>
+          </div>
+          <label className="cq-row">
+            <input
+              type="checkbox"
+              checked={attestation}
+              onChange={(e) => setAttestation(e.target.checked)}
+            />
+            <span>{state.attestationText}</span>
+          </label>
+          <ErrorText>{error}</ErrorText>
+          {routes.length ? (
+            <Notice>
+              <ul className="cq-object-list">
+                {routes.map((route) => (
+                  <li key={route}>{route}</li>
+                ))}
+              </ul>
+            </Notice>
+          ) : null}
+          <Row>
+            <Button type="submit" disabled={busy || !attestation || !legalName.trim() || !password}>
+              {busy ? 'Sending…' : 'Send request'}
             </Button>
             <Button variant="secondary" onClick={() => setOpen(false)} disabled={busy}>
               Cancel

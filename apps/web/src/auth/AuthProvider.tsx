@@ -51,7 +51,13 @@ interface AuthState {
    * company of their own, and a user whose only company is somebody else's needs a
    * way to start their own — so this is on the switcher, not buried in settings.
    */
-  createCompany: (name: string, currency: string) => Promise<string>;
+  /**
+   * `requestId` names an approved additional-company request (§3.1.1). Omitted
+   * for the included first company, which needs no approval — and omitted on a
+   * second create too, where the server resolves the caller's single approval
+   * itself rather than trusting the screen to pass the right one.
+   */
+  createCompany: (name: string, currency: string, requestId?: string) => Promise<string>;
 }
 
 const STORAGE_KEY = 'crewquo.session';
@@ -152,9 +158,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [session]);
 
   const createCompany = useCallback(
-    async (name: string, currency: string) => {
+    async (name: string, currency: string, requestId?: string) => {
       if (!session) throw new Error('Not signed in');
-      const { company } = await api.createCompany(session.accessToken, { name, currency });
+      const { company } = await api.createCompany(session.accessToken, {
+        name,
+        currency,
+        ...(requestId ? { requestId } : {}),
+      });
       const { memberships } = await api.memberships(session.accessToken);
       const next = { ...session, memberships };
       setSession(next);

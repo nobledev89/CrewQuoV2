@@ -46,6 +46,18 @@ function Settings() {
         <label className="cq-row"><input type="checkbox" checked={form.maintenanceMode} onChange={(event) => setForm({ ...form, maintenanceMode: event.target.checked })} /><span>Maintenance mode</span></label>
         <Field label="Maintenance message"><Input value={form.maintenanceMessage} onChange={(event) => setForm({ ...form, maintenanceMessage: event.target.value })} maxLength={500} placeholder="Shown when maintenance mode is enabled" /></Field>
       </Stack></Section>
+      {/*
+        Company creation (§3.1.1). Both flags ship off, and each is waiting on a
+        different Phase 6 bullet rather than on a decision — which is why they are
+        settings and not constants. The hints say what has to land first, so an
+        operator turning one on early knows exactly what breaks.
+      */}
+      <Section title="Company creation" description="One included company per verified identity is automatic; every additional business is approved here."><Stack>
+        <label className="cq-row"><input type="checkbox" checked={form.requireVerifiedEmailForFirstCompany} onChange={(event) => setForm({ ...form, requireVerifiedEmailForFirstCompany: event.target.checked })} /><span>Require a verified email address before the first company</span></label>
+        <p className="cq-muted">Leave off until verification emails are actually delivered — links are only logged today, so enabling this locks every new signup out of its own company. Additional-company requests always require verification and ignore this setting.</p>
+        <label className="cq-row"><input type="checkbox" checked={form.companyCheckoutEnabled} onChange={(event) => setForm({ ...form, companyCheckoutEnabled: event.target.checked })} /><span>Route paid-plan company requests to checkout</span></label>
+        <p className="cq-muted">Off until the merchant of record is live. While off, every additional-company request lands in the review queue for an audited approval.</p>
+      </Stack></Section>
       <Notice>These values establish the administrative control plane. Customer registration and maintenance enforcement should read these settings when those launch gates are connected.</Notice>
       <ErrorText>{error}</ErrorText><div><Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save platform settings'}</Button></div>
     </Stack></form>

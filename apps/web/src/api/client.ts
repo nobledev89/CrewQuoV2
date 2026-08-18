@@ -4,6 +4,8 @@ import type {
   AdminCompaniesResponse,
   AdminCompanyDetail,
   AdminCompanySummary,
+  AdminCompanyCreationRequest,
+  AdminCompanyCreationRequestsResponse,
   AdminCompTrial,
   AdminOverrideCreate,
   AdminOverrideView,
@@ -26,8 +28,11 @@ import type {
   AuthResponse,
   ClientView,
   CommercialAgreement,
+  CompanyCreationRequestResponse,
+  CompanyCreationState,
   CompanySummary,
   CreateAssignment,
+  CreateCompanyCreationRequest,
   CreateClient,
   CreateClientResponse,
   CreateCompanyRequest,
@@ -230,10 +235,22 @@ export const api = {
   workspaces: (accessToken: string) =>
     request<WorkspacesResponse>('GET', '/v1/me/workspaces', { accessToken }),
   createCompany: (t: string, body: CreateCompanyRequest) =>
-    request<{ company: CompanySummary }>('POST', '/v1/me/companies', {
+    request<{ company: CompanySummary; path: string; requestId: string | null }>(
+      'POST',
+      '/v1/me/companies',
+      { accessToken: t, body }
+    ),
+
+  // ── Additional-company requests (§3.1.1) ─────────────────────────────────────
+  companyCreationState: (t: string) =>
+    request<CompanyCreationState>('GET', '/v1/company-creation-requests', { accessToken: t }),
+  createCompanyCreationRequest: (t: string, body: CreateCompanyCreationRequest) =>
+    request<CompanyCreationRequestResponse>('POST', '/v1/company-creation-requests', {
       accessToken: t,
       body,
     }),
+  deleteCompanyCreationRequest: (t: string, id: string) =>
+    request<void>('DELETE', `/v1/company-creation-requests/${id}`, { accessToken: t }),
 
   // ── Company settings (§7) — OWNER/ADMIN may change the currency ──────────────
   getCompany: (t: string, c: string) =>
@@ -766,6 +783,23 @@ export const api = {
     request<AdminPlatformSettings>('GET', '/v1/admin/settings', { accessToken: t }),
   adminUpdatePlatformSettings: (t: string, body: AdminPlatformSettingsUpdate) =>
     request<AdminPlatformSettings>('PATCH', '/v1/admin/settings', { accessToken: t, body }),
+  adminCompanyCreationRequests: (t: string, status?: string) =>
+    request<AdminCompanyCreationRequestsResponse>(
+      'GET',
+      `/v1/admin/company-creation-requests${status ? `?status=${status}` : ''}`,
+      { accessToken: t }
+    ),
+  adminDecideCompanyCreationRequest: (
+    t: string,
+    id: string,
+    decision: 'approve' | 'reject',
+    reason: string
+  ) =>
+    request<{ request: AdminCompanyCreationRequest }>(
+      'POST',
+      `/v1/admin/company-creation-requests/${id}/${decision}`,
+      { accessToken: t, body: { reason } }
+    ),
   adminPlatformAudit: (t: string) =>
     request<{ data: AdminPlatformAudit[] }>('GET', '/v1/admin/audit', { accessToken: t }),
   adminListPlans: (t: string) =>

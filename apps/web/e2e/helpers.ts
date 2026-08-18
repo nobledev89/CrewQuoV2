@@ -12,6 +12,14 @@ import { expect, type Browser, type Page } from '@playwright/test';
 export const RUN = Math.random().toString(36).slice(2, 8);
 
 const PASSWORD = 'Parity-passw0rd!';
+
+/**
+ * The same password, exported for the one flow that asks for it again: the
+ * additional-company request re-authenticates (§3.1.1(7)), because an access
+ * token is re-minted by refresh without anyone re-proving anything.
+ */
+export const PARITY_PASSWORD = PASSWORD;
+
 /** Read `DATABASE_URL` from the repo-root `.env` when it is not already exported. */
 function databaseUrl(): string {
   if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
@@ -174,7 +182,11 @@ export async function signIn(page: Page, email: string): Promise<void> {
   await page.getByLabel('Email address').fill(email);
   await page.getByLabel('Password').fill(PASSWORD);
   await page.getByRole('button', { name: 'Sign in' }).click();
-  await expect(page).toHaveURL(/\/(app|admin)/);
+  // `/profile` is a legitimate landing too: an unentitled free company gets the
+  // Account setup view (§9.2), whose home *is* the profile. The real barrier is
+  // the shell assertion below, not the URL — this pattern only exists to wait for
+  // the redirect to have happened at all.
+  await expect(page).toHaveURL(/\/(app|admin|profile)/);
 
   /*
    * Wait for the shell itself, not just the URL.
@@ -225,4 +237,52 @@ export async function readInviteUrl(page: Page): Promise<string> {
   const url = await field.inputValue();
   expect(url).toContain('/invite/');
   return url;
+}
+
+/**
+ * Mark an address verified.
+ *
+ * There is no endpoint that does this without a link, and links are only logged
+ * until Resend lands (its own Phase 6 bullet), so the fixture does it at the
+ * database — the same reasoning as `makeSuperAdmin`. Requesting an *additional*
+ * company requires verification unconditionally, so a test about that flow would
+ * otherwise never get past the first refusal.
+ */
+export async function verifyEmail(email: string): Promise<void> {
+  const db = new Client({ connectionString: databaseUrl() });
+  await db.connect();
+  try {
+    const { rowCount } = await db.query(
+      `update users set email_verified_at = coalesce(email_verified_at, now()) where email = $1`,
+      [email]
+    );
+    if (rowCount === 0) throw new Error(`No user ${email} to verify`);
+  } finally {
+    await db.end();
+  }
+}
+
+/**
+ * Give a company the legal identity §3.1.1(6)'s duplicate check reads.
+ *
+ * Companies created before migration 0011 have none, and the only UI that sets
+ * one is the additional-company request — so proving the *duplicate* path needs
+ * an existing company that already carries an identifier.
+ */
+export async function setRegistrationIdentity(
+  companyName: string,
+  country: string,
+  registrationId: string
+): Promise<void> {
+  const db = new Client({ connectionString: databaseUrl() });
+  await db.connect();
+  try {
+    const { rowCount } = await db.query(
+      `update companies set country = $2, registration_id = $3 where name = $1`,
+      [companyName, country, registrationId]
+    );
+    if (rowCount === 0) throw new Error(`No company named "${companyName}" to identify`);
+  } finally {
+    await db.end();
+  }
 }

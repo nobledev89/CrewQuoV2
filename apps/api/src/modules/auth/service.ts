@@ -9,7 +9,7 @@ import {
 import { env } from '../../env';
 import { withTransaction } from '../../db';
 import { AppError } from '../../http/errors';
-import { insertCompany } from '../companies/repo';
+import { createCompanyAtRegistration } from '../company-creation/service';
 import { insertMembership, listMembershipSummaries } from '../memberships/repo';
 import {
   findUserByEmail,
@@ -72,11 +72,15 @@ export async function register(input: RegisterRequest): Promise<AuthResponse> {
       client
     );
     if (input.companyName) {
-      const company = await insertCompany(
-        { name: input.companyName, currency: DEFAULT_CURRENCY },
-        client
-      );
-      await insertMembership({ userId: created.id, companyId: company.id, role: 'OWNER' }, client);
+      // Goes through the creation service, not `insertCompany`, so registration's
+      // company consumes the §3.1.1 first-company allowance like any other. A
+      // signup path that quietly skipped the ledger would hand every account a
+      // free extra tenant.
+      await createCompanyAtRegistration(client, {
+        userId: created.id,
+        name: input.companyName,
+        currency: DEFAULT_CURRENCY,
+      });
     }
     return created;
   });

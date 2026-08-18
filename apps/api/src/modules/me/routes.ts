@@ -10,10 +10,10 @@ import {
 import { asyncHandler } from '../../http/asyncHandler';
 import { getCtx } from '../../http/context';
 import { AppError } from '../../http/errors';
-import { withTransaction } from '../../db';
 import { findUserById, toPublicUser, updateUserProfile } from '../users/repo';
-import { insertMembership, listMembershipSummaries } from '../memberships/repo';
-import { insertCompany, toCompanySummary } from '../companies/repo';
+import { listMembershipSummaries } from '../memberships/repo';
+import { toCompanySummary } from '../companies/repo';
+import { createCompanyForUser } from '../company-creation/service';
 import { recordAudit } from '../audit/record';
 import { resolveEntitlements } from '../entitlements/cache';
 import { listWorkspaceFacts } from './workspaces.repo';
@@ -112,19 +112,38 @@ meRouter.get(
   })
 );
 
-// POST /v1/me/companies — create a company; the caller becomes OWNER.
+/**
+ * POST /v1/me/companies — create a company; the caller becomes OWNER.
+ *
+ * One endpoint, two authorities (§3.1.1): the once-per-identity automatic
+ * allowance, and an `APPROVED` additional-company request. Which one applies is
+ * the server's decision, resolved in `company-creation/service` — a first-time
+ * creator never learns the second concept exists, and a second-time creator
+ * cannot avoid it.
+ *
+ * `201` when this call created the company; `200` when an idempotent retry found
+ * the one an earlier call already made, so a dropped response is not a second
+ * tenant.
+ */
 meRouter.post(
   '/companies',
   asyncHandler(async (req, res) => {
     const ctx = getCtx(req);
     const input = createCompanyRequestSchema.parse(req.body);
+    const user = await findUserById(ctx.userId);
+    if (!user) throw new AppError('NOT_FOUND', 'User not found');
 
-    const company = await withTransaction(async (client) => {
-      const created = await insertCompany({ name: input.name, currency: input.currency }, client);
-      await insertMembership({ userId: ctx.userId, companyId: created.id, role: 'OWNER' }, client);
-      return created;
+    const result = await createCompanyForUser({
+      userId: ctx.userId,
+      isSuperAdmin: ctx.isSuperAdmin,
+      emailVerified: user.email_verified_at !== null,
+      body: input,
     });
 
-    res.status(201).json({ company: toCompanySummary(company) });
+    res.status(result.created ? 201 : 200).json({
+      company: toCompanySummary(result.company),
+      path: result.path,
+      requestId: result.requestId,
+    });
   })
 );

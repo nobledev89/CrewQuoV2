@@ -8,7 +8,18 @@ export interface CompanyRow {
   currency: string;
   is_placeholder: boolean;
   claimed_by_company_id: string | null;
+  /**
+   * Legal identity (§3.1.1(6)). Nullable because every company created before
+   * migration 0011 has neither, and because plenty of jurisdictions and entity
+   * types have no registration identifier at all. The duplicate check treats
+   * absent as "no signal", never as a match.
+   */
+  country: string | null;
+  registration_id: string | null;
 }
+
+const COMPANY_COLUMNS =
+  'id, name, currency, is_placeholder, claimed_by_company_id, country, registration_id';
 
 export function toCompanySummary(row: CompanyRow): CompanySummary {
   return {
@@ -16,13 +27,14 @@ export function toCompanySummary(row: CompanyRow): CompanySummary {
     name: row.name,
     currency: row.currency,
     isPlaceholder: row.is_placeholder,
+    country: row.country,
+    registrationId: row.registration_id,
   };
 }
 
 export function findCompanyById(id: string, runner?: Queryable): Promise<CompanyRow | null> {
   return queryOne<CompanyRow>(
-    `select id, name, currency, is_placeholder, claimed_by_company_id
-       from companies where id = $1`,
+    `select ${COMPANY_COLUMNS} from companies where id = $1`,
     [id],
     runner
   );
@@ -40,7 +52,7 @@ export async function updateCompany(
        currency = coalesce($3, currency),
        updated_at = now()
      where id = $1
-     returning id, name, currency, is_placeholder, claimed_by_company_id`,
+     returning ${COMPANY_COLUMNS}`,
     [id, patch.name ?? null, patch.currency ?? null],
     runner
   );
@@ -71,15 +83,33 @@ export async function markCompanyClaimed(id: string, runner?: Queryable): Promis
   );
 }
 
+/**
+ * The raw insert. **Not** the way a tenant is created — `company-creation`'s
+ * service is, because that is where the §3.1.1 allowance/approval ledger is spent
+ * in the same transaction. This stays public for the placeholder path (§3.6),
+ * which creates a stub owned by nobody and must not consume anyone's allowance.
+ */
 export async function insertCompany(
-  input: { name: string; currency: string; isPlaceholder?: boolean },
+  input: {
+    name: string;
+    currency: string;
+    isPlaceholder?: boolean;
+    country?: string | null;
+    registrationId?: string | null;
+  },
   runner?: Queryable
 ): Promise<CompanyRow> {
   const rows = await query<CompanyRow>(
-    `insert into companies (name, currency, is_placeholder)
-     values ($1, $2, $3)
-     returning id, name, currency, is_placeholder, claimed_by_company_id`,
-    [input.name, input.currency, input.isPlaceholder ?? false],
+    `insert into companies (name, currency, is_placeholder, country, registration_id)
+     values ($1, $2, $3, $4, $5)
+     returning ${COMPANY_COLUMNS}`,
+    [
+      input.name,
+      input.currency,
+      input.isPlaceholder ?? false,
+      input.country ?? null,
+      input.registrationId ?? null,
+    ],
     runner
   );
   return rows[0]!;

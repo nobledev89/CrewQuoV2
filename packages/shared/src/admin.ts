@@ -203,6 +203,15 @@ export type AdminOverrideCreate = z.infer<typeof adminOverrideCreateSchema>;
 export const adminCompTrialSchema = z.object({
   planId: z.string().trim().min(1).max(64),
   days: z.number().int().min(1).max(3650),
+  /**
+   * Trials are ledgered against the owning identity, not the tenant (§3.1.1(5)),
+   * so comping one to a company whose owner already trialled elsewhere is refused
+   * by default. A genuine second business does deserve a second evaluation — this
+   * is how an operator says so, on the record, rather than reaching for an
+   * entitlement override that would leave no trial history at all.
+   */
+  acknowledgeRepeatTrial: z.boolean().optional(),
+  reason: z.string().trim().max(500).optional(),
 });
 export type AdminCompTrial = z.infer<typeof adminCompTrialSchema>;
 
@@ -383,6 +392,20 @@ export const adminPlatformSettingsSchema = z.object({
   registrationOpen: z.boolean(),
   maintenanceMode: z.boolean(),
   maintenanceMessage: z.string().trim().max(500),
+  /**
+   * Company-creation policy (§3.1.1). Both ship **off**, and both are waiting on
+   * a different Phase 6 bullet rather than on a decision:
+   *
+   *  · `requireVerifiedEmail` gates the *automatic* first company on a verified
+   *    address. Verification links are only logged until Resend lands, so turning
+   *    it on today would lock every new signup out of its own company. The
+   *    additional-company request requires verification unconditionally and never
+   *    reads this flag — that user has had time.
+   *  · `checkoutEnabled` routes a paid-plan request to PENDING_CHECKOUT instead
+   *    of the review queue. False until Gumroad exists.
+   */
+  requireVerifiedEmailForFirstCompany: z.boolean(),
+  companyCheckoutEnabled: z.boolean(),
 });
 export type AdminPlatformSettings = z.infer<typeof adminPlatformSettingsSchema>;
 

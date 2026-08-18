@@ -12,6 +12,7 @@ import {
   adminSetSubscriptionSchema,
   adminSetSuperAdminSchema,
   adminUserListQuerySchema,
+  resolveTrialEligibility,
   type AdminCompaniesResponse,
 } from '@crewquo/shared';
 import { asyncHandler } from '../../http/asyncHandler';
@@ -53,6 +54,12 @@ import {
   setUserSuperAdmin,
   updatePlatformSettings,
 } from './platform.repo';
+import { adminCompanyCreationRouter } from '../company-creation/admin';
+import {
+  insertTrialGrants,
+  listCompanyOwnerIds,
+  listPriorTrialGrants,
+} from '../company-creation/repo';
 
 /**
  * Super-admin console API (§5B). Mounted behind requireAuth + requireSuperAdmin.
@@ -325,7 +332,20 @@ adminRouter.post(
   })
 );
 
-/** Comp or extend a trial (§7 `/comp-trial`). */
+/**
+ * Comp or extend a trial (§7 `/comp-trial`).
+ *
+ * Trial eligibility is ledgered against the **owning identity**, not the tenant
+ * (§3.1.1(5)) — otherwise "archive the company, make another" is an unlimited
+ * free tier, and this is the endpoint that would grant it. Three cases the ledger
+ * keeps apart, because collapsing any two breaks a real workflow: extending the
+ * same company's own trial is not a new trial at all; a first trial is the
+ * ordinary path; and a second one for an owner who trialled elsewhere is refused
+ * until an operator acknowledges it with a reason. The acknowledgement exists
+ * because a genuine second business does deserve an evaluation, and the
+ * alternative an operator would otherwise reach for — an entitlement override —
+ * leaves no trial record at all.
+ */
 adminRouter.post(
   '/companies/:id/comp-trial',
   asyncHandler(async (req, res) => {
@@ -336,8 +356,43 @@ adminRouter.post(
     if (!(await companyExists(companyId))) throw new AppError('NOT_FOUND', 'Company not found');
     await assertPlanExists(input.planId);
     const before = await getSubscription(companyId);
+
+    const ownerUserIds = await listCompanyOwnerIds(companyId);
+    const eligibility = resolveTrialEligibility({
+      ownerUserIds,
+      priorGrants: await listPriorTrialGrants(ownerUserIds),
+      targetCompanyId: companyId,
+      targetHasTrial: before?.trialEnd != null,
+      acknowledgeRepeat: input.acknowledgeRepeatTrial ?? false,
+    });
+    if (eligibility.kind === 'REFUSED') {
+      throw new AppError('CONFLICT', eligibility.message, eligibility.details);
+    }
+    if (eligibility.kind === 'REPEAT_ALLOWED' && !input.reason?.trim()) {
+      throw new AppError(
+        'VALIDATION',
+        'Give a reason when granting a repeat trial — it is the only record of why.',
+        { requires: 'reason' }
+      );
+    }
+
     const { trialEnd } = await compTrial(companyId, input.planId, input.days);
     invalidateEntitlements(companyId);
+
+    // An extension is not a grant: the same company's trial getting longer must
+    // not read later as a second trial for that identity.
+    if (eligibility.kind !== 'EXTENSION') {
+      await insertTrialGrants({
+        userIds: ownerUserIds,
+        companyId,
+        planId: input.planId,
+        days: input.days,
+        source: 'ADMIN_COMP',
+        isRepeat: eligibility.kind === 'REPEAT_ALLOWED',
+        reason: input.reason?.trim() || null,
+        grantedByUserId: ctx.userId,
+      });
+    }
 
     await recordAudit({
       companyId,
@@ -349,14 +404,33 @@ adminRouter.post(
         plan: { from: before?.planId ?? null, to: input.planId },
         trialEnd: { from: before?.trialEnd ?? null, to: trialEnd },
         days: input.days,
+        kind: eligibility.kind,
       },
       description: `${input.days}-day trial of ${input.planId} granted by CrewQuo staff`,
     });
-    await recordPlatformAudit({ actorUserId: ctx.userId, action: 'company.trial_comped', entityType: 'COMPANY', entityId: companyId, changes: { before, planId: input.planId, days: input.days, trialEnd }, description: `A ${input.days}-day trial was granted to company ${companyId}` });
+    await recordPlatformAudit({
+      actorUserId: ctx.userId,
+      action: eligibility.kind === 'REPEAT_ALLOWED' ? 'trial.repeat_granted' : 'trial.granted',
+      entityType: 'COMPANY',
+      entityId: companyId,
+      changes: {
+        before,
+        planId: input.planId,
+        days: input.days,
+        trialEnd,
+        kind: eligibility.kind,
+        ownerUserIds,
+        reason: input.reason ?? null,
+      },
+      description: `A ${input.days}-day trial was granted to company ${companyId}`,
+    });
 
     res.json({ company: (await getCompanyDetail(companyId))!.company });
   })
 );
+
+// Additional-company approval queue (§3.1.1(3)).
+adminRouter.use('/company-creation-requests', adminCompanyCreationRouter);
 
 adminRouter.get(
   '/features',

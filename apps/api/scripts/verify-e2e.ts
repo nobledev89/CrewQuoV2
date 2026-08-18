@@ -2211,6 +2211,525 @@ async function main(): Promise<void> {
       (r: any) => r.action === 'engagement.terms_updated' && r.changes?.after?.paymentTermsDays === 30
     ));
 
+  // ── Company ownership & creation safeguard (§3.1.1) ───────────────────────
+  // The acceptance script in §12 of docs/operating-model/company-creation.md.
+  section('Company creation safeguard (§3.1.1)');
+
+  const PW = 'Verify-passw0rd!';
+
+  // 1. Empty. A user who registers with no company creates their included one.
+  const dana = await register('dana');
+  eq('a registration with no company name leaves the account companyless',
+    dana.companyId, null);
+
+  const danaFirst = await call('POST', '/v1/me/companies', {
+    token: dana.token,
+    body: { name: `Northlight Rigging ${RUN}`, currency: 'GBP' },
+  });
+  eq('the included company is created without any approval', danaFirst.status, 201);
+  eq('...on the allowance path', danaFirst.json.path, 'ALLOWANCE');
+  const northlight = danaFirst.json.company.id as string;
+
+  const danaLedger = await db.query(
+    `select company_id, source from company_creation_allowances where user_id = $1`,
+    [dana.userId]
+  );
+  eq('...and it is ledgered permanently against the identity',
+    danaLedger.rows[0]?.company_id, northlight);
+  eq('...recording how it was claimed', danaLedger.rows[0]?.source, 'SELF_SERVE');
+
+  // 2. Exactly once.
+  const danaSecond = await call('POST', '/v1/me/companies', {
+    token: dana.token,
+    body: { name: `Northlight Two ${RUN}` },
+  });
+  eq('a second company through the same door is refused', danaSecond.status, 409);
+  eq('...naming the flow that replaces it',
+    danaSecond.json?.error?.details?.requires, 'company_creation_request');
+  const afterRefusal = await db.query(
+    `select count(*)::int as n from memberships m join companies c on c.id = m.company_id
+      where m.user_id = $1 and m.role = 'OWNER' and not c.is_placeholder`,
+    [dana.userId]
+  );
+  eq('...and nothing was created', afterRefusal.rows[0].n, 1);
+
+  // Registration's own company consumes the allowance too — a signup path that
+  // skipped the ledger would hand every account a free extra tenant.
+  const regUser = await register('ledger', `Ledgered At Signup ${RUN}`);
+  const regLedger = await db.query(
+    `select company_id, source from company_creation_allowances where user_id = $1`,
+    [regUser.userId]
+  );
+  eq('registering with a company name consumes the allowance',
+    regLedger.rows[0]?.company_id, regUser.companyId);
+  eq('...recorded as the registration path', regLedger.rows[0]?.source, 'REGISTRATION');
+  const regSecond = await call('POST', '/v1/me/companies', {
+    token: regUser.token,
+    body: { name: `Second At Signup ${RUN}` },
+  });
+  eq('...so that account cannot create another either', regSecond.status, 409);
+
+  // 3. Invitations are free: a membership received never consumes the allowance.
+  const invited = await register('invitee');
+  const inviteRes = await call('POST', '/v1/members/invite', {
+    token: owner.token,
+    companyId: meridian,
+    body: { email: invited.email, role: 'MANAGER' },
+  });
+  check('a member invite is issued', inviteRes.status < 300, inviteRes.json);
+  const acceptInvited = await call('POST', `/v1/invites/${inviteRes.json.inviteToken}/accept`, {
+    token: invited.token,
+  });
+  check('...and accepted', acceptInvited.status < 300, acceptInvited.json);
+  const invitedLedger = await db.query(
+    `select count(*)::int as n from company_creation_allowances where user_id = $1`,
+    [invited.userId]
+  );
+  eq('an invited membership consumes no allowance', invitedLedger.rows[0].n, 0);
+  const invitedOwn = await call('POST', '/v1/me/companies', {
+    token: invited.token,
+    body: { name: `Invitee Own Co ${RUN}` },
+  });
+  eq('...so that user can still create their own included company', invitedOwn.status, 201);
+
+  // Claiming a placeholder is an invitation too, and must not consume it either.
+  const claimLedger = await db.query(
+    `select count(*)::int as n from company_creation_allowances a
+      where a.user_id = (select user_id from memberships where company_id = $1 and role = 'OWNER' limit 1)
+        and a.company_id = $1`,
+    [northgate]
+  );
+  eq('claiming a placeholder company is not an allowance consumption',
+    claimLedger.rows[0].n, 0);
+
+  // 4. Denied. The refusals are ordered cheapest-and-most-fundamental first, and
+  //    this asserts that order as well as each refusal: an unverified address is
+  //    turned away before the password is ever checked.
+  const noAttestation = await call('POST', '/v1/company-creation-requests', {
+    token: dana.token,
+    body: { legalName: `Northlight Plant ${RUN}`, country: 'GB', password: PW },
+  });
+  eq('a request without the attestation is a validation error', noAttestation.status, 422);
+
+  // Verification is unconditional on this path, unlike the first company.
+  const unverified = await call('POST', '/v1/company-creation-requests', {
+    token: dana.token,
+    body: { legalName: `Northlight Plant ${RUN}`, country: 'GB', attestation: true, password: PW },
+  });
+  eq('an unverified address cannot request another company', unverified.status, 422);
+  eq('...naming what is missing', unverified.json?.error?.details?.requires, 'email_verification');
+  await db.query(`update users set email_verified_at = now() where id = $1`, [dana.userId]);
+
+  const wrongPassword = await call('POST', '/v1/company-creation-requests', {
+    token: dana.token,
+    body: {
+      legalName: `Northlight Plant ${RUN}`,
+      country: 'GB',
+      attestation: true,
+      password: 'not-the-password',
+    },
+  });
+  eq('a verified account with the wrong password is still refused', wrongPassword.status, 401);
+
+  const noRequests = await db.query(
+    `select count(*)::int as n from company_creation_requests where user_id = $1`,
+    [dana.userId]
+  );
+  eq('...and none of those refusals wrote a row', noRequests.rows[0].n, 0);
+
+  // 5. Duplicate identifiers route to recovery; a name-only match only warns.
+  await db.query(
+    `update companies set country = 'GB', registration_id = $2 where id = $1`,
+    [northlight, `SC ${RUN} A`]
+  );
+  const collide = await call('POST', '/v1/company-creation-requests', {
+    token: dana.token,
+    body: {
+      legalName: `Completely Different Name ${RUN}`,
+      country: 'GB',
+      registrationId: `sc-${RUN}-a`,
+      attestation: true,
+      password: PW,
+    },
+  });
+  eq('a registration identifier already on CrewQuo is refused', collide.status, 409);
+  eq('...routing to recovery', collide.json?.error?.details?.requires, 'recovery');
+  check('...with the three ways out',
+    (collide.json?.error?.details?.routes ?? []).length === 3, collide.json?.error?.details);
+  check('...and disclosing no company',
+    !JSON.stringify(collide.json).includes('Northlight Rigging'), collide.json);
+
+  const otherCountry = await call('POST', '/v1/company-creation-requests', {
+    token: dana.token,
+    body: {
+      legalName: `Northlight Rigging ${RUN} Limited`,
+      country: 'IE',
+      registrationId: `SC${RUN}A`,
+      attestation: true,
+      password: PW,
+    },
+  });
+  // Same number, different jurisdiction: not a duplicate. The name matches, so
+  // this is the warning path — it proceeds, and says why it is unsure.
+  eq('the same number in another country is not a duplicate', otherCountry.status, 201);
+  check('...but the matching name is warned about', Boolean(otherCountry.json.warning),
+    otherCountry.json.warning);
+  const warnedRequestId = otherCountry.json.request.id as string;
+
+  // 6. One open request per identity.
+  const ccSecondOpen = await call('POST', '/v1/company-creation-requests', {
+    token: dana.token,
+    body: { legalName: `Another One ${RUN}`, country: 'GB', attestation: true, password: PW },
+  });
+  eq('a second open request is refused', ccSecondOpen.status, 409);
+
+  // The requester withdraws by deleting the row; the platform log keeps both halves.
+  const withdrawn = await call('DELETE', `/v1/company-creation-requests/${warnedRequestId}`, {
+    token: dana.token,
+  });
+  eq('the requester can withdraw a pending request', withdrawn.status, 204);
+  const withdrawnRows = await db.query(
+    `select count(*)::int as n from company_creation_requests where id = $1`,
+    [warnedRequestId]
+  );
+  eq('...and the row is gone', withdrawnRows.rows[0].n, 0);
+  const withdrawTrail = await db.query(
+    `select action from platform_audit_logs where entity_id = $1 order by created_at`,
+    [warnedRequestId]
+  );
+  eq('...but the immutable log holds its whole life',
+    withdrawTrail.rows.map((r: any) => r.action),
+    ['company_creation_request.created', 'company_creation_request.deleted']);
+
+  // 7. Filed, reviewed and decided.
+  const filed = await call('POST', '/v1/company-creation-requests', {
+    token: dana.token,
+    body: {
+      legalName: `Northlight Plant Hire ${RUN}`,
+      displayName: `Northlight Plant ${RUN}`,
+      country: 'GB',
+      registrationId: `SC ${RUN} B`,
+      currency: 'GBP',
+      attestation: true,
+      password: PW,
+    },
+  });
+  eq('a clean request is filed', filed.status, 201);
+  // Checkout is off until Gumroad, so everything lands in the audited-admin arm.
+  eq('...in the review queue, not checkout', filed.json.request.status, 'PENDING_REVIEW');
+  eq('...on the admin route', filed.json.request.approvalRoute, 'ADMIN');
+  const requestId = filed.json.request.id as string;
+
+  const frozen = await db.query(
+    `select attestation_text, attested_at from company_creation_requests where id = $1`,
+    [requestId]
+  );
+  check('...freezing the attestation text onto the row',
+    (frozen.rows[0]?.attestation_text ?? '').includes('separate legal business'),
+    frozen.rows[0]?.attestation_text);
+
+  // Creating is still refused while the request is only pending.
+  const beforeApproval = await call('POST', '/v1/me/companies', {
+    token: dana.token,
+    body: { name: `Northlight Plant ${RUN}`, requestId },
+  });
+  eq('a pending request does not let a company be created', beforeApproval.status, 409);
+
+  const queue = await call('GET', '/v1/admin/company-creation-requests?status=PENDING_REVIEW', {
+    token: staff.token,
+  });
+  eq('staff can read the review queue', queue.status, 200);
+  const queued = queue.json.data.find((r: any) => r.id === requestId);
+  check('...containing the request', Boolean(queued), queue.json.data.length);
+  eq('...with what the reviewer actually needs: how many they already own',
+    queued?.ownedCompanies, 1);
+
+  const customerQueue = await call('GET', '/v1/admin/company-creation-requests', {
+    token: dana.token,
+  });
+  eq('a customer cannot read the queue', customerQueue.status, 403);
+
+  const noReason = await call(`POST`, `/v1/admin/company-creation-requests/${requestId}/reject`, {
+    token: staff.token,
+    body: {},
+  });
+  eq('a decision with no reason is refused', noReason.status, 422);
+
+  const ccApproved = await call('POST', `/v1/admin/company-creation-requests/${requestId}/approve`, {
+    token: staff.token,
+    body: { reason: 'Verified separate legal entity, Companies House checked' },
+  });
+  eq('an approval with a reason is accepted', ccApproved.status, 200);
+  eq('...moving the request to APPROVED', ccApproved.json.request.status, 'APPROVED');
+
+  const ccReApprove = await call('POST', `/v1/admin/company-creation-requests/${requestId}/approve`, {
+    token: staff.token,
+    body: { reason: 'again' },
+  });
+  eq('a second approval is refused', ccReApprove.status, 409);
+
+  // 8. Consumption is single use, and idempotent under a key.
+  const IDEM = `verify-${RUN}-plant`;
+  const consumed = await call('POST', '/v1/me/companies', {
+    token: dana.token,
+    body: { name: `Northlight Plant ${RUN}`, currency: 'GBP', requestId, idempotencyKey: IDEM },
+  });
+  eq('the approval creates the company', consumed.status, 201);
+  eq('...on the approval path', consumed.json.path, 'APPROVAL');
+  const plant = consumed.json.company.id as string;
+
+  const requestAfter = await db.query(
+    `select status, company_id from company_creation_requests where id = $1`,
+    [requestId]
+  );
+  eq('...consuming the request', requestAfter.rows[0]?.status, 'CONSUMED');
+  eq('...and recording which company it became', requestAfter.rows[0]?.company_id, plant);
+
+  const identity = await db.query(
+    `select country, registration_id, registration_id_normalized from companies where id = $1`,
+    [plant]
+  );
+  eq('the reviewed legal identity lands on the company', identity.rows[0]?.country, 'GB');
+  eq('...normalised for the next duplicate check',
+    identity.rows[0]?.registration_id_normalized, `SC${RUN}B`.toUpperCase());
+
+  const replay = await call('POST', '/v1/me/companies', {
+    token: dana.token,
+    body: { name: `Northlight Plant ${RUN}`, currency: 'GBP', idempotencyKey: IDEM },
+  });
+  eq('an idempotent retry returns the same company, not a second one', replay.status, 200);
+  eq('...the very same one', replay.json.company.id, plant);
+
+  const replayNoKey = await call('POST', '/v1/me/companies', {
+    token: dana.token,
+    body: { name: `Northlight Plant ${RUN}`, currency: 'GBP' },
+  });
+  eq('a retry with no key is refused rather than silently duplicating', replayNoKey.status, 409);
+
+  const totalOwned = await db.query(
+    `select count(*)::int as n from memberships m join companies c on c.id = m.company_id
+      where m.user_id = $1 and m.role = 'OWNER' and not c.is_placeholder`,
+    [dana.userId]
+  );
+  eq('...so exactly two companies exist for this identity', totalOwned.rows[0].n, 2);
+
+  // Independent subscription and data boundary (§3.1.1(4)).
+  const plantBoundary = await db.query(
+    `select
+       (select count(*)::int from company_subscriptions where company_id = $1) as subs,
+       (select count(*)::int from role_catalog where company_id = $1) as roles,
+       (select count(*)::int from rate_cards where company_id = $1) as cards,
+       (select count(*)::int from engagements
+         where client_company_id = $1 or provider_company_id = $1) as edges`,
+    [plant]
+  );
+  eq('a created company inherits no subscription', plantBoundary.rows[0].subs, 0);
+  eq('...no role catalog', plantBoundary.rows[0].roles, 0);
+  eq('...no rate cards', plantBoundary.rows[0].cards, 0);
+  eq('...and no relationships', plantBoundary.rows[0].edges, 0);
+  const plantCurrency = await db.query(`select currency from companies where id = $1`, [plant]);
+  eq('...and carries its own currency', plantCurrency.rows[0]?.currency, 'GBP');
+
+  // 9. An expired approval is refused, and says when it lapsed.
+  const expiring = await call('POST', '/v1/company-creation-requests', {
+    token: dana.token,
+    body: { legalName: `Northlight Lapsed ${RUN}`, country: 'GB', attestation: true, password: PW },
+  });
+  eq('a further request may be filed once the last is consumed', expiring.status, 201);
+  const expiringId = expiring.json.request.id as string;
+  await call('POST', `/v1/admin/company-creation-requests/${expiringId}/approve`, {
+    token: staff.token,
+    body: { reason: 'ccApproved, then left to lapse for the test' },
+  });
+  await db.query(
+    `update company_creation_requests set expires_at = now() - interval '1 day' where id = $1`,
+    [expiringId]
+  );
+  const lapsed = await call('POST', '/v1/me/companies', {
+    token: dana.token,
+    body: { name: `Northlight Lapsed ${RUN}`, requestId: expiringId },
+  });
+  eq('an expired approval cannot be consumed', lapsed.status, 409);
+  const lapsedState = await call('GET', '/v1/company-creation-requests', { token: dana.token });
+  eq('...and it reads as EXPIRED without a writer touching it',
+    lapsedState.json.history.find((r: any) => r.id === expiringId)?.status, 'EXPIRED');
+  eq('...so it no longer occupies the single open slot', lapsedState.json.openRequest, null);
+  eq('...and the row itself is untouched in the database',
+    (await db.query(`select status from company_creation_requests where id = $1`, [expiringId]))
+      .rows[0]?.status,
+    'APPROVED');
+
+  const rejectExpired = await call(
+    'POST',
+    `/v1/admin/company-creation-requests/${expiringId}/reject`,
+    { token: staff.token, body: { reason: 'too late' } }
+  );
+  eq('a lapsed request cannot be decided either', rejectExpired.status, 409);
+
+  // 10. Rejection is terminal and carries its reason to the requester.
+  await db.query(`delete from company_creation_requests where id = $1`, [expiringId]);
+  const toReject = await call('POST', '/v1/company-creation-requests', {
+    token: dana.token,
+    body: { legalName: `Northlight Refused ${RUN}`, country: 'GB', attestation: true, password: PW },
+  });
+  const rejectId = toReject.json.request.id as string;
+  const ccRejected = await call('POST', `/v1/admin/company-creation-requests/${rejectId}/reject`, {
+    token: staff.token,
+    body: { reason: 'This is a department of an existing company, not a separate business' },
+  });
+  eq('a rejection with a reason is recorded', ccRejected.status, 200);
+  eq('...as a terminal state', ccRejected.json.request.status, 'REJECTED');
+
+  const danaState = await call('GET', '/v1/company-creation-requests', { token: dana.token });
+  eq('the requester reads the decision without any email existing',
+    danaState.json.history.find((r: any) => r.id === rejectId)?.decisionReason,
+    'This is a department of an existing company, not a separate business');
+  eq('...and the allowance is still shown as spent', danaState.json.allowanceAvailable, false);
+  eq('...with a fresh request possible again', danaState.json.canRequest, true);
+
+  const deleteDecided = await call('DELETE', `/v1/company-creation-requests/${rejectId}`, {
+    token: dana.token,
+  });
+  eq('a decided request cannot be withdrawn', deleteDecided.status, 409);
+
+  // Somebody else's request is invisible, not merely forbidden.
+  const foreignRequest = await call('DELETE', `/v1/company-creation-requests/${requestId}`, {
+    token: regUser.token,
+  });
+  eq("another user's request id is a 404, not a 403", foreignRequest.status, 404);
+
+  // 11. Platform staff stay out of the customer path.
+  const staffCreate = await call('POST', '/v1/me/companies', {
+    token: staff.token,
+    body: { name: `Staff Made ${RUN}` },
+  });
+  eq('platform staff cannot create a company through the customer endpoint', staffCreate.status, 403);
+  const staffRequest = await call('POST', '/v1/company-creation-requests', {
+    token: staff.token,
+    body: { legalName: `Staff Co ${RUN}`, country: 'GB', attestation: true, password: PW },
+  });
+  eq('...nor request one', staffRequest.status, 403);
+
+  // 12. Trials do not reset across a new tenant.
+  const trialOne = await call('POST', `/v1/admin/companies/${northlight}/comp-trial`, {
+    token: staff.token,
+    body: { planId: 'pro', days: 14 },
+  });
+  eq('a first trial is comped normally', trialOne.status, 200);
+  const grantOne = await db.query(
+    `select is_repeat, source from trial_grants where company_id = $1 and user_id = $2`,
+    [northlight, dana.userId]
+  );
+  eq('...and ledgered against the owning identity', grantOne.rows.length, 1);
+  eq('...as a first grant', grantOne.rows[0]?.is_repeat, false);
+
+  const extend = await call('POST', `/v1/admin/companies/${northlight}/comp-trial`, {
+    token: staff.token,
+    body: { planId: 'pro', days: 7 },
+  });
+  eq('extending the same company\'s trial is allowed', extend.status, 200);
+  const afterExtend = await db.query(
+    `select count(*)::int as n from trial_grants where company_id = $1`,
+    [northlight]
+  );
+  eq('...and is not recorded as a second trial', afterExtend.rows[0].n, 1);
+
+  const secondTrial = await call('POST', `/v1/admin/companies/${plant}/comp-trial`, {
+    token: staff.token,
+    body: { planId: 'pro', days: 14 },
+  });
+  eq('the same owner cannot trial again through a new company', secondTrial.status, 409);
+  eq('...naming what would allow it',
+    secondTrial.json?.error?.details?.requires, 'acknowledgeRepeatTrial');
+
+  const repeatNoReason = await call('POST', `/v1/admin/companies/${plant}/comp-trial`, {
+    token: staff.token,
+    body: { planId: 'pro', days: 14, acknowledgeRepeatTrial: true },
+  });
+  eq('an acknowledged repeat still needs a reason', repeatNoReason.status, 422);
+
+  const repeat = await call('POST', `/v1/admin/companies/${plant}/comp-trial`, {
+    token: staff.token,
+    body: {
+      planId: 'pro',
+      days: 14,
+      acknowledgeRepeatTrial: true,
+      reason: 'Genuinely separate plant-hire business, verified at approval',
+    },
+  });
+  eq('...and is then allowed', repeat.status, 200);
+  const repeatGrant = await db.query(
+    `select is_repeat, reason from trial_grants where company_id = $1`,
+    [plant]
+  );
+  eq('...recorded as a repeat', repeatGrant.rows[0]?.is_repeat, true);
+  check('...with the operator\'s reason kept',
+    (repeatGrant.rows[0]?.reason ?? '').includes('plant-hire'), repeatGrant.rows[0]?.reason);
+  const repeatAudit = await db.query(
+    `select count(*)::int as n from platform_audit_logs
+      where action = 'trial.repeat_granted' and entity_id = $1`,
+    [plant]
+  );
+  eq('...and audited as one on the platform trail', repeatAudit.rows[0].n, 1);
+
+  // 13. Rate limiting is counted from the immutable log, so deleting buys nothing.
+  const limiter = await register('limiter');
+  await db.query(`update users set email_verified_at = now() where id = $1`, [limiter.userId]);
+  await call('POST', '/v1/me/companies', {
+    token: limiter.token,
+    body: { name: `Limiter Co ${RUN}` },
+  });
+  let limited: any = null;
+  for (let i = 0; i < 6; i += 1) {
+    const res = await call('POST', '/v1/company-creation-requests', {
+      token: limiter.token,
+      body: { legalName: `Limiter Try ${i} ${RUN}`, country: 'GB', attestation: true, password: PW },
+    });
+    if (res.status === 201) {
+      // Delete it so the one-open-request rule is not what refuses the next one —
+      // the point is that the *log* is what counts, and a delete does not undo it.
+      await call('DELETE', `/v1/company-creation-requests/${res.json.request.id}`, {
+        token: limiter.token,
+      });
+    }
+    if (res.status === 429) { limited = res; break; }
+  }
+  check('a sixth request in 24 hours is rate limited', limited?.status === 429, limited?.status);
+  eq('...even though every earlier one was deleted',
+    limited?.json?.error?.details?.retryAfterHours, 24);
+
+  // 14. The migration's ccBackfill left existing owners safe.
+  const ccBackfill = await db.query(
+    `select count(*)::int as n
+       from memberships m
+       join companies c on c.id = m.company_id
+      where m.role = 'OWNER' and m.status <> 'INVITED'
+        and not c.is_placeholder and c.claimed_by_company_id is null
+        and c.created_at < (select applied_at from schema_migrations
+                             where filename = '0011_company_creation_safeguard.sql')
+        and not exists (select 1 from company_creation_allowances a where a.user_id = m.user_id)`
+  );
+  eq('every pre-existing real-company owner is ledgered', ccBackfill.rows[0].n, 0);
+
+  // The ledger survives its company, which is the loophole §3.1.1(1) closes.
+  const doomed = await register('doomed');
+  const doomedCreate = await call('POST', '/v1/me/companies', {
+    token: doomed.token,
+    body: { name: `Doomed Co ${RUN}` },
+  });
+  await db.query(`delete from companies where id = $1`, [doomedCreate.json.company.id]);
+  const doomedLedger = await db.query(
+    `select company_id from company_creation_allowances where user_id = $1`,
+    [doomed.userId]
+  );
+  eq('deleting the company does not delete the ledger row', doomedLedger.rows.length, 1);
+  eq('...it only forgets which company it was', doomedLedger.rows[0]?.company_id, null);
+  const doomedAgain = await call('POST', '/v1/me/companies', {
+    token: doomed.token,
+    body: { name: `Doomed Again ${RUN}` },
+  });
+  eq('...so deleting a company does not restore the allowance', doomedAgain.status, 409);
+
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);
   if (failures.length === 0) {

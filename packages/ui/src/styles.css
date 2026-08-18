@@ -153,6 +153,8 @@ a:hover { text-decoration: underline; }
 .cq-badge--success::before { background: var(--cq-success); }
 .cq-badge--warning { border-color: #edd3a5; background: var(--cq-warning-soft); color: var(--cq-warning); }
 .cq-badge--warning::before { background: #e19b27; }
+.cq-badge--danger { border-color: #e4a39d; background: var(--cq-danger-soft); color: var(--cq-danger); }
+.cq-badge--danger::before { background: var(--cq-danger); }
 .cq-error { margin: 0; color: var(--cq-danger); font-size: 13px; }
 .cq-notice { padding: 13px 14px; border: 1px solid var(--cq-border); border-radius: var(--cq-radius-panel); background: var(--cq-surface-subtle); color: var(--cq-text-secondary); font-size: 13px; }
 .cq-empty { padding: 42px 20px; text-align: center; }

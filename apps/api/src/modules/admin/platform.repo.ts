@@ -18,7 +18,18 @@ const DEFAULT_SETTINGS: AdminPlatformSettings = {
   registrationOpen: true,
   maintenanceMode: false,
   maintenanceMessage: '',
+  requireVerifiedEmailForFirstCompany: false,
+  companyCheckoutEnabled: false,
 };
+
+/**
+ * `platform.company_creation` (§3.1.1) is stored under its own key rather than
+ * folded into `platform.access`, because its two flags are read on a hot path by
+ * the creation service and are each waiting on a different Phase 6 bullet —
+ * Resend for verification, Gumroad for checkout. Keeping them separable is what
+ * lets either be flipped the day its dependency lands.
+ */
+const SETTINGS_KEYS = ['platform.branding', 'platform.access', 'platform.company_creation'];
 
 interface AuditRow {
   id: string;
@@ -362,13 +373,22 @@ export async function getAdminOperations(): Promise<AdminOperations> {
 
 export async function getPlatformSettings(runner?: Queryable): Promise<AdminPlatformSettings> {
   const rows = await query<{ key: string; value: Record<string, unknown> }>(
-    `select key, value from system_settings where key in ('platform.branding','platform.access')`,
-    [],
+    `select key, value from system_settings where key = any($1::text[])`,
+    [SETTINGS_KEYS],
     runner
   );
   const branding = rows.find((row) => row.key === 'platform.branding')?.value ?? {};
   const access = rows.find((row) => row.key === 'platform.access')?.value ?? {};
-  return { ...DEFAULT_SETTINGS, ...branding, ...access } as AdminPlatformSettings;
+  const creation = (rows.find((row) => row.key === 'platform.company_creation')?.value ??
+    {}) as { requireVerifiedEmail?: boolean; checkoutEnabled?: boolean };
+  return {
+    ...DEFAULT_SETTINGS,
+    ...branding,
+    ...access,
+    requireVerifiedEmailForFirstCompany:
+      creation.requireVerifiedEmail ?? DEFAULT_SETTINGS.requireVerifiedEmailForFirstCompany,
+    companyCheckoutEnabled: creation.checkoutEnabled ?? DEFAULT_SETTINGS.companyCheckoutEnabled,
+  } as AdminPlatformSettings;
 }
 
 export async function updatePlatformSettings(
@@ -393,6 +413,14 @@ export async function updatePlatformSettings(
       `insert into system_settings (key, value) values ($1, $2)
        on conflict (key) do update set value = excluded.value, updated_at = now()`,
       ['platform.access', JSON.stringify(access)], client
+    );
+    await query(
+      `insert into system_settings (key, value) values ($1, $2)
+       on conflict (key) do update set value = excluded.value, updated_at = now()`,
+      ['platform.company_creation', JSON.stringify({
+        requireVerifiedEmail: next.requireVerifiedEmailForFirstCompany,
+        checkoutEnabled: next.companyCheckoutEnabled,
+      })], client
     );
     await recordPlatformAudit({
       actorUserId,

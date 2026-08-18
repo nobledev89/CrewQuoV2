@@ -38,6 +38,7 @@ import {
   commercialAgreementsRouter,
   rateProposalsRouter,
 } from './modules/commercial/routes';
+import { companyCreationRouter } from './modules/company-creation/routes';
 
 /** Build the Express app. Kept separate from listen() so tests can import it. */
 export function buildApp(): Express {
@@ -64,6 +65,9 @@ export function buildApp(): Express {
 
   // Authenticated routes.
   app.use('/v1/me', requireAuth, meRouter);
+  // Additional-company requests (§3.1.1). Companyless by nature — a request
+  // exists before its tenant does, so it takes no X-Company-Id.
+  app.use('/v1/company-creation-requests', requireAuth, companyCreationRouter);
   app.use('/v1/companies', requireAuth, companiesRouter);
   app.use('/v1/entitlements', requireAuth, entitlementsRouter);
 

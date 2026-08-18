@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import {
+  PARITY_PASSWORD,
   RUN,
   acceptInviteAsNewUser,
   emailFor,
@@ -9,7 +10,9 @@ import {
   readInviteUrl,
   registerHeadless,
   registerViaUi,
+  setRegistrationIdentity,
   signIn,
+  verifyEmail,
 } from './helpers';
 
 /**
@@ -29,6 +32,10 @@ import {
 const CONTRACTOR_CO = `Meridian Contracts ${RUN}`;
 const SUB_CO = `Pashe Rigging ${RUN}`;
 const CLIENT_CO = `Hanmore Estates ${RUN}`;
+// The company-creation safeguard (§3.1.1) needs one identity owning two tenants:
+// the included one, and a second that has to be approved before it exists.
+const FIRST_CO = `Northlight Rigging ${RUN}`;
+const SECOND_CO = `Northlight Plant Hire ${RUN}`;
 const ROLE = 'Rigger';
 
 // PAY 50.00/h, BILL 82.00/h. 8 hours -> cost 40000c, bill 65600c.
@@ -66,6 +73,8 @@ test.describe('Web core workflows', () => {
   let contractor: Page;
   let sub: Page;
   let client: Page;
+  /** The identity that ends up owning two companies (§3.1.1). */
+  let twoCoEmail: string;
 
   test('the register screen creates a free account and lands in account setup', async ({ browser }) => {
     // Proves the registration UI in isolation. This company stays on the free `crew`
@@ -630,5 +639,197 @@ test.describe('Web core workflows', () => {
     // The free plan could not hire; the comped trial can.
     await expect(signup.getByText('You can engage your own subcontractors')).toBeVisible();
     await signup.close();
+  });
+  /*
+   * ── Company ownership & creation safeguard (§3.1.1) ────────────────────────
+   *
+   * Three screens, one policy: the profile section that offers the included
+   * company, the same section once the allowance is spent, and the Platform
+   * console queue where the decision is actually made. Only a browser can prove
+   * that the three agree — the API script proves the rules, but not that a
+   * refused customer is shown the way forward rather than a dead end.
+   */
+
+  test('the included company is offered once, and the second one is not', async ({ browser }) => {
+    const email = await registerHeadless({ handle: 'twoco', name: 'Priya Two' });
+    // Verified, because an unverified address cannot request an additional
+    // company at all — that refusal is asserted by the API script, and asserting
+    // it again here would only prove the same rule twice.
+    await verifyEmail(email);
+    const page = await freshPage(browser);
+    await signIn(page, email);
+
+    // An account with no membership never reaches a page's own content — the
+    // shell shows the companyless empty state instead. That is the real first
+    // creation surface, and it is on the same allowance as every other one.
+    await page.goto('/profile');
+    await expect(page.getByRole('heading', { name: 'Create your company' })).toBeVisible();
+    await page.getByLabel('Company name').fill(FIRST_CO);
+    await page.getByRole('button', { name: 'Create company' }).click();
+    await expect(page.getByRole('heading', { name: 'Profile' })).toBeVisible();
+    await expect(page.getByRole('table', { name: 'Your company memberships' })).toContainText(
+      FIRST_CO
+    );
+
+    // The allowance is spent, so the same section is now the advanced flow. The
+    // wording change is the point: nothing says "you cannot", it says what the
+    // next company costs you in ceremony.
+    await page.reload();
+    await expect(page.getByRole('heading', { name: 'Start your company' })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'Start another company' })).toBeVisible();
+
+    twoCoEmail = email;
+    await page.close();
+  });
+
+  test('a duplicate registration number routes to recovery instead of a second tenant', async ({
+    browser,
+  }) => {
+    // Give the company a registered identity, then have somebody try to claim the
+    // same one. This is the "confused re-registrant" persona: the answer is an
+    // invitation, not a new empty tenant.
+    await setRegistrationIdentity(FIRST_CO, 'GB', `SC ${RUN} 001`);
+
+    const email = await registerHeadless({ handle: 'dupe', name: 'Sam Duplicate' });
+    await verifyEmail(email);
+    const page = await freshPage(browser);
+    await signIn(page, email);
+
+    await page.goto('/profile');
+    await page.getByLabel('Company name').fill(`Duplicate Co ${RUN}`);
+    await page.getByRole('button', { name: 'Create company' }).click();
+    await expect(page.getByRole('heading', { name: 'Profile' })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Request a company' }).click();
+    await page.getByLabel('Registered legal name').fill(`Copycat Holdings ${RUN}`);
+    await page.getByLabel('Country').fill('GB');
+    await page.getByLabel('Registration number').fill(`sc-${RUN}-001`);
+    await page.getByLabel('Confirm your password').fill(PARITY_PASSWORD);
+    await page.getByText(/separate legal business/).click();
+    await page.getByRole('button', { name: 'Send request' }).click();
+
+    // Refused — and the three ways out are on screen, which is the whole
+    // difference between a safeguard and a wall.
+    await expect(
+      page.getByText('A company with this registration number is already on CrewQuo.')
+    ).toBeVisible();
+    await expect(page.getByText(/Ask an existing owner or admin/)).toBeVisible();
+    await expect(page.getByText(/request ownership recovery from support/)).toBeVisible();
+    await page.close();
+  });
+
+  test('an additional company is requested, approved in the console, and created', async ({
+    browser,
+  }) => {
+    const page = await freshPage(browser);
+    await signIn(page, twoCoEmail);
+    await page.goto('/profile');
+
+    await page.getByRole('button', { name: 'Request a company' }).click();
+    await page.getByLabel('Registered legal name').fill(SECOND_CO);
+    await page.getByLabel('Country').fill('GB');
+    await page.getByLabel('Registration number').fill(`SC ${RUN} 777`);
+    await page.getByLabel('Confirm your password').fill(PARITY_PASSWORD);
+
+    // The attestation is the whole reason this flow is not a text field: it is
+    // refused until it is ticked, by the schema as well as the button.
+    const send = page.getByRole('button', { name: 'Send request' });
+    await expect(send).toBeDisabled();
+    await page.getByText(/separate legal business/).click();
+    await expect(send).toBeEnabled();
+    await send.click();
+
+    // No email exists yet, so the row itself is the notification — and it appears
+    // twice on purpose: once as the live status, once in the history table.
+    const filed = page
+      .locator('.cq-section')
+      .filter({ has: page.getByRole('heading', { name: 'Your company request is with us' }) });
+    await expect(filed).toBeVisible();
+    await expect(filed.getByText('Pending review')).toBeVisible();
+    await expect(
+      page.getByRole('table', { name: 'Company creation requests' }).getByText('Pending review')
+    ).toBeVisible();
+
+    // ── The reviewer ────────────────────────────────────────────────────────
+    const staffEmail = await registerHeadless({ handle: 'platform3', name: 'Mo Platform' });
+    await makeSuperAdmin(staffEmail);
+    const staff = await freshPage(browser);
+    await signIn(staff, staffEmail);
+    await staff.goto('/admin/operations');
+
+    const queue = staff.getByRole('table', { name: 'Company creation requests' });
+    const row = queue.getByRole('row', { name: new RegExp(SECOND_CO) });
+    await expect(row).toBeVisible();
+    // The reviewer's actual job in one column: this person already owns one.
+    await expect(row).toContainText('Priya Two');
+
+    // A decision with no reason is refused on the screen, not just by the API.
+    await row.getByRole('button', { name: 'Approve' }).click();
+    await expect(staff.getByText('Give a reason — it is the only record of why.')).toBeVisible();
+
+    await staff.getByLabel('Decision reason').fill('Verified separate legal entity');
+    await row.getByRole('button', { name: 'Approve' }).click();
+    await expect(row).toContainText('Approved');
+    await staff.close();
+
+    // ── Back to the customer ────────────────────────────────────────────────
+    await page.reload();
+    await expect(
+      page.getByRole('heading', { name: 'Your additional company is approved' })
+    ).toBeVisible();
+    // The legal identity is fixed to what was reviewed; only the trading name is open.
+    await expect(page.getByLabel('Trading name')).toHaveValue(SECOND_CO);
+    await page.getByRole('button', { name: 'Create company' }).click();
+
+    // It exists, it is separate, and it is now switchable to.
+    await expect(page.getByRole('table', { name: 'Your company memberships' })).toContainText(
+      SECOND_CO
+    );
+    await expect(
+      page.getByRole('table', { name: 'Company creation requests' }).getByText('Consumed')
+    ).toBeVisible();
+
+    // And the allowance stays spent: the section offers a request, not a company.
+    await expect(page.getByRole('heading', { name: 'Start your company' })).toHaveCount(0);
+    await page.close();
+  });
+
+  test('a second trial cannot be comped to the same owner through the new company', async ({
+    browser,
+  }) => {
+    // The reset this ledger exists to stop, driven from the console an operator
+    // would actually use: same person, new tenant, second free evaluation.
+    const staffEmail = await registerHeadless({ handle: 'platform4', name: 'Ash Platform' });
+    await makeSuperAdmin(staffEmail);
+    const staff = await freshPage(browser);
+    await signIn(staff, staffEmail);
+
+    await staff.goto('/admin/companies');
+    await staff.getByLabel('Name or member email').fill(FIRST_CO);
+    await staff.getByRole('button', { name: 'Search' }).click();
+    await staff
+      .getByRole('row', { name: new RegExp(FIRST_CO) })
+      .getByRole('button', { name: 'Open' })
+      .click();
+    await staff.getByLabel(/^Plan/).selectOption('starter');
+    await staff.getByLabel(/^Trial days/).fill('14');
+    await staff.getByRole('button', { name: 'Comp / extend trial' }).click();
+    await expect(staff.getByText(/Trial of starter runs to/)).toBeVisible();
+
+    await staff.goto('/admin/companies');
+    await staff.getByLabel('Name or member email').fill(SECOND_CO);
+    await staff.getByRole('button', { name: 'Search' }).click();
+    await staff
+      .getByRole('row', { name: new RegExp(SECOND_CO) })
+      .getByRole('button', { name: 'Open' })
+      .click();
+    await staff.getByLabel(/^Plan/).selectOption('starter');
+    await staff.getByLabel(/^Trial days/).fill('14');
+    await staff.getByRole('button', { name: 'Comp / extend trial' }).click();
+
+    await expect(
+      staff.getByText(/does not reset trial eligibility|already had a trial on another company/)
+    ).toBeVisible();
+    await staff.close();
   });
 });
