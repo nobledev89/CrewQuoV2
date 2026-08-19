@@ -67,11 +67,19 @@ companiesRouter.patch(
         ...(patch.currency !== undefined
           ? { currency: { from: before.currency, to: company.currency } }
           : {}),
+        // The zone decides what "today" means for every date-bound rule from
+        // here on — including whether a rate schedule counts as back-dated — so
+        // who moved it and when is evidence, not telemetry.
+        ...(patch.timeZone !== undefined
+          ? { timeZone: { from: before.time_zone, to: company.time_zone } }
+          : {}),
       },
       description:
         patch.currency !== undefined && patch.currency !== before.currency
           ? `Company currency changed from ${before.currency} to ${company.currency}`
-          : 'Company settings updated',
+          : patch.timeZone !== undefined && patch.timeZone !== before.time_zone
+            ? `Company time zone changed from ${before.time_zone} to ${company.time_zone}`
+            : 'Company settings updated',
     });
 
     res.json({ company: toCompanySummary(company) });

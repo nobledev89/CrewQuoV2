@@ -953,4 +953,32 @@ test.describe('Web core workflows', () => {
       await expect(page.getByRole('link', { name: 'Needs you' })).toBeVisible();
     }
   });
+
+  test('a company sets its time zone, and is told nothing recorded will move', async () => {
+    await contractor.goto('/settings');
+    const zone = () => contractor.getByLabel(/^Time zone/);
+
+    // Deliberately does not assume the starting value. An earlier assertion in
+    // this file may already have moved it, and a test that only passes from a
+    // pristine database is a test that fails for the wrong reason later.
+    const before = (await zone().inputValue()) || 'UTC';
+    const target = before === 'Asia/Manila' ? 'Asia/Dubai' : 'Asia/Manila';
+
+    await zone().fill(target);
+    // The promise that matters: a zone change is presentation and future
+    // bucketing, never a migration of what is already recorded.
+    await expect(contractor.getByText(/Nothing already recorded moves/)).toBeVisible();
+    await contractor.getByRole('button', { name: 'Save changes' }).click();
+
+    // Asserted after a reload rather than on a transient badge: what the user
+    // needs is that the choice survived, not that a toast appeared.
+    await contractor.reload();
+    await expect(zone()).toHaveValue(target);
+
+    // Leave it on UTC so nothing later in the file depends on this test's order.
+    await zone().fill('UTC');
+    await contractor.getByRole('button', { name: 'Save changes' }).click();
+    await contractor.reload();
+    await expect(zone()).toHaveValue('UTC');
+  });
 });

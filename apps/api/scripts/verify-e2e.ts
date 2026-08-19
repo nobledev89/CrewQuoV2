@@ -3505,6 +3505,174 @@ async function main(): Promise<void> {
     /missing from payload/i.test(poisoned.rows[0]?.last_error ?? ''),
     poisoned.rows[0]?.last_error);
 
+  // ── Time zones (§42) ──────────────────────────────────────────────────────
+  // docs/operating-model/time.md §12, implemented. The bug this section exists
+  // for: `todayIso()` returned the SERVER's UTC date and the §3.3.1 back-dating
+  // safeguard keyed off it, so the rule was wrong in both directions at
+  // different hours depending on the customer's zone.
+  section('Time zones — whose day is it');
+
+  const tzOwner = await register('tz-owner', `Meridian Manila ${RUN}`);
+  const tzCompany = tzOwner.companyId!;
+  await subscribe(tzCompany, 'pro');
+
+  // 1 ── Empty: an existing company reads as UTC and behaves exactly as before.
+  const tzDefault = await call('GET', `/v1/companies/${tzCompany}`, {
+    token: tzOwner.token, companyId: tzCompany,
+  });
+  eq('a company defaults to UTC', tzDefault.json.company.timeZone, 'UTC');
+
+  // 2 ── Denied before allowed, so the role rule is genuinely what is tested.
+  const tzMemberInvite = await call('POST', '/v1/members/invite', {
+    token: tzOwner.token,
+    companyId: tzCompany,
+    body: { email: `tzmember+${RUN}@verify.crewquo.test`, role: 'MEMBER' },
+  });
+  eq('a MEMBER is invited', tzMemberInvite.status, 201);
+  const tzMember = await register('tz-member', undefined, `tzmember+${RUN}@verify.crewquo.test`);
+  const tzMemberAccept = await call(
+    'POST', `/v1/invites/${tzMemberInvite.json.inviteToken}/accept`, { token: tzMember.token }
+  );
+  eq('...and accepts', tzMemberAccept.status, 201);
+  const memberSetsZone = await call('PATCH', `/v1/companies/${tzCompany}`, {
+    token: tzMember.token, companyId: tzCompany, body: { timeZone: 'Asia/Manila' },
+  });
+  eq('a MEMBER cannot change the company time zone', memberSetsZone.status, 403);
+
+  const badZone = await call('PATCH', `/v1/companies/${tzCompany}`, {
+    token: tzOwner.token, companyId: tzCompany, body: { timeZone: 'Not/AZone' },
+  });
+  eq('an invalid IANA zone is refused', badZone.status, 422);
+
+  // 3 ── Set, and audited.
+  const setZone = await call('PATCH', `/v1/companies/${tzCompany}`, {
+    token: tzOwner.token, companyId: tzCompany, body: { timeZone: 'Asia/Manila' },
+  });
+  eq('an owner sets the company zone', setZone.json.company.timeZone, 'Asia/Manila');
+  const zoneAudit = await db.query(
+    `select changes from audit_logs
+      where company_id = $1 and action = 'company.updated'
+        and changes -> 'timeZone' ->> 'to' = 'Asia/Manila'    `,
+    [tzCompany]
+  );
+  check('...and the change is audited', zoneAudit.rows.length >= 1, zoneAudit.rows.length);
+
+  // 4 ── The bug, asserted in both directions.
+  //
+  // Rather than wait for an hour when UTC and the company disagree, the company
+  // is moved to whichever probe zone is genuinely on a different date from the
+  // server right now — reproducing the breaking condition deterministically.
+  const dayIn = async (zone: string): Promise<string> => {
+    const r = await db.query<{ d: string }>(
+      `select to_char(now() at time zone $1, 'YYYY-MM-DD') as d`, [zone]
+    );
+    return r.rows[0]!.d;
+  };
+  const serverDay = await dayIn('UTC');
+  const manilaDay = await dayIn('Asia/Manila');
+  const laDay = await dayIn('America/Los_Angeles');
+  const divergent =
+    manilaDay !== serverDay ? { zone: 'Asia/Manila', day: manilaDay }
+      : laDay !== serverDay ? { zone: 'America/Los_Angeles', day: laDay }
+        : null;
+
+  const tzProviderRes = await call('POST', '/v1/providers', {
+    token: tzOwner.token,
+    companyId: tzCompany,
+    body: { name: `Manila Crew ${RUN}`, email: `tzprov+${RUN}@verify.crewquo.test` },
+  });
+  const tzProviderUser = await register('tz-prov', undefined, `tzprov+${RUN}@verify.crewquo.test`);
+  await call('POST', `/v1/invites/${tzProviderRes.json.inviteToken}/accept`, {
+    token: tzProviderUser.token,
+  });
+  const tzEngagement = tzProviderRes.json.provider.engagementId as string;
+  const tzRole = await call('POST', '/v1/role-catalog', {
+    token: tzOwner.token, companyId: tzCompany, body: { name: `Scaffolder ${RUN}` },
+  });
+  const tzRoleId = tzRole.json.role.id as string;
+
+  const scheduleOn = (effectiveFrom: string, label: string) =>
+    call('POST', `/v1/commercial-agreements/${tzEngagement}/schedule`, {
+      token: tzOwner.token,
+      companyId: tzCompany,
+      body: {
+        effectiveFrom,
+        note: label,
+        lines: [{
+          operation: 'CREATE', roleId: tzRoleId, rateLabel: 'MON_FRI_DAY',
+          rateMode: 'HOURLY', hourlyRateCents: 5000,
+        }],
+      },
+    });
+
+  if (divergent) {
+    await call('PATCH', `/v1/companies/${tzCompany}`, {
+      token: tzOwner.token, companyId: tzCompany, body: { timeZone: divergent.zone },
+    });
+    // Today for the *company* is not today for the server. The old code judged
+    // this by the server's date and got it wrong.
+    const startsToday = await scheduleOn(divergent.day, 'starts today, locally');
+    eq(`a schedule starting today in ${divergent.zone} is not retroactive`,
+      startsToday.status, 201);
+  } else {
+    check('server and both probe zones share a date right now, so the divergent ' +
+      'case is not reproducible on this run', true, { serverDay, manilaDay, laDay });
+  }
+
+  // The other direction holds at every hour: genuinely yesterday is back-dated.
+  const companyDay = await dayIn('Asia/Manila');
+  await call('PATCH', `/v1/companies/${tzCompany}`, {
+    token: tzOwner.token, companyId: tzCompany, body: { timeZone: 'Asia/Manila' },
+  });
+  const yesterday = new Date(new Date(`${companyDay}T00:00:00Z`).getTime() - 86_400_000)
+    .toISOString().slice(0, 10);
+  const backDated = await scheduleOn(yesterday, 'starts yesterday, locally');
+  eq('a schedule starting yesterday in the company zone still needs a reason',
+    backDated.status, 422);
+
+  // 5 ── Nothing moved. A zone change is presentation, never a migration.
+  const storedBefore = await db.query(
+    `select id, name, created_at from companies where id = $1`, [tzCompany]
+  );
+  await call('PATCH', `/v1/companies/${tzCompany}`, {
+    token: tzOwner.token, companyId: tzCompany, body: { timeZone: 'Pacific/Kiritimati' },
+  });
+  const storedAfter = await db.query(
+    `select id, name, created_at from companies where id = $1`, [tzCompany]
+  );
+  eq('changing the zone moves no stored instant',
+    JSON.stringify(storedAfter.rows), JSON.stringify(storedBefore.rows));
+
+  // 6 ── Project override: null inherits, a value wins, and it round-trips.
+  const tzProject = await call('POST', '/v1/projects', {
+    token: tzOwner.token, companyId: tzCompany, body: { name: `Dubai tower ${RUN}` },
+  });
+  eq('a project inherits the company zone rather than copying it',
+    tzProject.json.project.timeZone, null);
+  const tzProjectId = tzProject.json.project.id as string;
+  const overridden = await call('PATCH', `/v1/projects/${tzProjectId}`, {
+    token: tzOwner.token, companyId: tzCompany, body: { timeZone: 'Asia/Dubai' },
+  });
+  eq('a project may report in its own zone', overridden.json.project.timeZone, 'Asia/Dubai');
+  const badProjectZone = await call('PATCH', `/v1/projects/${tzProjectId}`, {
+    token: tzOwner.token, companyId: tzCompany, body: { timeZone: 'Not/AZone' },
+  });
+  eq('...but not an invented one', badProjectZone.status, 422);
+  const backToInherit = await call('PATCH', `/v1/projects/${tzProjectId}`, {
+    token: tzOwner.token, companyId: tzCompany, body: { timeZone: null },
+  });
+  eq('...and can go back to inheriting', backToInherit.json.project.timeZone, null);
+
+  // 7 ── The database validates against its own IANA list, not a pattern, so a
+  // route that ever forgets to validate still cannot store a broken zone.
+  let dbRejectedZone = false;
+  try {
+    await db.query(`update companies set time_zone = 'Not/AZone' where id = $1`, [tzCompany]);
+  } catch {
+    dbRejectedZone = true;
+  }
+  check('the database refuses an unknown zone independently of the route', dbRejectedZone);
+
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);
   if (failures.length === 0) {

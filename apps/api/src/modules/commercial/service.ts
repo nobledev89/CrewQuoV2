@@ -10,6 +10,7 @@ import {
   duplicateScheduleLineIndex,
   isRetroactive,
   pickFxRate,
+  todayInZone,
   supersededEffectiveTo,
 } from '@crewquo/shared';
 import { query, withTransaction, type Queryable } from '../../db';
@@ -51,8 +52,26 @@ import {
  */
 
 /** `YYYY-MM-DD` for today, in UTC — the same basis `dayOfWeek` uses (§6). */
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
+/**
+ * "Today", as the **hiring company** reckons it.
+ *
+ * This used to be `new Date().toISOString().slice(0, 10)` — the *server's* UTC
+ * date — and `isRetroactive` keyed the §3.3.1 back-dating safeguard off it. Both
+ * directions were wrong, at different hours:
+ *
+ *  - East of UTC (Manila, +8) between local midnight and 08:00, the server is
+ *    still on yesterday, so a genuinely back-dated schedule passed as current and
+ *    needed no owner and no reason. The safeguard was off for a third of each day.
+ *  - West of UTC (Los Angeles, −8) after 16:00 local, the server is already on
+ *    tomorrow, so a schedule starting **today** was judged retroactive: a manager
+ *    got a 403 and an owner was made to justify a rate starting this morning.
+ *
+ * The hiring company's zone is the right one because it is whose `rate_cards` the
+ * approval writes and whose money the schedule governs — the same "resolve on the
+ * hiring side" rule the rest of this module already follows.
+ */
+function todayIso(companyTimeZone: string): string {
+  return todayInZone(companyTimeZone, new Date());
 }
 
 /**
@@ -616,7 +635,7 @@ export async function approveRateProposal(args: {
     });
     if (currencyRefusal) throw new AppError('VALIDATION', currencyRefusal);
 
-    const retroactive = isRetroactive(view.effectiveFrom, todayIso());
+    const retroactive = isRetroactive(view.effectiveFrom, todayIso(hiring.time_zone));
     if (retroactive && !args.actorCanApproveRetroactively) {
       throw new AppError(
         'FORBIDDEN',
@@ -704,7 +723,7 @@ export async function recordDirectSchedule(args: {
     });
     if (refusal) throw new AppError('VALIDATION', refusal);
 
-    const retroactive = isRetroactive(args.input.effectiveFrom, todayIso());
+    const retroactive = isRetroactive(args.input.effectiveFrom, todayIso(hiring.time_zone));
     if (retroactive && !args.actorCanApproveRetroactively) {
       throw new AppError(
         'FORBIDDEN',

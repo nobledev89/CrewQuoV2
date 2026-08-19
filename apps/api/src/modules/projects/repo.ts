@@ -24,6 +24,7 @@ interface ProjectRow {
   status: ProjectStatus;
   client_visible: boolean;
   reporting_currency: string;
+  time_zone: string | null;
   starts_on: string | null;
   ends_on: string | null;
   notes: string | null;
@@ -42,6 +43,7 @@ function toProjectView(r: ProjectRow): ProjectView {
     status: r.status,
     clientVisible: r.client_visible,
     reportingCurrency: r.reporting_currency,
+    timeZone: r.time_zone,
     startsOn: r.starts_on,
     endsOn: r.ends_on,
     notes: r.notes,
@@ -52,7 +54,7 @@ function toProjectView(r: ProjectRow): ProjectView {
 
 const PROJECT_SELECT = `
   select p.id, p.owner_company_id, p.client_company_id, cc.name as client_company_name,
-         p.engagement_id, p.name, p.status, p.client_visible, p.reporting_currency,
+         p.engagement_id, p.name, p.status, p.client_visible, p.reporting_currency, p.time_zone,
          to_char(p.starts_on, 'YYYY-MM-DD') as starts_on,
          to_char(p.ends_on, 'YYYY-MM-DD') as ends_on,
          p.notes, p.created_at, p.updated_at
@@ -86,9 +88,10 @@ export async function createProject(
 ): Promise<ProjectView> {
   const row = await queryOne<{ id: string }>(
     `insert into projects (owner_company_id, client_company_id, engagement_id, name, status,
-                           client_visible, starts_on, ends_on, notes, reporting_currency)
+                           client_visible, starts_on, ends_on, notes, reporting_currency,
+                           time_zone)
      values ($1,$2,$3,$4,$5,$6,$7,$8,$9,
-             coalesce($10, (select currency from companies where id = $1)))
+             coalesce($10, (select currency from companies where id = $1)), $11)
      returning id`,
     [
       ownerCompanyId,
@@ -101,6 +104,7 @@ export async function createProject(
       input.endsOn,
       input.notes,
       input.reportingCurrency ?? null,
+      input.timeZone ?? null,
     ]
   );
   return (await getProject(ownerCompanyId, row!.id))!;
@@ -122,6 +126,7 @@ export async function updateProject(
        starts_on = case when $10::boolean then $11::date else starts_on end,
        ends_on = case when $12::boolean then $13::date else ends_on end,
        notes = case when $14::boolean then $15 else notes end,
+       time_zone = case when $16::boolean then $17 else time_zone end,
        updated_at = now()
      where owner_company_id = $1 and id = $2 returning id`,
     [
@@ -140,6 +145,8 @@ export async function updateProject(
       patch.endsOn ?? null,
       has('notes'),
       patch.notes ?? null,
+      has('timeZone'),
+      patch.timeZone ?? null,
     ]
   );
   if (!row) throw new AppError('NOT_FOUND', 'Project not found');

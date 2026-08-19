@@ -15,5 +15,6 @@ export * from './invoices';
 export * from './commercial';
 export * from './money';
 export * from './notifications';
+export * from './time';
 export * from './workspace';
 export * from './company-creation';

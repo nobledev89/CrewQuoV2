@@ -6,6 +6,7 @@ export interface CompanyRow {
   id: string;
   name: string;
   currency: string;
+  time_zone: string;
   is_placeholder: boolean;
   claimed_by_company_id: string | null;
   /**
@@ -19,13 +20,14 @@ export interface CompanyRow {
 }
 
 const COMPANY_COLUMNS =
-  'id, name, currency, is_placeholder, claimed_by_company_id, country, registration_id';
+  'id, name, currency, time_zone, is_placeholder, claimed_by_company_id, country, registration_id';
 
 export function toCompanySummary(row: CompanyRow): CompanySummary {
   return {
     id: row.id,
     name: row.name,
     currency: row.currency,
+    timeZone: row.time_zone,
     isPlaceholder: row.is_placeholder,
     country: row.country,
     registrationId: row.registration_id,
@@ -50,10 +52,11 @@ export async function updateCompany(
     `update companies set
        name = coalesce($2, name),
        currency = coalesce($3, currency),
+       time_zone = coalesce($4, time_zone),
        updated_at = now()
      where id = $1
      returning ${COMPANY_COLUMNS}`,
-    [id, patch.name ?? null, patch.currency ?? null],
+    [id, patch.name ?? null, patch.currency ?? null, patch.timeZone ?? null],
     runner
   );
   if (!row) throw new AppError('NOT_FOUND', 'Company not found');

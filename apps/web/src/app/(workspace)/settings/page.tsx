@@ -23,6 +23,21 @@ export default function SettingsPage() {
   );
 }
 
+/**
+ * Every zone the runtime knows, or a short fallback on browsers without
+ * `supportedValuesOf`. Deliberately not a curated list: a bundled one goes stale
+ * whenever a country changes its rules, and the server validates against
+ * Postgres's own list regardless.
+ */
+function timeZoneOptions(): string[] {
+  const intl = Intl as typeof Intl & { supportedValuesOf?: (key: string) => string[] };
+  try {
+    return intl.supportedValuesOf?.('timeZone') ?? [];
+  } catch {
+    return [];
+  }
+}
+
 function Settings() {
   const ctx = useSessionCtx();
   const { activeMembership, refreshMemberships } = useAuth();
@@ -31,6 +46,7 @@ function Settings() {
   const [company, setCompany] = useState<CompanySummary | null>(null);
   const [name, setName] = useState('');
   const [currency, setCurrency] = useState('');
+  const [timeZone, setTimeZone] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -45,6 +61,7 @@ function Settings() {
       setCompany(loaded);
       setName(loaded.name);
       setCurrency(loaded.currency);
+      setTimeZone(loaded.timeZone);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not load company settings');
     } finally {
@@ -57,7 +74,10 @@ function Settings() {
   }, [load]);
 
   const dirty =
-    company !== null && (name.trim() !== company.name || currency.toUpperCase() !== company.currency);
+    company !== null &&
+    (name.trim() !== company.name ||
+      currency.toUpperCase() !== company.currency ||
+      timeZone !== company.timeZone);
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
@@ -71,10 +91,12 @@ function Settings() {
       const { company: updated } = await api.updateCompany(ctx.accessToken, ctx.companyId, {
         ...(name.trim() !== company.name ? { name: name.trim() } : {}),
         ...(currency.toUpperCase() !== company.currency ? { currency: currency.toUpperCase() } : {}),
+        ...(timeZone !== company.timeZone ? { timeZone } : {}),
       });
       setCompany(updated);
       setName(updated.name);
       setCurrency(updated.currency);
+      setTimeZone(updated.timeZone);
       setSaved(true);
       // The switcher and every money label read the company name/currency.
       await refreshMemberships();
@@ -84,6 +106,9 @@ function Settings() {
       setBusy(false);
     }
   }
+
+  const timeZoneChanging =
+    company !== null && timeZone !== company.timeZone && timeZone.trim() !== '';
 
   const currencyChanging =
     company !== null && currency.toUpperCase() !== company.currency && /^[A-Za-z]{3}$/.test(currency);
@@ -131,7 +156,40 @@ function Settings() {
                     required
                   />
                 </Field>
+                <Field
+                  label="Time zone"
+                  hint="Decides what “today” means here — reporting periods, and whether an agreed rate counts as back-dated."
+                >
+                  <Input
+                    name="company-time-zone"
+                    list="cq-time-zones"
+                    value={timeZone}
+                    onChange={(e) => setTimeZone(e.target.value)}
+                    disabled={!canEdit || busy}
+                    required
+                  />
+                </Field>
               </div>
+
+              {/*
+                * The browser's own IANA list rather than a hard-coded one: a
+                * bundled list goes stale every time a country changes its rules,
+                * and the server validates against Postgres's list anyway, so a
+                * second copy here could only ever disagree with both.
+                */}
+              <datalist id="cq-time-zones">
+                {timeZoneOptions().map((zone) => (
+                  <option key={zone} value={zone} />
+                ))}
+              </datalist>
+
+              {timeZoneChanging ? (
+                <Notice>
+                  Changing the time zone to <strong>{timeZone}</strong> changes what “today”
+                  means from now on. <strong>Nothing already recorded moves</strong> — every
+                  work date, rate start and timestamp stays exactly as it is.
+                </Notice>
+              ) : null}
 
               {currencyChanging ? (
                 <Notice>

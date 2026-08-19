@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { timeZoneSchema } from './time';
 import { membershipSummarySchema, publicUserSchema } from './auth';
 
 /** GET /v1/me — the authenticated profile. */
@@ -82,6 +83,8 @@ export const companySummarySchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
   currency: z.string(),
+  /** IANA zone deciding what "today" means for this business (§42, 0015). */
+  timeZone: z.string(),
   isPlaceholder: z.boolean(),
   country: z.string().nullable().optional(),
   registrationId: z.string().nullable().optional(),
@@ -101,6 +104,12 @@ export const updateCompanySchema = z
   .object({
     name: z.string().trim().min(1).max(200),
     currency: currencyCodeSchema,
+    /**
+     * Changing this changes what "today" means for every date-bound rule from now
+     * on — retroactivity, reporting periods, day boundaries. It moves **no stored
+     * instant and no stored date**: see `docs/operating-model/time.md` §3.
+     */
+    timeZone: timeZoneSchema,
   })
   .partial()
   .refine((v) => Object.keys(v).length > 0, { message: 'Nothing to update' });

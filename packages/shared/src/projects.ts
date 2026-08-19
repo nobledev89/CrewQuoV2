@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { assignmentAcceptanceSchema, projectStatusSchema } from './enums';
 import { conversionGapSchema } from './money';
+import { timeZoneSchema } from './time';
 
 /**
  * Projects, assignments & the server-computed summary (CREWQUO_V2_PLAN.md §3.4, §7).
@@ -27,6 +28,12 @@ export const projectViewSchema = z.object({
    * holds committed money — see `reportingCurrencyPinRefusal`.
    */
   reportingCurrency: z.string().regex(/^[A-Z]{3}$/),
+  /**
+   * IANA zone for work that happens somewhere other than the office. **Null means
+   * inherit the company**, not unset: a project that copied the company zone at
+   * creation would silently stop tracking it (§ `docs/operating-model/time.md`).
+   */
+  timeZone: z.string().nullable(),
   startsOn: isoDate.nullable(),
   endsOn: isoDate.nullable(),
   notes: z.string().nullable(),
@@ -43,6 +50,8 @@ export const createProjectSchema = z.object({
   clientVisible: z.boolean().default(false),
   /** Omitted means "the owner company's currency" — the majority case never sets it. */
   reportingCurrency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).optional(),
+  /** Omitted or null means "wherever the company is" — the majority case. */
+  timeZone: timeZoneSchema.nullable().optional(),
   startsOn: isoDate.nullable().default(null),
   endsOn: isoDate.nullable().default(null),
   notes: z.string().trim().max(2000).nullable().default(null),
@@ -57,6 +66,7 @@ export const updateProjectSchema = z
     status: projectStatusSchema,
     clientVisible: z.boolean(),
     reportingCurrency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/),
+    timeZone: timeZoneSchema.nullable(),
     startsOn: isoDate.nullable(),
     endsOn: isoDate.nullable(),
     notes: z.string().trim().max(2000).nullable(),
