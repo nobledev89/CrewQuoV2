@@ -20,7 +20,7 @@ import { asyncHandler } from '../../http/asyncHandler';
 import { getCompanyCtx } from '../../http/context';
 import { AppError } from '../../http/errors';
 import { param } from '../../http/params';
-import { queryOne } from '../../db';
+import { queryOne, withTransaction } from '../../db';
 import {
   canManage,
   canProviderEditWork,
@@ -35,8 +35,8 @@ import { pickEffectiveCard } from '../rates/resolve';
 import { findCompanyById } from '../companies/repo';
 import { listFxRateCandidates } from '../money/repo';
 import { getProject } from '../projects/repo';
-import { notifyCompanyManagers, notifyUser } from '../push/send';
 import { recordAudit } from '../audit/record';
+import { enqueueOutboxEvent } from '../delivery/repo';
 import {
   deleteExpense,
   deleteTimeLog,
@@ -202,20 +202,34 @@ timeLogsRouter.post(
 
     const submitted = await submitTimeLog(log.id, snapshot);
     const hours = log.hoursRegular + log.hoursOt;
-    await recordAudit({
-      companyId: ctx.companyId,
-      actorUserId: ctx.userId,
-      action: 'time_log.submitted',
-      entityType: 'TIME_LOG',
-      entityId: log.id,
-      changes: { workDate: log.workDate, hoursRegular: log.hoursRegular, hoursOt: log.hoursOt },
-      description: `Time log for ${log.workDate} submitted (${hours}h)`,
-      visibleToClient: true,
-    });
-    void notifyCompanyManagers(edge.client_company_id, {
-      title: 'Time log submitted',
-      body: `${hours}h awaiting your approval`,
-      data: { type: 'time_log', id: log.id },
+    await withTransaction(async (client) => {
+      await recordAudit({
+        companyId: ctx.companyId,
+        actorUserId: ctx.userId,
+        action: 'time_log.submitted',
+        entityType: 'TIME_LOG',
+        entityId: log.id,
+        changes: { workDate: log.workDate, hoursRegular: log.hoursRegular, hoursOt: log.hoursOt },
+        description: `Time log for ${log.workDate} submitted (${hours}h)`,
+        visibleToClient: true,
+      }, client);
+      await enqueueOutboxEvent({
+        topic: 'work.submitted',
+        aggregateType: 'TIME_LOG',
+        aggregateId: log.id,
+        companyId: edge.client_company_id,
+        payload: {
+          hiringCompanyId: edge.client_company_id,
+          providerCompanyId: edge.provider_company_id,
+          subjectType: 'TIME_LOG',
+          subjectId: log.id,
+          actorUserId: ctx.userId,
+          title: 'Time log awaiting approval',
+          body: `${hours}h on ${log.workDate} was submitted for your approval`,
+          actionUrl: '/review',
+        },
+        idempotencyKey: `work.submitted:${log.id}`,
+      }, client);
     });
     res.json({ timeLog: submitted });
   })
@@ -226,20 +240,35 @@ timeLogsRouter.post(
   asyncHandler(async (req, res) => {
     const ctx = getCompanyCtx(req);
     const { log } = await reviewGuard(req);
-    const updated = await reviewTimeLog(log.id, 'APPROVED', ctx.userId, null);
-    await recordAudit({
-      companyId: ctx.companyId,
-      actorUserId: ctx.userId,
-      action: 'time_log.approved',
-      entityType: 'TIME_LOG',
-      entityId: log.id,
-      description: `Time log for ${log.workDate} approved (${log.hoursRegular + log.hoursOt}h)`,
-      visibleToClient: true,
-    });
-    void notifyUser(log.loggedByUserId, {
-      title: 'Time log approved',
-      body: `Your ${log.workDate} time log was approved`,
-      data: { type: 'time_log', id: log.id },
+    const updated = await withTransaction(async (client) => {
+      const result = await reviewTimeLog(log.id, 'APPROVED', ctx.userId, null, client);
+      await recordAudit({
+        companyId: ctx.companyId,
+        actorUserId: ctx.userId,
+        action: 'time_log.approved',
+        entityType: 'TIME_LOG',
+        entityId: log.id,
+        description: `Time log for ${log.workDate} approved (${log.hoursRegular + log.hoursOt}h)`,
+        visibleToClient: true,
+      }, client);
+      await enqueueOutboxEvent({
+        topic: 'work.approved',
+        aggregateType: 'TIME_LOG',
+        aggregateId: log.id,
+        companyId: log.providerCompanyId,
+        payload: {
+          providerCompanyId: log.providerCompanyId,
+          subjectType: 'TIME_LOG',
+          subjectId: log.id,
+          recipientUserId: log.loggedByUserId,
+          actorUserId: ctx.userId,
+          title: 'Time log approved',
+          body: `Your time log for ${log.workDate} was approved`,
+          actionUrl: '/work',
+        },
+        idempotencyKey: `work.approved:${log.id}`,
+      }, client);
+      return result;
     });
     res.json({ timeLog: updated });
   })
@@ -251,21 +280,38 @@ timeLogsRouter.post(
     const ctx = getCompanyCtx(req);
     const { log } = await reviewGuard(req);
     const { reason } = rejectSchema.parse(req.body ?? {});
-    const updated = await reviewTimeLog(log.id, 'REJECTED', ctx.userId, reason ?? null);
-    await recordAudit({
-      companyId: ctx.companyId,
-      actorUserId: ctx.userId,
-      action: 'time_log.rejected',
-      entityType: 'TIME_LOG',
-      entityId: log.id,
-      changes: reason ? { reason } : null,
-      description: `Time log for ${log.workDate} rejected`,
-      visibleToClient: true,
-    });
-    void notifyUser(log.loggedByUserId, {
-      title: 'Time log rejected',
-      body: reason ? `Rejected: ${reason}` : 'Your time log was rejected',
-      data: { type: 'time_log', id: log.id },
+    const updated = await withTransaction(async (client) => {
+      const result = await reviewTimeLog(log.id, 'REJECTED', ctx.userId, reason ?? null, client);
+      await recordAudit({
+        companyId: ctx.companyId,
+        actorUserId: ctx.userId,
+        action: 'time_log.rejected',
+        entityType: 'TIME_LOG',
+        entityId: log.id,
+        changes: reason ? { reason } : null,
+        description: `Time log for ${log.workDate} rejected`,
+        visibleToClient: true,
+      }, client);
+      await enqueueOutboxEvent({
+        topic: 'work.rejected',
+        aggregateType: 'TIME_LOG',
+        aggregateId: log.id,
+        companyId: log.providerCompanyId,
+        payload: {
+          providerCompanyId: log.providerCompanyId,
+          subjectType: 'TIME_LOG',
+          subjectId: log.id,
+          recipientUserId: log.loggedByUserId,
+          actorUserId: ctx.userId,
+          title: 'Time log rejected',
+          body: reason
+            ? `Your time log for ${log.workDate} was rejected: ${reason}`
+            : `Your time log for ${log.workDate} was rejected`,
+          actionUrl: '/work',
+        },
+        idempotencyKey: `work.rejected:${log.id}`,
+      }, client);
+      return result;
     });
     res.json({ timeLog: updated });
   })
@@ -442,21 +488,36 @@ expensesRouter.post(
     if (!canProviderSubmit(expense.status)) {
       throw new AppError('CONFLICT', `Cannot submit a ${expense.status} expense`);
     }
-    const updated = await transitionExpense(expense.id, 'SUBMITTED');
-    await recordAudit({
-      companyId: ctx.companyId,
-      actorUserId: ctx.userId,
-      action: 'expense.submitted',
-      entityType: 'EXPENSE',
-      entityId: expense.id,
-      changes: { amountCents: expense.amountCents, category: expense.category },
-      description: `Expense submitted (${expense.amountCents} cents)`,
-      visibleToClient: true,
-    });
-    void notifyCompanyManagers(edge.client_company_id, {
-      title: 'Expense submitted',
-      body: 'An expense is awaiting your approval',
-      data: { type: 'expense', id: expense.id },
+    const updated = await withTransaction(async (client) => {
+      const result = await transitionExpense(expense.id, 'SUBMITTED', undefined, client);
+      await recordAudit({
+        companyId: ctx.companyId,
+        actorUserId: ctx.userId,
+        action: 'expense.submitted',
+        entityType: 'EXPENSE',
+        entityId: expense.id,
+        changes: { amountCents: expense.amountCents, category: expense.category },
+        description: `Expense submitted (${expense.amountCents} cents)`,
+        visibleToClient: true,
+      }, client);
+      await enqueueOutboxEvent({
+        topic: 'expense.submitted',
+        aggregateType: 'EXPENSE',
+        aggregateId: expense.id,
+        companyId: edge.client_company_id,
+        payload: {
+          hiringCompanyId: edge.client_company_id,
+          providerCompanyId: expense.providerCompanyId,
+          subjectType: 'EXPENSE',
+          subjectId: expense.id,
+          actorUserId: ctx.userId,
+          title: 'Expense awaiting approval',
+          body: 'An expense was submitted for your approval',
+          actionUrl: '/review',
+        },
+        idempotencyKey: `expense.submitted:${expense.id}`,
+      }, client);
+      return result;
     });
     res.json({ expense: updated });
   })
@@ -470,23 +531,40 @@ expensesRouter.post(
     if (!canReviewWork(ctx.companyId, ctx.role, edgeOf(edge), expense.status)) {
       throw new AppError('FORBIDDEN', 'Only the client side may review a submitted expense');
     }
-    const updated = await transitionExpense(expense.id, 'APPROVED', {
-      reviewerUserId: ctx.userId,
-      rejectReason: null,
-    });
-    await recordAudit({
-      companyId: ctx.companyId,
-      actorUserId: ctx.userId,
-      action: 'expense.approved',
-      entityType: 'EXPENSE',
-      entityId: expense.id,
-      description: `Expense approved (${expense.amountCents} cents)`,
-      visibleToClient: true,
-    });
-    void notifyUser(expense.loggedByUserId, {
-      title: 'Expense approved',
-      body: 'Your expense was approved',
-      data: { type: 'expense', id: expense.id },
+    const updated = await withTransaction(async (client) => {
+      const result = await transitionExpense(
+        expense.id,
+        'APPROVED',
+        { reviewerUserId: ctx.userId, rejectReason: null },
+        client
+      );
+      await recordAudit({
+        companyId: ctx.companyId,
+        actorUserId: ctx.userId,
+        action: 'expense.approved',
+        entityType: 'EXPENSE',
+        entityId: expense.id,
+        description: `Expense approved (${expense.amountCents} cents)`,
+        visibleToClient: true,
+      }, client);
+      await enqueueOutboxEvent({
+        topic: 'expense.approved',
+        aggregateType: 'EXPENSE',
+        aggregateId: expense.id,
+        companyId: expense.providerCompanyId,
+        payload: {
+          providerCompanyId: expense.providerCompanyId,
+          subjectType: 'EXPENSE',
+          subjectId: expense.id,
+          recipientUserId: expense.loggedByUserId,
+          actorUserId: ctx.userId,
+          title: 'Expense approved',
+          body: 'Your expense was approved',
+          actionUrl: '/work',
+        },
+        idempotencyKey: `expense.approved:${expense.id}`,
+      }, client);
+      return result;
     });
     res.json({ expense: updated });
   })
@@ -501,24 +579,41 @@ expensesRouter.post(
       throw new AppError('FORBIDDEN', 'Only the client side may review a submitted expense');
     }
     const { reason } = rejectSchema.parse(req.body ?? {});
-    const updated = await transitionExpense(expense.id, 'REJECTED', {
-      reviewerUserId: ctx.userId,
-      rejectReason: reason ?? null,
-    });
-    await recordAudit({
-      companyId: ctx.companyId,
-      actorUserId: ctx.userId,
-      action: 'expense.rejected',
-      entityType: 'EXPENSE',
-      entityId: expense.id,
-      changes: reason ? { reason } : null,
-      description: 'Expense rejected',
-      visibleToClient: true,
-    });
-    void notifyUser(expense.loggedByUserId, {
-      title: 'Expense rejected',
-      body: reason ? `Rejected: ${reason}` : 'Your expense was rejected',
-      data: { type: 'expense', id: expense.id },
+    const updated = await withTransaction(async (client) => {
+      const result = await transitionExpense(
+        expense.id,
+        'REJECTED',
+        { reviewerUserId: ctx.userId, rejectReason: reason ?? null },
+        client
+      );
+      await recordAudit({
+        companyId: ctx.companyId,
+        actorUserId: ctx.userId,
+        action: 'expense.rejected',
+        entityType: 'EXPENSE',
+        entityId: expense.id,
+        changes: reason ? { reason } : null,
+        description: 'Expense rejected',
+        visibleToClient: true,
+      }, client);
+      await enqueueOutboxEvent({
+        topic: 'expense.rejected',
+        aggregateType: 'EXPENSE',
+        aggregateId: expense.id,
+        companyId: expense.providerCompanyId,
+        payload: {
+          providerCompanyId: expense.providerCompanyId,
+          subjectType: 'EXPENSE',
+          subjectId: expense.id,
+          recipientUserId: expense.loggedByUserId,
+          actorUserId: ctx.userId,
+          title: 'Expense rejected',
+          body: reason ? `Your expense was rejected: ${reason}` : 'Your expense was rejected',
+          actionUrl: '/work',
+        },
+        idempotencyKey: `expense.rejected:${expense.id}`,
+      }, client);
+      return result;
     });
     res.json({ expense: updated });
   })
@@ -594,21 +689,36 @@ submissionsRouter.post(
     if (!canProviderSubmit(submission.status)) {
       throw new AppError('CONFLICT', `Cannot submit a ${submission.status} submission`);
     }
-    const updated = await transitionSubmission(submission.id, 'SUBMITTED');
-    await recordAudit({
-      companyId: ctx.companyId,
-      actorUserId: ctx.userId,
-      action: 'submission.submitted',
-      entityType: 'PROJECT_SUBMISSION',
-      entityId: submission.id,
-      changes: { periodStart: submission.periodStart, periodEnd: submission.periodEnd },
-      description: 'Work submission sent for approval',
-      visibleToClient: true,
-    });
-    void notifyCompanyManagers(edge.client_company_id, {
-      title: 'Submission received',
-      body: 'A work submission is awaiting your approval',
-      data: { type: 'submission', id: submission.id },
+    const updated = await withTransaction(async (client) => {
+      const result = await transitionSubmission(submission.id, 'SUBMITTED', undefined, client);
+      await recordAudit({
+        companyId: ctx.companyId,
+        actorUserId: ctx.userId,
+        action: 'submission.submitted',
+        entityType: 'PROJECT_SUBMISSION',
+        entityId: submission.id,
+        changes: { periodStart: submission.periodStart, periodEnd: submission.periodEnd },
+        description: 'Work submission sent for approval',
+        visibleToClient: true,
+      }, client);
+      await enqueueOutboxEvent({
+        topic: 'submission.submitted',
+        aggregateType: 'PROJECT_SUBMISSION',
+        aggregateId: submission.id,
+        companyId: edge.client_company_id,
+        payload: {
+          hiringCompanyId: edge.client_company_id,
+          providerCompanyId: submission.providerCompanyId,
+          subjectType: 'PROJECT_SUBMISSION',
+          subjectId: submission.id,
+          actorUserId: ctx.userId,
+          title: 'Work submission awaiting approval',
+          body: `Work for ${submission.periodStart} to ${submission.periodEnd} was submitted for your approval`,
+          actionUrl: '/review',
+        },
+        idempotencyKey: `submission.submitted:${submission.id}`,
+      }, client);
+      return result;
     });
     res.json({ submission: updated });
   })

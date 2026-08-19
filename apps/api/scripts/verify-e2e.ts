@@ -25,6 +25,11 @@ import { randomUUID } from 'node:crypto';
 import ExcelJS from 'exceljs';
 import pg from 'pg';
 import { env } from '../src/env';
+import { pool } from '../src/db';
+import { runOutboxBatch } from '../src/modules/delivery/worker';
+import { recoverStaleOutboxClaims } from '../src/modules/delivery/repo';
+import { runNotificationDeliveryBatch } from '../src/modules/notifications/deliveryWorker';
+import { NOTIFICATION_HANDLERS } from '../src/modules/notifications/handlers';
 
 const BASE = process.env.VERIFY_API_URL ?? `http://127.0.0.1:${env.PORT}`;
 const RUN = randomUUID().slice(0, 8);
@@ -130,6 +135,22 @@ async function subscribe(companyId: string, planId: string): Promise<void> {
   );
   // Entitlements resolve directly from Postgres, so the next request observes
   // this subscription without a process-local cache or manual invalidation.
+}
+
+/**
+ * Drain the durable substrate the way `pnpm --filter @crewquo/api work` does.
+ *
+ * Called in-process rather than by shelling out to the CLI so the assertions can
+ * run immediately after a known number of passes — the point being tested is what
+ * the worker *does*, not how it is launched. Two passes because the first turns
+ * outbox events into notifications and the second sends their channels; a single
+ * pass would leave every delivery row untouched and make step 5 a false negative.
+ */
+async function drainWorkers() {
+  await recoverStaleOutboxClaims(0);
+  const outbox = await runOutboxBatch({ workerId: 'verify-e2e', handlers: NOTIFICATION_HANDLERS });
+  const deliveries = await runNotificationDeliveryBatch();
+  return { outbox, deliveries };
 }
 
 async function main(): Promise<void> {
@@ -2847,15 +2868,20 @@ async function main(): Promise<void> {
   });
 
   // 3 ── Denied: a MEMBER may read a rate but never write one.
-  const fxMemberInvite = await call('POST', '/v1/members', {
+  const fxMemberInvite = await call('POST', '/v1/members/invite', {
     token: fxOwner.token,
     companyId: fxCompany,
     body: { email: `fxmember+${RUN}@verify.crewquo.test`, role: 'MEMBER' },
   });
+  // Asserted, because an invite that quietly 404s produces a user with no
+  // membership at all — and then "a MEMBER is refused" passes for the wrong
+  // reason, testing the company edge instead of the role rule it names.
+  eq('a MEMBER is invited to the company', fxMemberInvite.status, 201);
   const fxMember = await register('fx-member', undefined, `fxmember+${RUN}@verify.crewquo.test`);
-  await call('POST', `/v1/invites/${fxMemberInvite.json.inviteToken}/accept`, {
-    token: fxMember.token,
-  });
+  const fxMemberAccept = await call(
+    'POST', `/v1/invites/${fxMemberInvite.json.inviteToken}/accept`, { token: fxMember.token }
+  );
+  eq('...and accepts, so the next two checks really are about their role', fxMemberAccept.status, 201);
   const memberRecords = await call('POST', '/v1/fx-rates', {
     token: fxMember.token,
     companyId: fxCompany,
@@ -3231,6 +3257,254 @@ async function main(): Promise<void> {
     ['canComment', 'currency', 'expenseTotalCents', 'lineItems', 'pricingComplete', 'project',
       'showAuditTrail', 'timeTotalCents', 'totalCents']);
 
+  // ── Notifications & the Action Centre ─────────────────────────────────────
+  // docs/operating-model/notifications.md §12, implemented. This is also the
+  // first end-to-end proof that the 0012 outbox is actually *drained*: until the
+  // worker CLI existed, `runOutboxBatch` had no caller and every event sat
+  // PENDING forever.
+  section('Notifications & the Universal Action Centre');
+
+  const nOwner = await register('n-owner', `Meridian Notify ${RUN}`);
+  const nCompany = nOwner.companyId!;
+  await subscribe(nCompany, 'pro');
+
+  // A second approver, so "one manager acts, the other's task closes" is provable.
+  const nSecondInvite = await call('POST', '/v1/members/invite', {
+    token: nOwner.token,
+    companyId: nCompany,
+    body: { email: `n-second+${RUN}@verify.crewquo.test`, role: 'MANAGER' },
+  });
+  eq('a second approver is invited', nSecondInvite.status, 201);
+  const nSecond = await register('n-second', undefined, `n-second+${RUN}@verify.crewquo.test`);
+  const nSecondAccept = await call(
+    'POST', `/v1/invites/${nSecondInvite.json.inviteToken}/accept`, { token: nSecond.token }
+  );
+  eq('...and accepts', nSecondAccept.status, 201);
+
+  const nRole = await call('POST', '/v1/role-catalog', {
+    token: nOwner.token, companyId: nCompany, body: { name: `Fitter ${RUN}` },
+  });
+  const nRoleId = nRole.json.role.id as string;
+  const nProviderRes = await call('POST', '/v1/providers', {
+    token: nOwner.token,
+    companyId: nCompany,
+    body: { name: `Notify Crew ${RUN}`, email: `n-prov+${RUN}@verify.crewquo.test` },
+  });
+  const nProviderUser = await register('n-prov', undefined, `n-prov+${RUN}@verify.crewquo.test`);
+  await call('POST', `/v1/invites/${nProviderRes.json.inviteToken}/accept`, { token: nProviderUser.token });
+  const nProvider = nProviderRes.json.provider.providerCompanyId as string;
+  await db.query(
+    `insert into rate_cards
+       (company_id, kind, counterparty_company_id, role_id, rate_mode, rate_label,
+        hourly_rate_cents, effective_from, active)
+     values ($1,'PAY',$2,$3,'HOURLY','MON_FRI_DAY',5000,'2026-01-01',true)`,
+    [nCompany, nProvider, nRoleId]
+  );
+  const nProject = await call('POST', '/v1/projects', {
+    token: nOwner.token, companyId: nCompany, body: { name: `Notify fit-out ${RUN}` },
+  });
+  const nProjectId = nProject.json.project.id as string;
+  await call('POST', `/v1/projects/${nProjectId}/assignments`, {
+    token: nOwner.token, companyId: nCompany, body: { providerCompanyId: nProvider },
+  });
+
+  // 1 ── Empty.
+  const emptyInbox = await call('GET', '/v1/notifications', {
+    token: nOwner.token, companyId: nCompany,
+  });
+  eq('a new inbox is empty rather than erroring', emptyInbox.status, 200);
+  eq('...with nothing in it', emptyInbox.json.data.length, 0);
+  const emptyCount = await call('GET', '/v1/notifications/open-count', {
+    token: nOwner.token, companyId: nCompany,
+  });
+  eq('...and no outstanding actions', emptyCount.json.openCount, 0);
+
+  // 2 ── Raised. Submitting emits transactionally; the worker turns it into rows.
+  const nLog = await call('POST', '/v1/time-logs', {
+    token: nProviderUser.token,
+    companyId: nProvider,
+    body: {
+      projectId: nProjectId, roleId: nRoleId, shiftType: 'WEEKDAY_DAY',
+      workDate: '2026-07-20', hoursRegular: 8, hoursOt: 0,
+    },
+  });
+  const nLogId = nLog.json.timeLog.id as string;
+  await call('POST', `/v1/time-logs/${nLogId}/submit`, {
+    token: nProviderUser.token, companyId: nProvider,
+  });
+  const queuedEvent = await db.query(
+    `select status from delivery_outbox where idempotency_key = $1`,
+    [`work.submitted:${nLogId}`]
+  );
+  eq('submitting commits its domain event with the mutation', queuedEvent.rows[0]?.status, 'PENDING');
+
+  const firstDrain = await drainWorkers();
+  check('the worker claims and delivers it', firstDrain.outbox.delivered >= 1, firstDrain);
+
+  const ownerInbox = await call('GET', '/v1/notifications?filter=open', {
+    token: nOwner.token, companyId: nCompany,
+  });
+  eq('the approver has one thing to do', ownerInbox.json.data.length, 1);
+  eq('...named as a task, not just news', ownerInbox.json.data[0]?.requiresAction, true);
+  eq('...in the UNREAD state', ownerInbox.json.data[0]?.state, 'UNREAD');
+  const secondInbox = await call('GET', '/v1/notifications?filter=open', {
+    token: nSecond.token, companyId: nCompany,
+  });
+  eq('the second approver can read their own inbox', secondInbox.status, 200);
+  eq('the second approver has it too', secondInbox.json?.data?.length, 1);
+  const submitterInbox = await call('GET', '/v1/notifications', {
+    token: nProviderUser.token, companyId: nProvider,
+  });
+  eq('the submitter is not told about their own action', submitterInbox.json.data.length, 0);
+
+  // 3 ── Idempotent. Replay the event and drain again.
+  await db.query(
+    `update delivery_outbox set status = 'PENDING', attempts = 0, delivered_at = null,
+       locked_at = null, locked_by = null, available_at = now()
+      where idempotency_key = $1`,
+    [`work.submitted:${nLogId}`]
+  );
+  await drainWorkers();
+  const afterReplay = await call('GET', '/v1/notifications?filter=open', {
+    token: nOwner.token, companyId: nCompany,
+  });
+  eq('a replayed event produces no second copy', afterReplay.json.data.length, 1);
+
+  const notificationId = ownerInbox.json.data[0].id as string;
+
+  // 4 ── Denied. Another user cannot reach this row by id, at any role.
+  const foreignRead = await call('POST', `/v1/notifications/${notificationId}/actions`, {
+    token: nSecond.token, companyId: nCompany, body: { verb: 'read' },
+  });
+  eq("another user's notification is a 404, not a 403", foreignRead.status, 404);
+
+  // 5 ── Delivery evidence: recorded, and honest about not sending.
+  const deliveries = await db.query(
+    `select channel, status, skip_reason from notification_deliveries
+      where notification_id = $1 order by channel`,
+    [notificationId]
+  );
+  check('the intrusive channel attempt is recorded', deliveries.rows.length >= 1, deliveries.rows);
+  eq('...as SKIPPED rather than SENT, because nothing is configured',
+    deliveries.rows[0]?.status, 'SKIPPED');
+  check('...naming why, so a dev environment never looks like a working one',
+    /no registered device|no email provider/i.test(deliveries.rows[0]?.skip_reason ?? ''),
+    deliveries.rows[0]?.skip_reason);
+
+  // 6 ── Read is not done. Seeing a task does not close it.
+  await call('POST', `/v1/notifications/${notificationId}/actions`, {
+    token: nOwner.token, companyId: nCompany, body: { verb: 'read' },
+  });
+  const stillOpen = await call('GET', '/v1/notifications?filter=open', {
+    token: nOwner.token, companyId: nCompany,
+  });
+  eq('a read task is still an open task', stillOpen.json.data.length, 1);
+  eq('...in the READ state', stillOpen.json.data[0]?.state, 'READ');
+
+  // 7 ── Resolved by someone else doing the work.
+  await call('POST', `/v1/time-logs/${nLogId}/approve`, {
+    token: nOwner.token, companyId: nCompany,
+  });
+  await drainWorkers();
+  const secondAfterApproval = await call('GET', '/v1/notifications?filter=open', {
+    token: nSecond.token, companyId: nCompany,
+  });
+  eq("the other approver's task closes itself rather than lying",
+    secondAfterApproval.json.data.length, 0);
+  const secondAll = await call('GET', '/v1/notifications', {
+    token: nSecond.token, companyId: nCompany,
+  });
+  eq('...as RESOLVED, kept rather than deleted', secondAll.json.data[0]?.state, 'RESOLVED');
+  check('...with no resolver named, because they never opened it',
+    secondAll.json.data[0]?.resolvedByName === null, secondAll.json.data[0]?.resolvedByName);
+
+  // 8 ── Told. The submitter learns the outcome, with nothing to resolve.
+  const submitterAfter = await call('GET', '/v1/notifications', {
+    token: nProviderUser.token, companyId: nProvider,
+  });
+  eq('the submitter is told the outcome', submitterAfter.json.data.length, 1);
+  eq('...as news rather than a task', submitterAfter.json.data[0]?.requiresAction, false);
+  check('...naming the work it refers to',
+    /2026-07-20/.test(submitterAfter.json.data[0]?.body ?? ''),
+    submitterAfter.json.data[0]?.body);
+  const noticeResolve = await call(
+    'POST', `/v1/notifications/${submitterAfter.json.data[0].id}/actions`,
+    { token: nProviderUser.token, companyId: nProvider, body: { verb: 'resolve' } }
+  );
+  eq('a notice cannot be resolved — there is nothing to do', noticeResolve.status, 409);
+  check('...and says so', /not a task/i.test(noticeResolve.json?.error?.message ?? ''),
+    noticeResolve.json?.error?.message);
+
+  // 9 ── Preferences, and the rule that quiet hours never hide the inbox row.
+  const prefs = await call('PUT', '/v1/notification-preferences', {
+    token: nOwner.token,
+    body: { quietHoursStart: '00:00', quietHoursEnd: '23:59', channels: { 'work.submitted': { push: true } } },
+  });
+  eq('preferences are saved', prefs.status, 200);
+  eq('...with the quiet window recorded', prefs.json.preferences.quietHoursStart, '00:00');
+  const halfWindow = await call('PUT', '/v1/notification-preferences', {
+    token: nOwner.token, body: { quietHoursStart: '22:00', quietHoursEnd: null },
+  });
+  eq('half a quiet-hours window is refused', halfWindow.status, 422);
+
+  const quietLog = await call('POST', '/v1/time-logs', {
+    token: nProviderUser.token,
+    companyId: nProvider,
+    body: {
+      projectId: nProjectId, roleId: nRoleId, shiftType: 'WEEKDAY_DAY',
+      workDate: '2026-07-21', hoursRegular: 4, hoursOt: 0,
+    },
+  });
+  const quietLogId = quietLog.json.timeLog.id as string;
+  await call('POST', `/v1/time-logs/${quietLogId}/submit`, {
+    token: nProviderUser.token, companyId: nProvider,
+  });
+  await drainWorkers();
+  const quietInbox = await call('GET', '/v1/notifications?filter=open', {
+    token: nOwner.token, companyId: nCompany,
+  });
+  eq('quiet hours do NOT hide the in-product task', quietInbox.json.data.length, 1);
+  const deferred = await db.query(
+    `select d.deliver_after > now() + interval '1 minute' as deferred
+       from notification_deliveries d where d.notification_id = $1`,
+    [quietInbox.json.data[0].id]
+  );
+  check('...they only hold the intrusive channel', deferred.rows[0]?.deferred === true,
+    deferred.rows);
+
+  // 10 ── Terminal. Dismiss closes it, and nothing reopens.
+  const dismissId = quietInbox.json.data[0].id as string;
+  const dismissed = await call('POST', `/v1/notifications/${dismissId}/actions`, {
+    token: nOwner.token, companyId: nCompany, body: { verb: 'dismiss' },
+  });
+  eq('a task can be dismissed', dismissed.json.notification.state, 'DISMISSED');
+  const reopen = await call('POST', `/v1/notifications/${dismissId}/actions`, {
+    token: nOwner.token, companyId: nCompany, body: { verb: 'resolve' },
+  });
+  eq('a dismissed task does not reopen', reopen.status, 409);
+  const afterDismiss = await call('GET', '/v1/notifications?filter=open', {
+    token: nOwner.token, companyId: nCompany,
+  });
+  eq('...and it is gone from the open list', afterDismiss.json.data.length, 0);
+
+  // 11 ── A malformed payload is permanent, not eight retries and a shrug.
+  await db.query(
+    `insert into delivery_outbox (topic, aggregate_type, aggregate_id, payload, idempotency_key)
+     values ('work.submitted','TIME_LOG',$1,'{}'::jsonb,$2)`,
+    [nLogId, `verify-malformed:${RUN}`]
+  );
+  await drainWorkers();
+  const poisoned = await db.query(
+    `select status, attempts, last_error from delivery_outbox where idempotency_key = $1`,
+    [`verify-malformed:${RUN}`]
+  );
+  eq('an event that cannot name its recipients dead-letters at once',
+    poisoned.rows[0]?.status, 'DEAD_LETTER');
+  eq('...on the first attempt, not the eighth', poisoned.rows[0]?.attempts, 1);
+  check('...saying what was missing',
+    /missing from payload/i.test(poisoned.rows[0]?.last_error ?? ''),
+    poisoned.rows[0]?.last_error);
+
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);
   if (failures.length === 0) {
@@ -3240,11 +3514,13 @@ async function main(): Promise<void> {
     for (const f of failures) console.log(`  · ${f}`);
   }
   await db.end();
+  await pool.end();
   process.exitCode = failures.length === 0 ? 0 : 1;
 }
 
 main().catch(async (err) => {
   console.error('\nverify-e2e crashed:', err);
   await db.end().catch(() => {});
+  await pool.end().catch(() => {});
   process.exitCode = 1;
 });

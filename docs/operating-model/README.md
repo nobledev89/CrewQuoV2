@@ -17,6 +17,7 @@ heading is an unasked question, which is the failure mode §19.5 exists to preve
 | Company ownership & creation — the first-company allowance, additional-company approval, duplicate routing, trial eligibility | [company-creation.md](./company-creation.md) | Phase 6 |
 | Durable delivery — transactional events/jobs, inbound webhooks, retry, dead letters and replay | [durable-delivery.md](./durable-delivery.md) | Phase 6 |
 | Money boundary — currency identity, project reporting currency, FX snapshots and the tax-compliance gate | [money-boundary.md](./money-boundary.md) | Phase 6 |
+| Notifications & the Action Centre — the durable per-recipient projection, channels, quiet hours, delivery evidence | [notifications.md](./notifications.md) | Phase 6 |
 
 Earlier domains (identity, rates, the delivery loop, portal/audit, invoices) were
 built before the §19.5 decision was adopted on 2026-08-18 and have no packet. They

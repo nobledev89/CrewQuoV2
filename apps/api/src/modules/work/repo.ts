@@ -208,13 +208,15 @@ export async function updateTimeLogFields(
 /** Submit: DRAFT → SUBMITTED, freezing the resolved rate snapshot. */
 export async function submitTimeLog(
   id: string,
-  snapshot: ResolvedRateSnapshot | null
+  snapshot: ResolvedRateSnapshot | null,
+  runner?: Queryable
 ): Promise<TimeLogView> {
   const row = await queryOne<TimeLogRow>(
     `update time_logs set status = 'SUBMITTED', resolved_rate = $2::jsonb, reject_reason = null,
        updated_at = now()
      where id = $1 returning ${timeLogReturning()}`,
-    [id, snapshot ? JSON.stringify(snapshot) : null]
+    [id, snapshot ? JSON.stringify(snapshot) : null],
+    runner
   );
   return toTimeLogView(row!);
 }
@@ -224,13 +226,15 @@ export async function reviewTimeLog(
   id: string,
   decision: 'APPROVED' | 'REJECTED',
   reviewerUserId: string,
-  rejectReason: string | null
+  rejectReason: string | null,
+  runner?: Queryable
 ): Promise<TimeLogView> {
   const row = await queryOne<TimeLogRow>(
     `update time_logs set status = $2, reviewed_by_user_id = $3, reviewed_at = now(),
        reject_reason = $4, updated_at = now()
      where id = $1 returning ${timeLogReturning()}`,
-    [id, decision, reviewerUserId, rejectReason]
+    [id, decision, reviewerUserId, rejectReason],
+    runner
   );
   return toTimeLogView(row!);
 }
@@ -368,7 +372,8 @@ export async function updateExpenseFields(
 export async function transitionExpense(
   id: string,
   status: WorkStatus,
-  review?: { reviewerUserId: string; rejectReason: string | null }
+  review?: { reviewerUserId: string; rejectReason: string | null },
+  runner?: Queryable
 ): Promise<ExpenseView> {
   // `$3` is cast explicitly: it appears only inside `case when $3 is null`, where
   // Postgres has no column to infer a type from and fails to parse the statement
@@ -380,7 +385,8 @@ export async function transitionExpense(
        reviewed_at = case when $3::uuid is null then reviewed_at else now() end,
        reject_reason = $4, updated_at = now()
      where id = $1 returning ${EXPENSE_COLS}`,
-    [id, status, review?.reviewerUserId ?? null, review?.rejectReason ?? null]
+    [id, status, review?.reviewerUserId ?? null, review?.rejectReason ?? null],
+    runner
   );
   return toExpenseView(row!);
 }
@@ -489,7 +495,8 @@ export async function insertSubmission(input: {
 export async function transitionSubmission(
   id: string,
   status: WorkStatus,
-  review?: { reviewerUserId: string; rejectReason: string | null }
+  review?: { reviewerUserId: string; rejectReason: string | null },
+  runner?: Queryable
 ): Promise<SubmissionView> {
   const row = await queryOne<SubmissionRow>(
     // Same explicit cast as `transitionExpense` — see the note there.
@@ -502,7 +509,8 @@ export async function transitionSubmission(
        to_char(period_start, 'YYYY-MM-DD') as period_start,
        to_char(period_end, 'YYYY-MM-DD') as period_end,
        status, reject_reason, created_at, updated_at`,
-    [id, status, review?.reviewerUserId ?? null, review?.rejectReason ?? null]
+    [id, status, review?.reviewerUserId ?? null, review?.rejectReason ?? null],
+    runner
   );
   return toSubmissionView(row!);
 }

@@ -40,8 +40,15 @@ const EnvSchema = z.object({
   // Google sign-in (optional until configured; endpoint 501s without it).
   GOOGLE_CLIENT_ID: z.string().optional(),
 
-  // Base URL used in password-reset / verify-email links (Resend arrives Phase 5).
+  // Base URL used in password-reset / verify-email links and notification deep
+  // links.
   APP_BASE_URL: z.string().url().default('http://localhost:3000'),
+
+  // Email delivery (Resend). Both optional: without them the notification worker
+  // records each email as SKIPPED with that reason rather than pretending to
+  // send, so a dev environment is never mistaken for a working one.
+  RESEND_API_KEY: z.string().optional(),
+  NOTIFICATION_FROM_EMAIL: z.string().email().optional(),
 
 });
 

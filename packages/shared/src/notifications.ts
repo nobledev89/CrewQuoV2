@@ -26,6 +26,7 @@ export const NOTIFICATION_KINDS = [
   'expense.submitted',
   'expense.approved',
   'expense.rejected',
+  'submission.submitted',
   'rate_proposal.submitted',
   'rate_proposal.decided',
   'invoice.issued',
@@ -62,6 +63,9 @@ export const NOTIFICATION_KIND_SPECS: Readonly<Record<NotificationKind, Notifica
   'expense.submitted': { requiresAction: true, urgency: 'NORMAL', defaultChannels: ['PUSH'] },
   'expense.approved': { requiresAction: false, urgency: 'NORMAL', defaultChannels: ['PUSH'] },
   'expense.rejected': { requiresAction: false, urgency: 'NORMAL', defaultChannels: ['PUSH', 'EMAIL'] },
+  // A whole period of work arriving at once is the batch an approver plans their
+  // day around, so it earns an email as well as a push.
+  'submission.submitted': { requiresAction: true, urgency: 'NORMAL', defaultChannels: ['PUSH', 'EMAIL'] },
   // Money being negotiated is worth an email: it is rarer than a timesheet and
   // the person who must decide is often not the person watching the app.
   'rate_proposal.submitted': { requiresAction: true, urgency: 'NORMAL', defaultChannels: ['PUSH', 'EMAIL'] },
