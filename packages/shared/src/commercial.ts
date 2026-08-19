@@ -137,41 +137,6 @@ export function isRetroactive(effectiveFrom: string, today: string): boolean {
   return effectiveFrom < today;
 }
 
-// ── Money boundary (§3.3, and the Phase 6 bullet that follows this one) ────────
-
-/**
- * Why this schedule's currency cannot be accepted, or null when it can.
- *
- * **This used to be an outright refusal of anything unlike, and is now a
- * condition.** CrewQuo still holds no exchange rate of its own and margin must
- * never subtract unlike units (§41) — but since the money boundary landed, a
- * company that genuinely trades across currencies can record a rate with its
- * source, and an unlike schedule becomes reportable rather than impossible.
- *
- * `hasRate` is passed in rather than looked up here so this stays pure: the
- * caller resolves whether a rate covers `effectiveFrom` using `pickFxRate`, and
- * the decision itself is unit-tested without a database.
- *
- * The refusal names the exact missing row, because "unlike currencies are not
- * supported" is no longer true and was never actionable.
- */
-export function currencyBoundaryRefusal(args: {
-  proposalCurrency: string;
-  hiringCompanyCurrency: string;
-  effectiveFrom: string;
-  hasRate: boolean;
-}): string | null {
-  if (args.proposalCurrency === args.hiringCompanyCurrency) return null;
-  if (args.hasRate) return null;
-  return (
-    `This schedule is in ${args.proposalCurrency} but the hiring company works in ` +
-    `${args.hiringCompanyCurrency}, and no exchange rate covers ` +
-    `${args.effectiveFrom}. CrewQuo never estimates a rate, so approving this ` +
-    `would mix units in every cost and margin figure. Record a ` +
-    `${args.proposalCurrency} to ${args.hiringCompanyCurrency} rate with its ` +
-    `source, then submit again.`
-  );
-}
 
 /**
  * Why issuing this invoice would breach the engagement's purchase-order ceiling,
@@ -331,7 +296,10 @@ const scheduleLinesSchema = z
 export const createRateProposalSchema = z.object({
   engagementId: z.string().uuid(),
   effectiveFrom: isoDate,
-  currency: currencyCode.optional(),
+  // No `currency`. A PAY schedule is always in the hiring company's one currency —
+  // `rate_cards` resolve on the hiring side, so that is whose money it governs, and
+  // the proposer never got to choose the unit even when the field existed. Removed
+  // with the exchange rates on 2026-08-19.
   note: z.string().trim().max(2000).nullable().default(null),
   /** Continues a rejected schedule. Validated against the chain server-side. */
   predecessorProposalId: z.string().uuid().nullable().default(null),
@@ -374,7 +342,6 @@ export type ApproveRateProposal = z.infer<typeof approveRateProposalSchema>;
 export const directRateScheduleSchema = z.object({
   engagementId: z.string().uuid(),
   effectiveFrom: isoDate,
-  currency: currencyCode.optional(),
   note: z.string().trim().max(2000).nullable().default(null),
   retroactiveReason: z.string().trim().min(1).max(2000).nullable().default(null),
   lines: scheduleLinesSchema,

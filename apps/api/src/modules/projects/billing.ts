@@ -25,17 +25,16 @@ import type { Queryable } from '../../db';
  * an incomplete total rather than folding it in as zero: a missing card means
  * "not priced yet", and silently billing 0 would understate the invoice.
  *
- * The result carries its **currency** as well as its amount (§3.3 decision #5).
- * A card may declare its own unit since 0009, and a bare number would let a
- * caller add it to a total denominated in something else — the unlike-unit
- * addition §41 forbids. `currency` is null when the card inherits the company
- * default, which is the case for every card written before the money boundary.
+ * Returns an amount and no currency, because there is only one currency it could
+ * be in: the owner company's, which the project snapshotted at creation. The
+ * `currency` this used to carry was there so a caller could refuse to add unlike
+ * units together, and it went on 2026-08-19 with the exchange rates — a company
+ * works in exactly one currency, so a BILL card cannot be denominated in anything
+ * else.
  */
 
 export interface BillLinePrice {
   amountCents: number;
-  /** Null means "inherit the owner company's currency" (§3.3, 0009). */
-  currency: string | null;
 }
 
 export async function resolveBillCentsForLog(args: {
@@ -66,6 +65,5 @@ export async function resolveBillCentsForLog(args: {
       quantity: args.hoursRegular,
       otHours: args.hoursOt,
     }),
-    currency: card.currency,
   };
 }

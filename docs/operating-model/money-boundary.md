@@ -1,271 +1,244 @@
-# Operating-model packet — money boundary
+# Operating-model packet — money identity
 
-**Domain:** the unit every stored money figure is denominated in — currency
-identity on companies, rate cards, agreements and invoices; the **project
-reporting currency** a summary is expressed in; the **FX snapshots** that let an
-unlike-currency figure be reported without inventing a rate; and the explicit
-gate that stops CrewQuo describing its invoices as tax documents.
+**Domain:** the unit every stored money figure is denominated in. A company's one
+currency, the **project reporting currency** that snapshots it so history cannot be
+relabelled, the pin that fixes it once money commits, and the explicit gate that
+stops CrewQuo describing its invoices as tax documents.
 **Phase:** 6 · **Status:** adopted · **Last updated:** 2026-08-19
 **Plan refs:** §3.3 (rate tables, decision #5), §3.4 (projects), §3.5 (invoices),
-§6 (the frozen PAY snapshot), §41.9 (precision and rounding), §41 closing rule (a
-principle beats a product decision), §36 (revisions), §44 (the test list this
-packet answers to).
+§6 (the frozen PAY snapshot), §41.9 (precision and rounding), §44 (the test list
+this packet answers to).
 
 ---
 
-**The distinction this whole domain rests on:** an amount is a *number* and a
-*unit*, and CrewQuo has only ever stored the number. `companies.currency` was a
-label on a company, not a property of each figure — which is safe exactly as long
-as every figure in one company shares one unit. Phase 6 broke that assumption in
-two places at once: a rate proposal carries its own currency (0009) and an invoice
-carries its own currency (0008). Both shipped with an outright refusal of anything
-unlike, because §41 forbids adding unlike units and CrewQuo holds no exchange
-rate. **This packet is what replaces that refusal with a mechanism** — and the
-mechanism's first rule is that it still never invents a rate.
+> **This packet was rewritten on 2026-08-19, and the rewrite is the interesting
+> part.** It originally specified a multi-currency money boundary: per-row currency
+> on rates and invoices, human-recorded exchange rates with required provenance, FX
+> citations frozen onto approved work, and a reporting pipeline that withheld any
+> figure it could not convert and named the gap. All of that shipped (migration
+> 0013) and was withdrawn the same day by owner decision:
+>
+> **A company works in exactly one currency, and the currency is a label — something
+> printed in front of an amount.**
+>
+> Migration 0017 reverses it. The old design is described below only where knowing
+> it prevents somebody rebuilding it.
 
-> **Why "reporting currency" and not "convert everything to the company
-> currency".** A conversion has to be *as of* something. Company currency is a
-> live column an owner may change; a project is where work, cost and margin
-> actually meet, and it has a life span. Making the project the unit of reporting
-> means one project's history has one unit forever, and changing a company's
-> currency next year cannot silently restate a project that closed last year.
+**The distinction this domain rests on:** an amount is a *number* and a *unit*.
+CrewQuo stores the number as integer minor units and the unit as a **label on the
+company** — and that is safe, because a company has exactly one. There is no
+conversion anywhere in the product, no exchange rate stored or fetched, and no
+arithmetic that crosses units, because there is never a second unit to cross into.
+
+**The one thing a label can still get wrong is being retroactive.** The stored
+minor units never move. So if a company changes its currency, every historical
+figure keeps its number and silently acquires a new meaning — a project quoted and
+closed in one unit, displayed a year later in another. That single failure mode is
+what the rest of this packet is about.
 
 ## 1. Persona / job
 
 | Persona | Job | Device / connectivity |
 |---|---|---|
-| **Contractor owner/admin (multi-currency)** | "My rigging crew in London bills me in GBP, my client pays me in USD, and I need one true margin figure for this project." | Desktop web, online, seated finance work. |
-| **Contractor owner/admin (single-currency)** | "I work in one currency and always will. Do not make me think about any of this." | Desktop web. **This is the majority persona and the design's main constraint.** |
-| **Subcontractor (provider)** | "I quote in my own currency. I should not have to quote in someone else's." | Desktop web; proposes rates (see the commercial-agreements packet). |
-| **Finance reviewer** | "Where did this number come from? Show me the rate and who entered it." | Desktop web, reading a summary or an export. |
-| **Platform support** | "A customer says their margin is wrong. Is it a missing rate or a wrong rate?" | Platform console, read-only over the customer's own records. |
+| **Company owner at signup** | "Show my money in my currency." | Desktop. Sets it once and never thinks about it again. |
+| **Owner who picked wrong** | "We set this up as USD and we're a UK business." | Desktop. Wants to fix a young account, not restate a year of history. |
+| **Anyone reading a figure** | "What unit is this number in?" | Any. Needs the label next to the number, not in a settings screen two clicks away. |
+| **Client in the portal** | "What am I being charged, and in what?" | Any. Sees the provider's label without seeing the provider's costs. |
 
-Nobody does this on a phone and nobody does it offline — an FX rate is a finance
-decision taken at a desk. §8 refuses offline capture outright rather than
-deferring it.
+**Nobody in this table is trading across currencies**, and that is the decision, not
+an oversight. A business operating in two currencies needs two CrewQuo companies —
+which is a real answer, because a separate currency almost always comes with
+separate books, a separate entity and separate reporting anyway.
 
 ## 2. Resource responsibility
 
-| Resource | Creator | Owner | Reader | Reviewer | Publisher | Corrector | Exporter | Retention owner |
-|---|---|---|---|---|---|---|---|---|
-| `companies.currency` | company creation | the company | its members | — | — | OWNER via `PATCH /v1/companies/:id` | company | company |
-| `projects.reporting_currency` | project creation, snapshotted from the owner company | the project | owner-company members; never the client | — | — | OWNER/ADMIN, **only while the project holds no committed money** | company | company |
-| `fx_rates` row | OWNER/ADMIN of the reporting company | that company | its members; every converted figure cites it | — | — | **nobody edits a rate** — supersede it with a later `as_of`, or delete one no snapshot cites | company | company |
-| Frozen FX inside `time_logs.resolved_rate` | the submit transaction | the time log | anyone who may read PAY | — | — | **nobody** — the same immutability as the PAY snapshot it lives inside | company | company |
-| An invoice's currency | the create transaction, from the project's reporting currency | the invoice | issuer + counterparty | — | issue | **nobody** — an issued invoice is immutable (0008) | both parties | company |
-| Live BILL conversion in a summary | computed at read time | nobody — it is a derivation | owner-company members | — | — | recompute | company | not stored |
+| Resource | Creator | Owner | Reader | Corrector | Retention owner |
+|---|---|---|---|---|---|
+| `companies.currency` | signup (defaults `USD`) | the company | its members, and clients through the portal | OWNER/ADMIN, any time | the company |
+| `projects.reporting_currency` | project creation, **snapshotted from the company** | the project | owner-company members; the client sees it as `currency` | OWNER/ADMIN, **until the project holds committed money** | the company |
+| A stored minor-unit amount | whatever wrote it | that record | per that record's rules | that record's own correction path | that record |
+| The unit of a rate card, proposal or invoice | **nobody — it is not stored** | — | derived from the company or the project | n/a | n/a |
+| `currency_model_change_log` | migration 0017, once | the platform | operators | **nobody — insert-only** | the platform |
 
-**"Nobody" appears three times on purpose.** A frozen rate anybody can edit is not
-frozen, and a rate somebody edited is a rate no historical figure can cite
-honestly.
+**The fourth row is the point of the rewrite.** Rate cards, rate proposals and
+invoices each used to carry their own `currency`. Every one of them could only ever
+hold a copy of the owning company's, and a copy that *can* drift is worse than no
+copy: it makes "which of these two is authoritative?" a real question with no
+answer. They were dropped in 0017.
 
 ## 3. State machine
 
-Currency has no workflow of its own; it is a property that becomes immutable at
-defined moments. The states that matter are **how firmly a figure's unit is
-pinned**:
+Currency has no workflow. What matters is when the label may still change.
 
-| Stage | What is pinned | Who may still change it | Concurrency rule |
-|---|---|---|---|
-| **Unpinned** | a project with no approved time log, no approved expense and no non-void invoice | OWNER/ADMIN may change `reporting_currency` | the change takes the project row lock and re-checks emptiness inside the same transaction, so a concurrent first approval cannot slip in behind the check |
-| **Pinned** | the project holds committed money | **nobody** — a change is refused, naming what pins it | n/a |
-| **Frozen (PAY)** | a submitted time log's `resolved_rate.fx` | nobody | frozen inside the existing submit transaction; there is no ordering where a log has a PAY snapshot and no FX snapshot |
-| **Invoice** | the invoice's `currency`, taken from the project's reporting currency at create | nobody | set inside the existing create transaction, under the advisory lock creation already takes |
-| **Live (BILL)** | a summary's BILL conversion | recomputed every read | none — it is not stored |
+| Stage | Rule |
+|---|---|
+| Company currency | changeable by OWNER/ADMIN at any time. **Changing it relabels nothing that already exists** — every project keeps the label it snapshotted, and only projects created afterwards inherit the new one. |
+| Project label, **unpinned** | a project with no approved time log, no approved expense and no non-void invoice may have its label changed by OWNER/ADMIN. |
+| Project label, **pinned** | after any of those exist, it is fixed for the life of the project. |
+| A stored amount | only its own domain's correction path may alter it. A label change must never rewrite one. |
 
-An `fx_rates` row has no lifecycle of its own: it is inserted, cited, and either
-superseded by a row with a later `as_of` or deleted if nothing cites it. There is
-no edit path, and deletion is refused once a frozen snapshot names the row.
+**The invariant, stated once:** *changing a currency label changes presentation and
+future inheritance, never a stored number and never a past project's label.*
+
+**Concurrency: the count runs inside the transaction that holds the project row
+lock.** Reading "is this project empty?" and then updating it leaves a window where
+the first time log is approved between the two — giving a project whose history is
+half labelled one way. Row lock first, count inside it. A `VOID` invoice is
+deliberately not a pin: it is a document withdrawn before it became a claim, the
+same exclusion the purchase-order ceiling already makes.
 
 ## 4. Permission + scope matrix
 
 | Operation | Feature entitlement | Capability / role | Company edge | Resource scope |
 |---|---|---|---|---|
-| `GET /v1/fx-rates` | none — a unit is not a feature | any member | active membership | company-scoped; never reads another company's rates |
-| `POST /v1/fx-rates` | none | **OWNER or ADMIN** | active membership | the acting company only |
-| `DELETE /v1/fx-rates/:id` | none | **OWNER or ADMIN** | active membership | refused if a frozen snapshot cites it |
+| Read a currency label | none | any member | active membership | own company; clients read a published project's |
+| `PATCH /v1/companies/:id` (`currency`) | none | **OWNER or ADMIN** | active membership | acting company |
 | `PATCH /v1/projects/:id` (`reportingCurrency`) | none | **OWNER or ADMIN** | active membership | must own the project; refused once pinned |
-| Read a converted summary figure | existing project read | existing project read | existing | unchanged — conversion adds no new read path |
-| Client / portal reads | — | — | — | **unchanged and structural.** A client sees BILL figures in the invoice's own currency. Reporting currency, FX rates and PAY conversions are owner-side and never cross the portal boundary. |
+| Set a currency on a rate card, proposal or invoice | — | **nobody** | — | there is no such field, in the API or the database |
 
-**No new entitlement key, and §43 adds none.** Gating multi-currency behind a plan
-would mean a company that legitimately operates in two currencies gets *wrong*
-numbers rather than fewer features — the failure mode §41 exists to prevent. The
-same argument as the company-creation packet's: a plan says what a company may
-*do*, not whether its arithmetic is allowed to be correct.
+**No entitlement key, and §43 adds none.** Gating a label behind a plan would mean
+a company on the cheap tier gets figures labelled with a unit it does not use — not
+fewer features, *wrong numbers*. A plan says what a company may do, not whether its
+arithmetic is allowed to be legible.
 
 ## 5. Domain events
 
-| Event | Payload | Idempotency key | Consumers | Replay |
-|---|---|---|---|---|
-| `fx_rate.recorded` | company, base, quote, `as_of`, source, actor | `fx_rate.recorded:<fxRateId>` | none yet | safe — the row already exists; consumers re-read |
-| `project.reporting_currency_set` | project, from, to, actor | `project.reporting_currency_set:<uuid>` — per **occurrence**, not per aggregate: a project can legitimately move USD -> GBP -> USD, and a key of `<projectId>:<currency>` would silently swallow the third event | none yet | safe |
+| Event | Payload | Idempotency key | Consumers |
+|---|---|---|---|
+| `project.reporting_currency_set` | projectId, from, to, actor | per occurrence (`:<uuid>`) | none yet; audited, and available to reporting later |
 
-Both are emitted through `enqueueOutboxEvent` on the domain transaction's client,
-per the durable-delivery packet §5. Neither has a consumer today, and that is
-stated rather than hidden: they exist so the Action Centre does not have to
-retro-fit emission into these paths later — which is exactly the retrofit the
-durable-delivery item is still carrying for the older domains.
+**Keyed per occurrence, not per aggregate.** `<projectId>:<currency>` would swallow
+the second event of a USD → GBP → USD sequence. Atomicity with the domain write
+comes from the transaction; the key only has to be unique per event.
+
+A company currency change emits **no** event, because nothing downstream
+recomputes: no stored number moves and no existing project's label follows it.
+Stated as a decision rather than left as an omission — an event here would imply a
+migration of past data that must never happen.
 
 ## 6. Notification matrix
 
-| Situation | Recipient | Channel | Urgency | Action Centre item |
-|---|---|---|---|---|
-| A project summary cannot report a figure because no FX rate covers a work date | the project owner's OWNER/ADMIN | in-product now; email/push when the notifications slice lands | not urgent — the figure is withheld, not wrong | **yes** — "Add an exchange rate for GBP→USD as of 2026-08-01" is a task with a repair path, which is the shape the Action Centre exists for |
-| An unlike-currency proposal is submitted | the hiring company's reviewer | the existing commercial-agreement notification | normal | existing |
-
-Nothing here notifies about a *rate value*. A wrong rate is a finance judgement,
-not a system-detectable event, and inventing an alert for it would imply CrewQuo
-has an opinion about the correct rate — which §41 says it must not.
+Not applicable, and deliberately so. A currency change is a settings edit by the
+person who owns the setting; notifying them of their own action is noise. It is
+audited, which is where the question "who changed this and when" is answered.
 
 ## 7. Data classification + retention
 
-FX rates are **commercial** data: they reveal what a company pays and charges
-across borders. They are company-private, never client-visible, never in a portal
-read and never in a client export. They live as long as the company, because a
-frozen snapshot from three years ago must still be able to name its source — a
-deleted rate row would turn a traceable historical figure into an unexplainable
-one, breaking the same reproducibility rule §41.3 states for reports. Deletion is
-therefore allowed only while nothing cites the row.
+A currency label is **low-sensitivity configuration** and is the one piece of money
+metadata that *is* client-facing: the portal shows a project's label, because a
+figure without a unit is not a figure. Everything else on the owner's side of the
+money — PAY costs, margin, rate snapshots — stays off that payload, enforced
+structurally by the `PortalProjectView` shape rather than by a filter somebody can
+forget.
 
-Frozen FX snapshots inherit the retention of the record they live inside
-(`time_logs`, `invoices`) and are not separately purgeable. The audit trail records
-who entered a rate and who changed a reporting currency; `recordAudit` runs
-unconditionally (the Phase 6 technical-integrity gate) and customer visibility
-stays independently gated.
+`currency_model_change_log` is platform data, never customer-visible, insert-only
+and never purged. It holds the previous label of every figure whose label changed
+when multi-currency was withdrawn, so *"why does this 2026 rate card read USD when
+it was entered as GBP?"* has an answer years later.
 
 ## 8. Offline / conflict policy
 
-**Refused, not deferred.** Entering an exchange rate and choosing a project's
-reporting currency are seated desk decisions with no field equivalent, so neither
-participates in the offline sync contract — no client id, no expected version, no
-tombstone. Concurrency is handled by the database: `fx_rates` is uniquely keyed on
-`(company_id, base_currency, quote_currency, as_of)`, so two people recording the
-same rate race to the same row rather than creating two competing truths, and the
-loser is told the rate already exists rather than silently overwriting it.
-
-Reporting-currency changes take the project row lock and re-verify emptiness inside
-the transaction, so "change the currency" and "approve the first time log" cannot
-interleave into a project whose history is half in each unit.
+Nothing here is offline-editable. A field client captures amounts, never units: the
+unit is a property of the company the work belongs to, resolved server-side. A
+device that has been offline across a currency change syncs its numbers and picks up
+whatever label the server says — which is correct, because it never had an opinion.
 
 ## 9. Failure matrix
 
-| Failure | Retryable? | What the user sees | Operator repair |
+| Failure | Retryable? | What the user sees | Repair |
 |---|---|---|---|
-| No FX rate covers a needed conversion | yes, once a rate is recorded | the figure is **withheld and named**: "3 approved logs in GBP cannot be reported in USD — no rate on or before 2026-08-01" | the owner records the rate; frozen PAY keeps its own snapshot and is not restated |
-| A rate exists but post-dates the work | yes | the same withholding — a future rate is never applied backwards | record a rate with the correct `as_of` |
-| Unlike currency on a proposal, no rate | yes | the existing 422, now naming the exact missing rate rather than "still to be built" | record the rate, resubmit |
-| A BILL card in a currency the project does not report in | no — deliberately | invoice derivation refuses, naming the currencies | agree the charge-out rate in the project's currency, or invoice that work on its own project |
-| Reporting-currency change on a pinned project | no | refused, naming what pins it (approved logs / expenses / issued invoices) | none — this is the rule, not a fault |
-| Deleting a cited rate | no | refused, naming how many frozen snapshots cite it | none |
-| A rate recorded with the wrong value | not detectable by the system | nothing | record a corrected rate at a later `as_of`; frozen snapshots keep the rate they were computed with, and the audit shows both |
+| A currency code that is not three uppercase letters | no | refused at validation, naming the field | enter an ISO 4217 code |
+| Changing a pinned project's label | no | refused, **naming what pins it** — "3 approved time logs" | none; this is the rule, not a fault |
+| Changing a company's currency after years of use | n/a | allowed, and nothing already recorded is relabelled | none needed |
+| A BILL rate missing for approved work | no | the bill total and margin are **withheld**, not zeroed | agree a rate for that role and label |
 
-**Partial success is the normal case and is designed for, not an error.** A summary
-with three of five providers convertible reports the three, withholds the two, and
-says which — the same shape `billResolvable` already uses when BILL cards have a
-gap. A total that silently omitted the unconvertible part would be worse than no
-total.
+**The withholding rule that survives is about rates, not currency.** A line with no
+covering BILL card is "not priced yet", and folding it in at zero would understate
+an invoice. The bill total, and any margin computed from it, are withheld rather
+than guessed (§41.1). The old `conversionGaps` mechanism did the same thing for
+unconvertible figures and is gone with them.
 
 ## 10. Security / threat model
 
-FX rates are company-scoped and read through the existing company edge; there is no
-cross-company rate lookup and no platform-wide rate table, so no tenant can
-influence another tenant's arithmetic. Forged `fxRateId` values fail closed through
-the same "scope the WHERE clause by company" rule the rest of the API uses, and
-reveal no cross-tenant existence.
+Small surface. A currency label is not a secret, and the only injection-shaped path
+is validation, closed by a three-letter regex at the edge and a check constraint in
+the database.
 
-The abuse surface worth naming: **a rate is an input to money owed.** An ADMIN who
-records a favourable rate changes what a margin report says — so the writer is
-recorded on the row, the action is audited, and every converted figure cites the
-rate it used, which makes the manipulation visible rather than invisible. Rates are
-deliberately not editable, because an edit would restate history with no trace; a
-correction is a new row at a later `as_of`, leaving both visible.
-
-There is no upload surface and no webhook surface in this domain. Support access
-reads through the existing platform console and cannot write a rate.
+**The abuse worth naming: relabelling as misrepresentation.** An owner can change a
+company's currency, and a client reading the portal sees the label a project
+snapshotted. Because the snapshot is taken at creation and pinned once money
+commits, an owner *cannot* retroactively present a closed project's figures in a
+different unit — which is the only version of this with a victim. Bounded rather
+than eliminated: an unpinned project's label can still be changed, and that is
+correct, because nothing has been agreed against it yet.
 
 ## 11. Analytics contract
 
-Activation: a company records its first FX rate. Outcome: a project with unlike
-PAY/BILL currencies produces a complete margin. Quality metric: the count of
-withheld figures per company — a rising number means customers are hitting the
-boundary and not repairing it, which is the signal that the §6 Action Centre item
-is needed. Funnel: unlike-currency refusal → rate recorded → figure reported.
+Distribution of currencies across companies, count of company-currency changes per
+month, and count of pinned-project refusals (a rising number means people are
+trying to do something the model forbids, which is a product signal).
 
-**Excluded as sensitive:** rate values, amounts, company and project names,
-counterparty identity, and the `source` free text. The metrics are counts and
-currency-pair codes; nothing that reconstructs a customer's commercial position
-leaves the tenant.
+**Excluded as sensitive:** any amount, and anything correlating a named company with
+its figures.
 
 ## 12. Acceptance script
 
-**Persona: Dana, owner of a USD contractor hiring a GBP rigging crew.**
+**Persona: Dana, whose company is set up in USD.**
 
-1. **Empty.** A new project reports in USD without Dana choosing anything; no FX
-   rate exists and nothing asks for one. *The single-currency majority never meets
-   this domain.*
-2. **Pinning.** Dana changes the project's reporting currency while it is empty —
-   allowed and audited. She approves a time log, then tries again — refused, naming
-   the approved log.
-3. **Denied.** A MEMBER attempts to record an FX rate — 403. A MEMBER attempts to
-   change the reporting currency — 403.
-4. **Refused, and told what is missing.** The GBP crew submits a GBP rate proposal
-   to Dana's USD company. It is refused with a message naming the exact missing
-   rate: GBP→USD.
-5. **Repair.** Dana records `GBP→USD @ 1.27, as of 2026-08-01, source "ECB
-   reference rate"`. The proposal now submits and approves.
-6. **Frozen.** A GBP time log is submitted and approved. Its `resolved_rate` carries
-   both the GBP cost and the frozen FX — rate, `as_of` and source. Dana records a
-   *different* rate at a later `as_of`; the approved log's reported cost **does not
-   move**, and a newly submitted log uses the newer rate. Both logs name the rate
-   they used.
-6b. **The invoice refuses rather than converts.** A BILL card denominated in GBP on
-   a USD-reporting project makes invoice derivation refuse, naming both currencies.
-   An agreed charge-out rate is what the client owes; converting it would bill them
-   a number nobody agreed, at a rate only the owner has seen.
-7. **Withholding.** A log dated *before* the earliest recorded rate is approved. The
-   summary reports what it can, withholds that log's cost, and names the missing
-   rate rather than reporting a smaller total as if it were complete.
-8. **Correction.** Dana deletes a rate nothing cites — allowed. She deletes one a
-   frozen snapshot cites — refused, naming the count.
-9. **Boundary.** The client portal read and the client export for the same project
-   contain no reporting currency, no FX rate and no PAY conversion — the §3.6
-   exclusions remain structural.
-10. **Tax honesty.** Nothing in the invoice UI, the export or the API describes the
-    document as a tax invoice, and `tax_cents` is labelled as a manually entered
-    amount.
+1. **Empty.** A new project reports in the company's currency without anybody
+   choosing. *The overwhelming majority never meets this domain at all.*
+2. **Unpinned.** Dana changes an empty project's label; it is audited with both
+   sides and emits one durable event in the same transaction.
+3. **Snapshotted, not referenced.** Dana changes the *company* currency. Every
+   existing project keeps its label; a project created afterwards inherits the new
+   one. This is the assertion the whole design exists for.
+4. **Denied.** A MEMBER cannot change a project's label — asserted after a real
+   membership exists, so the refusal is about the role rule and not the company
+   edge.
+5. **Gone.** There is no exchange-rate API, no `fx_rates` table, and no per-row
+   currency column on invoices, rate cards or rate proposals. Asserted as absences,
+   because the way multi-currency comes back is somebody re-adding one column.
+6. **Not the proposer's choice.** A PAY schedule takes the hiring company's
+   currency; a currency sent by the proposer is ignored rather than honoured.
+7. **Frozen, unconverted.** An approved log's PAY snapshot carries its cost and its
+   label, and **no** FX block. The summary reports that cost as-is.
+8. **Pinned.** With approved work on the project, a label change is refused, naming
+   what pins it and saying the harm is *relabelling* rather than arithmetic.
+9. **Tax honesty.** No API response, export or screen calls the document a tax
+   invoice.
+10. **Portal.** The client sees the project's label and no PAY cost, no margin and
+    no rate snapshot; the payload is exactly its nine documented fields.
 
----
+## What went, and why it is not coming back by accident
 
-## The expense hole — named, because a named gap is not the same as a silent one
+Recorded because the fastest way to rebuild a withdrawn feature is one plausible
+column at a time.
 
-**An expense carries no currency at all.** `expenses` (0004) has `amount_cents`,
-`category`, `description` and a receipt, and no unit anywhere on the row. Every
-other money-bearing table grew one — a rate proposal in 0009, an invoice in 0008,
-a project in 0013 — and this one did not, so an approved expense is taken at face
-value in the project's reporting currency.
+- **`fx_rates`** — human-recorded rates with required provenance and an
+  immutability trigger. Gone with its trigger and function.
+- **`invoices.currency`, `rate_cards.currency`, `rate_proposals.currency`** — each
+  could only ever copy its company's label.
+- **The `fx` key inside `time_logs.resolved_rate`** — a frozen rate citation per
+  approved log.
+- **`convertMinorUnits` / `convertToReportingCurrency` / `pickFxRate`** — exact
+  `bigint` arithmetic with one deliberate rounding, as-of rate selection, and a
+  refusal that named the missing row.
+- **`conversionGaps`** — the mechanism that withheld an unconvertible figure and
+  reported its pair, earliest date and count rather than folding it in at zero.
+- **`currencyBoundaryRefusal`** — the check that refused an unlike PAY schedule
+  until a covering rate existed.
+- **The exchange-rate screen** in company settings.
 
-**What that means in practice.** A subcontractor working in another currency
-records 200 of *their* unit; the project summary, the invoice and the client
-portal all read it as 200 of the *project's*. Unlike the FX gaps this packet
-otherwise produces, nothing is withheld and nothing is named: the figure is
-silently wrong rather than visibly absent, which is the one outcome §41.1 exists
-to prevent. It is a live defect today for any cross-currency engagement, and
-invisible for the single-currency majority.
+**The expense hole closed itself.** An earlier version of this packet documented at
+length that `expenses` carries no currency column, making a provider's amount in
+another unit read at face value in the project's. Under one currency per company
+there is no other unit, so the column is not missing — it was never needed.
 
-**Why it is not closed here.** Closing it is a migration plus a decision this
-packet cannot make on its own: an FX conversion has to be *as of* a date, and an
-expense has no date column — only `created_at`, which is when somebody typed it in
-rather than when the cost was incurred. Adding `currency` alone would let an
-expense be converted at the wrong day's rate and look authoritative; the honest
-fix adds `currency` **and** an asserted `incurred_on`, and passes both through the
-same `convertToReportingCurrency` path the labour side already uses, so a missing
-rate withholds the figure and names it in `conversionGaps` instead of guessing.
-Backfill is safe in both directions — every existing row is genuinely in its
-project's unit, because until now that was the only unit it could have been.
-
-Recorded here rather than left as an omission, because the fault this packet spent
-its whole length arguing against is a figure that looks complete and is not.
+**If multi-currency is ever wanted again**, it is a new packet, not a revived
+column: the requirement would be per-*entity* currency with conversion, and the
+hard parts are the ones the deleted design had already solved — an as-of date for
+every conversion, provenance for every rate, and withholding rather than estimating
+when no rate covers a figure. Read 0013 and this file's history before starting.
 
 ## The tax gate — defining, deliberately not building
 

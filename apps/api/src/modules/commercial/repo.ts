@@ -71,7 +71,7 @@ const PROPOSAL_SELECT = `
   select p.id, p.engagement_id, p.proposed_by_company_id,
          e.provider_company_id, pc.name as provider_company_name,
          e.client_company_id, cc.name as client_company_name,
-         p.currency, to_char(p.effective_from, 'YYYY-MM-DD') as effective_from,
+         cc.currency, to_char(p.effective_from, 'YYYY-MM-DD') as effective_from,
          p.status, p.predecessor_proposal_id, p.note,
          p.submitted_at, su.name as submitted_by_name,
          p.reviewed_at, ru.name as reviewed_by_name,
@@ -280,7 +280,7 @@ export async function listLiveAgreementRates(
               when 'DAILY'  then rc.daily_rate_cents
             end as amount_cents,
             rc.ot_hourly_rate_cents, rc.min_hours,
-            coalesce(rc.currency, cc.currency) as currency,
+            cc.currency,
             to_char(rc.effective_from, 'YYYY-MM-DD') as effective_from,
             to_char(rc.effective_to, 'YYYY-MM-DD') as effective_to,
             rc.version, rc.locked,
@@ -343,13 +343,12 @@ export async function insertProposal(
 ): Promise<string> {
   const row = await queryOne<{ id: string }>(
     `insert into rate_proposals
-       (engagement_id, proposed_by_company_id, currency, effective_from, note,
+       (engagement_id, proposed_by_company_id, effective_from, note,
         predecessor_proposal_id, created_by_user_id)
-     values ($1,$2,$3,$4,$5,$6,$7) returning id`,
+     values ($1,$2,$3,$4,$5,$6) returning id`,
     [
       input.engagementId,
       input.proposedByCompanyId,
-      input.currency,
       input.effectiveFrom,
       input.note,
       input.predecessorProposalId,
@@ -401,12 +400,18 @@ export async function lockProposal(
   id: string,
   runner: Queryable
 ): Promise<{ status: RateProposalStatus; engagementId: string; currency: string } | null> {
+  // `for update` locks the proposal row; the currency comes from the hiring
+  // company through the edge, because a proposal no longer stores one.
   const row = await queryOne<{
     status: RateProposalStatus;
     engagement_id: string;
     currency: string;
   }>(
-    `select status, engagement_id, currency from rate_proposals where id = $1 for update`,
+    `select p.status, p.engagement_id, cc.currency
+       from rate_proposals p
+       join engagements e on e.id = p.engagement_id
+       join companies cc on cc.id = e.client_company_id
+      where p.id = $1 for update of p`,
     [id],
     runner
   );
@@ -613,9 +618,9 @@ export async function insertApprovedRateCard(
        (company_id, kind, counterparty_company_id, role_id, rate_mode, rate_label,
         hourly_rate_cents, ot_hourly_rate_cents, shift_rate_cents, daily_rate_cents,
         min_hours, weekend_multiplier, night_multiplier, effective_from, effective_to,
-        active, currency, version, locked, source_proposal_id, supersedes_rate_card_id,
+        active, version, locked, source_proposal_id, supersedes_rate_card_id,
         created_by_user_id, updated_by_user_id)
-     values ($1,'PAY',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,null,true,$14,$15,true,$16,$17,$18,$18)
+     values ($1,'PAY',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,null,true,$14,true,$15,$16,$17,$17)
      returning id`,
     [
       input.companyId,
@@ -631,7 +636,6 @@ export async function insertApprovedRateCard(
       input.weekendMultiplier,
       input.nightMultiplier,
       input.effectiveFrom,
-      input.currency,
       input.version,
       input.sourceProposalId,
       input.supersedesRateCardId,

@@ -188,11 +188,14 @@ export const rateCardViewSchema = rateCardObjectSchema.extend({
    * this before offering an edit: the alternative is a form that submits and gets
    * a constraint violation back.
    *
-   * `currency` is null on every card that predates the workflow, meaning "inherit
-   * the company default" (§3.3). `version` is 1 on those, and increments per
+   * There is deliberately no `currency` here. A card had one between 0009 and
+   * 0017, and it could only ever hold a copy of its company's — a company works in
+   * exactly one currency (owner decision, 2026-08-19), so the label belongs to the
+   * company and is read from there.
+   *
+   * `version` is 1 on cards that predate the approval workflow, and increments per
    * (kind, counterparty, role, label) as successors are approved.
    */
-  currency: z.string().regex(/^[A-Z]{3}$/).nullable(),
   version: z.number().int().min(1),
   locked: z.boolean(),
   sourceProposalId: z.string().uuid().nullable(),

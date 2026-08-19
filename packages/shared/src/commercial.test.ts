@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   RATE_PROPOSAL_TRANSITIONS,
   createRateProposalSchema,
-  currencyBoundaryRefusal,
   dueDateFromPaymentTerms,
   duplicateScheduleLineIndex,
   isRateProposalEditable,
@@ -18,9 +17,14 @@ import {
 import { RATE_PROPOSAL_STATUSES, type RateProposalStatus } from './enums';
 
 /**
- * One test per rule (§13, §44). The commercial state machine and the money
- * boundary are the two places in this domain where a wrong answer costs somebody
- * real money, so both are pinned exhaustively rather than by sampling.
+ * One test per rule (§13, §44). The commercial state machine is where a wrong
+ * answer costs somebody real money, so it is pinned exhaustively rather than by
+ * sampling.
+ *
+ * The `currency boundary` block that sat here went on 2026-08-19 with the owner
+ * decision that a company works in exactly one currency: there is no unlike
+ * currency to refuse, because a PAY schedule is always in the hiring company's
+ * one unit.
  */
 
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -152,40 +156,6 @@ describe('effective dating', () => {
     expect(isRetroactive('2026-08-17', '2026-08-18')).toBe(true);
     expect(isRetroactive('2026-08-18', '2026-08-18')).toBe(false); // today is not retroactive
     expect(isRetroactive('2026-09-01', '2026-08-18')).toBe(false);
-  });
-});
-
-describe('currency boundary', () => {
-  const boundary = (over: Partial<Parameters<typeof currencyBoundaryRefusal>[0]> = {}) =>
-    currencyBoundaryRefusal({
-      proposalCurrency: 'GBP',
-      hiringCompanyCurrency: 'USD',
-      effectiveFrom: '2026-09-01',
-      hasRate: false,
-      ...over,
-    });
-
-  it('allows a schedule in the hiring company’s own currency', () => {
-    expect(boundary({ proposalCurrency: 'USD' })).toBeNull();
-  });
-
-  it('does not require a rate when the currencies already match', () => {
-    expect(boundary({ proposalCurrency: 'USD', hasRate: false })).toBeNull();
-  });
-
-  it('refuses an unlike currency with no recorded rate, and names the missing one', () => {
-    const refusal = boundary();
-    expect(refusal).toContain('GBP');
-    expect(refusal).toContain('USD');
-    expect(refusal).toMatch(/no exchange rate/i);
-    expect(refusal).toMatch(/2026-09-01/);
-    expect(refusal).toMatch(/never estimates/i);
-  });
-
-  it('allows an unlike currency once a rate covers the start date', () => {
-    // The money boundary turned this from an outright refusal into a condition:
-    // a company that genuinely trades across currencies can now record a rate.
-    expect(boundary({ hasRate: true })).toBeNull();
   });
 });
 

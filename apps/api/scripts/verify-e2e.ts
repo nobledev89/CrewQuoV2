@@ -1434,8 +1434,12 @@ async function main(): Promise<void> {
   eq('...and it is not locked, because it predates the agreement workflow',
     livePayCard?.locked, false);
   eq('...at version 1', livePayCard?.version, 1);
-  eq('...inheriting the company currency rather than carrying its own',
-    livePayCard?.currency, null);
+  // A card carried its own `currency` between 0009 and 0017. Asserted as an
+  // absence now, because the way multi-currency comes back is one plausible
+  // column at a time.
+  check('...and carries no currency of its own; the label is the company one',
+    livePayCard !== undefined && !('currency' in livePayCard),
+    livePayCard && Object.keys(livePayCard));
 
   // 4 ── Denied: the hiring side cannot author the provider's proposal.
   const hiringDrafts = await call('POST', '/v1/rate-proposals', {
@@ -1530,20 +1534,15 @@ async function main(): Promise<void> {
   });
   eq('a line naming a role outside the hiring catalog is refused', foreignRole.status, 422);
 
-  const unlikeCurrency = await call('POST', '/v1/rate-proposals', {
-    token: providerUser.token,
-    companyId: northgate,
-    body: {
-      engagementId: cEngagement,
-      effectiveFrom: futureFrom,
-      currency: 'GBP',
-      lines: [{ operation: 'CREATE', roleId, rateLabel: 'DAILY', rateMode: 'DAILY', dailyRateCents: 40000 }],
-    },
+  // The proposer does not choose the unit: a PAY schedule is always in the hiring
+  // company's one currency, because `rate_cards` resolve on the hiring side. The
+  // draft above was created without anybody sending a currency at all — there is no
+  // longer a field to send one with — and reports the hiring company's.
+  const draftCurrency = await call('GET', `/v1/rate-proposals/${draftId}`, {
+    token: providerUser.token, companyId: northgate,
   });
-  eq('an unlike currency with no rate on file is refused', unlikeCurrency.status, 422);
-  check('...and the refusal names the missing rate rather than the missing feature',
-    /exchange rate/i.test(unlikeCurrency.json?.error?.message ?? ''),
-    unlikeCurrency.json?.error?.message);
+  eq('a draft reports the hiring company currency, which nobody chose',
+    draftCurrency.json.proposal.currency, 'USD');
 
   // 9 ── Submission freezes the payload.
   const cSubmitted = await call('POST', `/v1/rate-proposals/${draftId}/submit`, {
@@ -1681,7 +1680,7 @@ async function main(): Promise<void> {
     secondSuccessor.json?.error?.message);
 
   const cardsAfter = await db.query(
-    `select rate_label, hourly_rate_cents, version, locked, currency,
+    `select rate_label, hourly_rate_cents, version, locked,
             to_char(effective_from, 'YYYY-MM-DD') as effective_from,
             to_char(effective_to, 'YYYY-MM-DD') as effective_to,
             source_proposal_id, supersedes_rate_card_id
@@ -1695,7 +1694,11 @@ async function main(): Promise<void> {
   );
   eq('the successor version carries the approved amount', newMonFri?.hourly_rate_cents, 5500);
   eq('...is locked', newMonFri?.locked, true);
-  eq('...carries the agreement currency', newMonFri?.currency, 'USD');
+  // The card no longer stores a currency at all — the label is the company's, read
+  // through the edge. Asserted as an absence, because re-adding this one column is
+  // how multi-currency would creep back in.
+  check('...and stores no currency of its own', newMonFri !== undefined
+    && !('currency' in newMonFri), newMonFri && Object.keys(newMonFri));
   eq('...opens on the effective date', newMonFri?.effective_from, futureFrom);
   eq('...is open-ended', newMonFri?.effective_to, null);
   eq('...and points at the schedule that created it', newMonFri?.source_proposal_id, successorId);
@@ -2847,14 +2850,26 @@ async function main(): Promise<void> {
   );
   eq('...and records the operator decision atomically', replayAudit.rows[0].n, 1);
 
-  // ── Money boundary (§3.3 decision #5, §41.9) ──────────────────────────────
+  // ── Money identity (§3.3 decision #5) ─────────────────────────────────────
   // docs/operating-model/money-boundary.md §12, implemented. Self-contained
   // fixtures: this section deliberately does not reuse the core-loop companies,
-  // because it changes a project's reporting currency and records exchange rates,
-  // and an earlier assertion must not start depending on either.
-  section('Money boundary — reporting currency, FX snapshots, tax honesty');
+  // because it moves a company currency and a project's label, and an earlier
+  // assertion must not start depending on either.
+  section('Money identity — one currency per company, and the label pin');
 
-  const fxOwner = await register('fx-owner', `Meridian Crossborder ${RUN}`);
+  // docs/operating-model/money-boundary.md §12. This section used to be 45 checks
+  // of exchange-rate machinery: recording a rate with its provenance, refusing an
+  // unlike schedule until one existed, freezing the rate onto a PAY snapshot at
+  // submit, withholding an unconvertible figure and naming the gap, refusing to
+  // delete a cited rate. All of it went on 2026-08-19 with the owner decision that
+  // **a company works in exactly one currency and the currency is a label**.
+  //
+  // What survives is everything that is still true with one unit: a project
+  // inherits its company's label, snapshots it so history cannot be relabelled,
+  // pins it once money commits, and the client portal shows the label without ever
+  // seeing the owner's side of the money.
+
+  const fxOwner = await register('fx-owner', `Meridian Single ${RUN}`);
   const fxCompany = fxOwner.companyId!;
   await subscribe(fxCompany, 'pro');
 
@@ -2881,17 +2896,26 @@ async function main(): Promise<void> {
     companyId: fxProvider,
   });
 
-  // 1 ── Empty: the single-currency majority never meets this domain.
+  const fxClientRes = await call('POST', '/v1/clients', {
+    token: fxOwner.token,
+    companyId: fxCompany,
+    body: { name: `Harbour Estates ${RUN}`, email: `fxclient+${RUN}@verify.crewquo.test` },
+  });
+  const fxClient = fxClientRes.json.client.clientCompanyId as string;
+  const fxClientEngagement = fxClientRes.json.client.engagementId as string;
+
+  // 1 ── Inherited, not chosen. The majority never touches this.
   const fxProject = await call('POST', '/v1/projects', {
     token: fxOwner.token,
     companyId: fxCompany,
-    body: { name: `Crossborder fit-out ${RUN}` },
+    body: { name: `Fit-out ${RUN}`, clientCompanyId: fxClient, engagementId: fxClientEngagement },
   });
   eq('a new project reports in the owner company currency without anyone choosing',
     fxProject.json.project.reportingCurrency, 'USD');
   const fxProjectId = fxProject.json.project.id as string;
 
-  // 2 ── Unpinned: an empty project's unit can still be changed.
+  // 2 ── Unpinned: an empty project's label can still be changed, and the change
+  // is evidence rather than telemetry.
   const toEur = await call('PATCH', `/v1/projects/${fxProjectId}`, {
     token: fxOwner.token,
     companyId: fxCompany,
@@ -2917,206 +2941,128 @@ async function main(): Promise<void> {
     body: { reportingCurrency: 'USD' },
   });
 
-  // 3 ── Denied: a MEMBER may read a rate but never write one.
+  // 3 ── Snapshotted, not referenced. This is the whole reason the project keeps
+  // its own column: moving the company label must not relabel a project's history.
+  await call('PATCH', `/v1/companies/${fxCompany}`, {
+    token: fxOwner.token, companyId: fxCompany, body: { currency: 'AUD' },
+  });
+  const afterCompanyMove = await call('GET', `/v1/projects/${fxProjectId}`, {
+    token: fxOwner.token, companyId: fxCompany,
+  });
+  eq('changing the company currency does not relabel an existing project',
+    afterCompanyMove.json.project.reportingCurrency, 'USD');
+  const newerProject = await call('POST', '/v1/projects', {
+    token: fxOwner.token, companyId: fxCompany, body: { name: `After the move ${RUN}` },
+  });
+  eq('...while a project created afterwards inherits the new label',
+    newerProject.json.project.reportingCurrency, 'AUD');
+  await call('PATCH', `/v1/companies/${fxCompany}`, {
+    token: fxOwner.token, companyId: fxCompany, body: { currency: 'USD' },
+  });
+
+  // 4 ── Denied. OWNER/ADMIN only, and asserted after a real membership exists —
+  // an invite that quietly 404s makes this pass for the wrong reason, testing the
+  // company edge instead of the role rule it names.
   const fxMemberInvite = await call('POST', '/v1/members/invite', {
     token: fxOwner.token,
     companyId: fxCompany,
     body: { email: `fxmember+${RUN}@verify.crewquo.test`, role: 'MEMBER' },
   });
-  // Asserted, because an invite that quietly 404s produces a user with no
-  // membership at all — and then "a MEMBER is refused" passes for the wrong
-  // reason, testing the company edge instead of the role rule it names.
   eq('a MEMBER is invited to the company', fxMemberInvite.status, 201);
   const fxMember = await register('fx-member', undefined, `fxmember+${RUN}@verify.crewquo.test`);
   const fxMemberAccept = await call(
     'POST', `/v1/invites/${fxMemberInvite.json.inviteToken}/accept`, { token: fxMember.token }
   );
-  eq('...and accepts, so the next two checks really are about their role', fxMemberAccept.status, 201);
-  const memberRecords = await call('POST', '/v1/fx-rates', {
-    token: fxMember.token,
-    companyId: fxCompany,
-    body: { baseCurrency: 'GBP', quoteCurrency: 'USD', rate: '1.27', asOf: '2026-01-01', source: 'nope' },
-  });
-  eq('a MEMBER cannot record an exchange rate', memberRecords.status, 403);
+  eq('...and accepts, so the next check really is about their role', fxMemberAccept.status, 201);
   const memberRepoints = await call('PATCH', `/v1/projects/${fxProjectId}`, {
     token: fxMember.token,
     companyId: fxCompany,
     body: { reportingCurrency: 'GBP' },
   });
-  check('a MEMBER cannot change a project reporting currency',
-    memberRepoints.status === 403, memberRepoints.status);
+  eq('a MEMBER cannot change a project reporting currency', memberRepoints.status, 403);
 
-  // 4 ── Refused, and told exactly what is missing.
-  const unlikeSchedule = await call('POST', `/v1/commercial-agreements/${fxEngagement}/schedule`, {
+  // 5 ── Gone: there is no exchange-rate surface left to reach.
+  const fxGone = await call('GET', '/v1/fx-rates', {
+    token: fxOwner.token, companyId: fxCompany,
+  });
+  eq('the exchange-rate API no longer exists', fxGone.status, 404);
+  const fxTableGone = await db.query(
+    `select count(*)::int as n from information_schema.tables where table_name = 'fx_rates'`
+  );
+  eq('...and neither does its table', fxTableGone.rows[0].n, 0);
+  const currencyColumns = await db.query(
+    `select count(*)::int as n from information_schema.columns
+      where column_name = 'currency'
+        and table_name in ('invoices', 'rate_cards', 'rate_proposals')`
+  );
+  eq('...nor any per-row currency column that could disagree with its company',
+    currencyColumns.rows[0].n, 0);
+
+  // 6 ── A PAY schedule takes the hiring company's currency, and the proposer
+  // cannot ask for another — there is no field to ask with.
+  const fxSchedule = await call('POST', `/v1/commercial-agreements/${fxEngagement}/schedule`, {
     token: fxOwner.token,
     companyId: fxCompany,
     body: {
-      effectiveFrom: '2026-06-01',
-      currency: 'GBP',
-      // A back-dated schedule needs an owner plus a reason (§3.3.1). Supplied so
-      // the only thing under test here is the currency rule, not that one.
-      retroactiveReason: 'Agreed in June, recorded once the paperwork caught up',
-      lines: [{ operation: 'CREATE', roleId: fxRoleId, rateLabel: 'MON_FRI_DAY', rateMode: 'HOURLY', hourlyRateCents: 5000 }],
+      effectiveFrom: '2026-01-01',
+      retroactiveReason: 'Rates agreed before CrewQuo',
+      lines: [{
+        operation: 'CREATE', roleId: fxRoleId, rateLabel: 'MON_FRI_DAY',
+        rateMode: 'HOURLY', hourlyRateCents: 5000,
+      }],
     },
   });
-  eq('an unlike currency with no recorded rate is refused', unlikeSchedule.status, 422);
-  check('...and the refusal names the exact missing rate, not "unsupported"',
-    /GBP/.test(unlikeSchedule.json?.error?.message ?? '') &&
-    /USD/.test(unlikeSchedule.json?.error?.message ?? '') &&
-    /never estimates/i.test(unlikeSchedule.json?.error?.message ?? ''),
-    unlikeSchedule.json?.error?.message);
+  eq('an agreed PAY schedule is recorded', fxSchedule.status, 201);
+  eq('...in the hiring company currency, which the caller never sent',
+    fxSchedule.json.currency, 'USD');
 
-  // 5 ── Repair: record the rate, and the same request now succeeds.
-  const recordRate = await call('POST', '/v1/fx-rates', {
+  // 7 ── Work prices, freezes and reports in that one unit.
+  await call('POST', '/v1/rate-cards', {
     token: fxOwner.token,
     companyId: fxCompany,
     body: {
-      baseCurrency: 'GBP', quoteCurrency: 'USD', rate: '1.2700000000',
-      asOf: '2026-05-01', source: 'ECB reference rate',
+      kind: 'BILL', roleId: fxRoleId, counterpartyCompanyId: fxClient,
+      rateLabel: 'MON_FRI_DAY', rateMode: 'HOURLY', hourlyRateCents: 9000,
+      effectiveFrom: '2026-01-01',
     },
   });
-  eq('an owner records a rate with its source', recordRate.status, 201);
-  const firstRateId = recordRate.json.fxRate.id as string;
-  eq('...and it is not cited by anything yet', recordRate.json.fxRate.citationCount, 0);
-
-  const duplicateRate = await call('POST', '/v1/fx-rates', {
-    token: fxOwner.token,
-    companyId: fxCompany,
-    body: {
-      baseCurrency: 'GBP', quoteCurrency: 'USD', rate: '9.99',
-      asOf: '2026-05-01', source: 'a competing truth',
-    },
+  await call('POST', `/v1/projects/${fxProjectId}/assignments`, {
+    token: fxOwner.token, companyId: fxCompany, body: { providerCompanyId: fxProvider },
   });
-  eq('the same pair on the same day is refused, not silently overwritten', duplicateRate.status, 409);
-
-  let immutableRefused = false;
-  try {
-    await db.query(`update fx_rates set rate = 99 where id = $1`, [firstRateId]);
-  } catch {
-    immutableRefused = true;
-  }
-  check('the database itself refuses to edit a recorded rate', immutableRefused);
-
-  const nowAllowed = await call('POST', `/v1/commercial-agreements/${fxEngagement}/schedule`, {
-    token: fxOwner.token,
-    companyId: fxCompany,
-    body: {
-      effectiveFrom: '2026-06-01',
-      currency: 'GBP',
-      // A back-dated schedule needs an owner plus a reason (§3.3.1). Supplied so
-      // the only thing under test here is the currency rule, not that one.
-      retroactiveReason: 'Agreed in June, recorded once the paperwork caught up',
-      lines: [{ operation: 'CREATE', roleId: fxRoleId, rateLabel: 'MON_FRI_DAY', rateMode: 'HOURLY', hourlyRateCents: 5000 }],
-    },
-  });
-  eq('with a rate on file the unlike schedule is accepted', nowAllowed.status, 201);
-  const gbpCard = await db.query(`select currency from rate_cards where id = $1`,
-    [nowAllowed.json.rateCardIds[0]]);
-  eq('...and the approved card carries GBP, not the company default', gbpCard.rows[0]?.currency, 'GBP');
-
-  // 6 ── Frozen: the FX used is pinned onto the log at submit, with the amount.
-  const fxAssignment = await call('POST', `/v1/projects/${fxProjectId}/assignments`, {
-    token: fxOwner.token,
-    companyId: fxCompany,
-    body: { providerCompanyId: fxProvider },
-  });
-  eq('the GBP crew is assigned to the USD project', fxAssignment.status, 201);
-
   const fxLog = await call('POST', '/v1/time-logs', {
     token: fxProviderUser.token,
     companyId: fxProvider,
     body: {
       projectId: fxProjectId, roleId: fxRoleId, shiftType: 'WEEKDAY_DAY',
-      workDate: '2026-07-20', hoursRegular: 8, hoursOt: 0,
+      workDate: '2026-07-06', hoursRegular: 8, hoursOt: 0,
     },
   });
   const fxLogId = fxLog.json.timeLog.id as string;
   const fxSubmitted = await call('POST', `/v1/time-logs/${fxLogId}/submit`, {
-    token: fxProviderUser.token,
-    companyId: fxProvider,
+    token: fxProviderUser.token, companyId: fxProvider,
   });
-  eq('the PAY snapshot freezes 8h x 5000 in its own currency',
-    fxSubmitted.json.timeLog.resolvedRate?.costCents, 40000);
-  eq('...and records which currency that is', fxSubmitted.json.timeLog.resolvedRate?.currency, 'GBP');
-  eq('...and freezes the rate it will be reported through',
-    fxSubmitted.json.timeLog.resolvedRate?.fx?.rate, '1.2700000000');
-  eq('...naming its source, so the figure can explain itself later',
-    fxSubmitted.json.timeLog.resolvedRate?.fx?.source, 'ECB reference rate');
+  eq('the PAY snapshot freezes 8h x 5000', fxSubmitted.json.timeLog.resolvedRate?.costCents, 40000);
+  eq('...labelled with the paying company currency',
+    fxSubmitted.json.timeLog.resolvedRate?.currency, 'USD');
+  check('...and carries no exchange rate, because there is no such thing now',
+    fxSubmitted.json.timeLog.resolvedRate?.fx === undefined,
+    fxSubmitted.json.timeLog.resolvedRate);
   await call('POST', `/v1/time-logs/${fxLogId}/approve`, {
-    token: fxOwner.token,
-    companyId: fxCompany,
+    token: fxOwner.token, companyId: fxCompany,
   });
 
   const fxSummary = await call('GET', `/v1/projects/${fxProjectId}/summary`, {
-    token: fxOwner.token,
-    companyId: fxCompany,
+    token: fxOwner.token, companyId: fxCompany,
   });
-  eq('the summary reports in the project currency', fxSummary.json.summary.currency, 'USD');
-  eq('...converting GBP 400.00 at 1.27 to USD 508.00', fxSummary.json.summary.laborCostCents, 50800);
-  eq('...with nothing withheld', fxSummary.json.summary.conversionGaps, []);
+  eq('the summary reports in the project label', fxSummary.json.summary.currency, 'USD');
+  eq('...at the frozen cost, unconverted', fxSummary.json.summary.laborCostCents, 40000);
+  eq('...with the BILL side priced from the owner cards', fxSummary.json.summary.billCents, 72000);
+  eq('...and a margin, because nothing is withheld', fxSummary.json.summary.marginCents, 32000);
+  check('...and the summary no longer reports conversion gaps at all',
+    fxSummary.json.summary.conversionGaps === undefined, Object.keys(fxSummary.json.summary));
 
-  // A later rate must not move money already agreed.
-  await call('POST', '/v1/fx-rates', {
-    token: fxOwner.token,
-    companyId: fxCompany,
-    body: {
-      baseCurrency: 'GBP', quoteCurrency: 'USD', rate: '2.0000000000',
-      asOf: '2026-08-01', source: 'a much later rate',
-    },
-  });
-  const afterNewRate = await call('GET', `/v1/projects/${fxProjectId}/summary`, {
-    token: fxOwner.token,
-    companyId: fxCompany,
-  });
-  eq('recording a later rate does not restate an approved log',
-    afterNewRate.json.summary.laborCostCents, 50800);
-
-  // 7 ── Withholding: work older than every recorded rate is named, not guessed.
-  const oldLog = await call('POST', '/v1/time-logs', {
-    token: fxProviderUser.token,
-    companyId: fxProvider,
-    body: {
-      projectId: fxProjectId, roleId: fxRoleId, shiftType: 'WEEKDAY_DAY',
-      workDate: '2026-04-01', hoursRegular: 8, hoursOt: 0,
-    },
-  });
-  const oldLogId = oldLog.json.timeLog.id as string;
-  // An earlier GBP card so the work prices, while still predating every rate.
-  // Inserted rather than back-dating the approved one: 0009 makes a locked card
-  // immutable and the trigger refuses, which is the behaviour we want to keep.
-  await db.query(
-    `insert into rate_cards
-       (company_id, kind, counterparty_company_id, role_id, rate_mode, rate_label,
-        hourly_rate_cents, effective_from, active, currency)
-     values ($1,'PAY',$2,$3,'HOURLY','MON_FRI_DAY',5000,'2026-03-01',true,'GBP')`,
-    [fxCompany, fxProvider, fxRoleId]
-  );
-  const oldSubmitted = await call('POST', `/v1/time-logs/${oldLogId}/submit`, {
-    token: fxProviderUser.token,
-    companyId: fxProvider,
-  });
-  eq('a log older than every rate still submits — the work happened',
-    oldSubmitted.json.timeLog.resolvedRate?.costCents, 40000);
-  eq('...but freezes no FX, because none covers it',
-    oldSubmitted.json.timeLog.resolvedRate?.fx, undefined);
-  await call('POST', `/v1/time-logs/${oldLogId}/approve`, {
-    token: fxOwner.token,
-    companyId: fxCompany,
-  });
-
-  const gappySummary = await call('GET', `/v1/projects/${fxProjectId}/summary`, {
-    token: fxOwner.token,
-    companyId: fxCompany,
-  });
-  eq('the unconvertible cost is withheld, not folded in at zero',
-    gappySummary.json.summary.laborCostCents, 50800);
-  eq('...and the gap is named by pair', gappySummary.json.summary.conversionGaps, [
-    { baseCurrency: 'GBP', quoteCurrency: 'USD', earliestDate: '2026-04-01', recordCount: 1 },
-  ]);
-  eq('...and margin is withheld with it rather than flattered by an understated cost',
-    gappySummary.json.summary.marginCents, null);
-
-  // 8 ── Pinned: committed money fixes the unit for the life of the project.
+  // 8 ── Pinned. The one way a pure label can still do damage is retroactively:
+  // the numbers do not move, so relabelling changes what all of them mean.
   const pinned = await call('PATCH', `/v1/projects/${fxProjectId}`, {
     token: fxOwner.token,
     companyId: fxCompany,
@@ -3124,164 +3070,24 @@ async function main(): Promise<void> {
   });
   eq('a project holding approved work refuses a currency change', pinned.status, 409);
   check('...naming what pins it rather than just refusing',
-    /approved time log/i.test(pinned.json?.error?.message ?? ''),
-    pinned.json?.error?.message);
+    /approved time log/.test(pinned.json?.error?.message ?? ''), pinned.json?.error?.message);
+  check('...and saying the harm is relabelling, not arithmetic',
+    /relabel/i.test(pinned.json?.error?.message ?? ''), pinned.json?.error?.message);
 
-  // 9 ── Correction: a cited rate cannot be deleted; an uncited one can.
-  const citedList = await call('GET', '/v1/fx-rates', {
-    token: fxOwner.token,
-    companyId: fxCompany,
-  });
-  const citedRate = citedList.json.data.find((r: any) => r.id === firstRateId);
-  eq('the rate the frozen snapshot cites reports its citation', citedRate?.citationCount, 1);
-  const deleteCited = await call('DELETE', `/v1/fx-rates/${firstRateId}`, {
-    token: fxOwner.token,
-    companyId: fxCompany,
-  });
-  eq('deleting a cited rate is refused', deleteCited.status, 409);
-  check('...saying how many figures depend on it, and offering the correction path',
-    /1 committed figure/.test(deleteCited.json?.error?.message ?? '') &&
-    /later date/i.test(deleteCited.json?.error?.message ?? ''),
-    deleteCited.json?.error?.message);
-
-  const spareRate = await call('POST', '/v1/fx-rates', {
-    token: fxOwner.token,
-    companyId: fxCompany,
-    body: {
-      baseCurrency: 'PHP', quoteCurrency: 'USD', rate: '0.0180000000',
-      asOf: '2026-05-01', source: 'recorded in error',
-    },
-  });
-  const deleteSpare = await call('DELETE', `/v1/fx-rates/${spareRate.json.fxRate.id}`, {
-    token: fxOwner.token,
-    companyId: fxCompany,
-  });
-  eq('a rate nothing cites may be deleted', deleteSpare.status, 204);
-
-  // 10 ── Tenant boundary: rates never cross a company edge.
-  const providerReadsRates = await call('GET', '/v1/fx-rates', {
-    token: fxProviderUser.token,
-    companyId: fxProvider,
-  });
-  eq('a counterparty reading its own rates sees none of the hiring company’s',
-    providerReadsRates.json.data.length, 0);
-  const forgedRate = await call('DELETE', `/v1/fx-rates/${firstRateId}`, {
-    token: fxProviderUser.token,
-    companyId: fxProvider,
-  });
-  eq('...and cannot address one by id', forgedRate.status, 404);
-
-  // 11 ── The invoice refuses rather than converts.
-  const fxClientRes = await call('POST', '/v1/clients', {
-    token: fxOwner.token,
-    companyId: fxCompany,
-    body: { name: `Crossborder Client ${RUN}`, email: `fxclient+${RUN}@verify.crewquo.test` },
-  });
-  const fxClient = fxClientRes.json.client.clientCompanyId as string;
-  const fxClientEngagement = fxClientRes.json.client.engagementId as string;
-  await call('PATCH', `/v1/projects/${fxProjectId}`, {
-    token: fxOwner.token,
-    companyId: fxCompany,
-    body: { clientCompanyId: fxClient, engagementId: fxClientEngagement },
-  });
-  await db.query(
-    `insert into rate_cards
-       (company_id, kind, counterparty_company_id, role_id, rate_mode, rate_label,
-        hourly_rate_cents, effective_from, active, currency)
-     values ($1,'BILL',$2,$3,'HOURLY','MON_FRI_DAY',9000,'2026-01-01',true,'GBP')`,
-    [fxCompany, fxClient, fxRoleId]
-  );
-  // Regression, and the shape matters: **PAY in USD, BILL in GBP.** A summary that
-  // pre-computes its FX pairs from the PAY snapshots alone finds no GBP base here
-  // and withholds the BILL figure, even though the GBP->USD rate has been on file
-  // since step 5. A project whose PAY is also GBP would hide the bug, because the
-  // PAY side would have loaded the pair on the BILL side's behalf.
-  const usdRole = await call('POST', '/v1/role-catalog', {
-    token: fxOwner.token,
-    companyId: fxCompany,
-    body: { name: `Supervisor ${RUN}` },
-  });
-  const usdRoleId = usdRole.json.role.id as string;
-  await db.query(
-    `insert into rate_cards
-       (company_id, kind, counterparty_company_id, role_id, rate_mode, rate_label,
-        hourly_rate_cents, effective_from, active, currency)
-     values ($1,'PAY',$2,$3,'HOURLY','MON_FRI_DAY',5000,'2026-01-01',true,'USD'),
-            ($1,'BILL',$4,$3,'HOURLY','MON_FRI_DAY',9000,'2026-01-01',true,'GBP')`,
-    [fxCompany, fxProvider, usdRoleId, fxClient]
-  );
-  const mixedProject = await call('POST', '/v1/projects', {
-    token: fxOwner.token,
-    companyId: fxCompany,
-    body: {
-      name: `Mixed-side billing ${RUN}`,
-      clientCompanyId: fxClient,
-      engagementId: fxClientEngagement,
-    },
-  });
-  const mixedProjectId = mixedProject.json.project.id as string;
-  await call('POST', `/v1/projects/${mixedProjectId}/assignments`, {
-    token: fxOwner.token,
-    companyId: fxCompany,
-    body: { providerCompanyId: fxProvider },
-  });
-  const mixedLog = await call('POST', '/v1/time-logs', {
-    token: fxProviderUser.token,
-    companyId: fxProvider,
-    body: {
-      projectId: mixedProjectId, roleId: usdRoleId, shiftType: 'WEEKDAY_DAY',
-      workDate: '2026-07-20', hoursRegular: 8, hoursOt: 0,
-    },
-  });
-  const mixedLogId = mixedLog.json.timeLog.id as string;
-  await call('POST', `/v1/time-logs/${mixedLogId}/submit`, {
-    token: fxProviderUser.token,
-    companyId: fxProvider,
-  });
-  await call('POST', `/v1/time-logs/${mixedLogId}/approve`, {
-    token: fxOwner.token,
-    companyId: fxCompany,
-  });
-  const mixedSummary = await call('GET', `/v1/projects/${mixedProjectId}/summary`, {
-    token: fxOwner.token,
-    companyId: fxCompany,
-  });
-  eq('a USD PAY cost needs no conversion', mixedSummary.json.summary.laborCostCents, 40000);
-  eq('...while the GBP BILL side converts from the rate already on file',
-    mixedSummary.json.summary.billCents, 91440);
-  eq('...so nothing is withheld', mixedSummary.json.summary.conversionGaps, []);
-  eq('...and margin is reported across the two sides', mixedSummary.json.summary.marginCents, 51440);
-
-  const unlikeInvoice = await call('POST', '/v1/invoices', {
-    token: fxOwner.token,
-    companyId: fxCompany,
-    body: { projectId: fxProjectId, includeApprovedWork: true },
-  });
-  eq('an invoice will not convert an agreed charge-out rate', unlikeInvoice.status, 422);
-  check('...naming both currencies, because the client owes what was agreed',
-    /GBP/.test(unlikeInvoice.json?.error?.message ?? '') &&
-    /USD/.test(unlikeInvoice.json?.error?.message ?? ''),
-    unlikeInvoice.json?.error?.message);
-
-  // 12 ── Tax honesty: nothing anywhere calls this a tax invoice.
-  await db.query(
-    `update rate_cards set currency = 'USD'
-      where company_id = $1 and kind = 'BILL' and counterparty_company_id = $2`,
-    [fxCompany, fxClient]
-  );
+  // 9 ── Tax honesty: nothing anywhere calls this a tax invoice.
   const taxInvoice = await call('POST', '/v1/invoices', {
     token: fxOwner.token,
     companyId: fxCompany,
     body: { projectId: fxProjectId, includeApprovedWork: true },
   });
-  eq('a like-for-like BILL currency invoices normally', taxInvoice.status, 201);
-  eq('...denominated in the project reporting currency, not the live company column',
+  eq('an invoice is created from the approved work', taxInvoice.status, 201);
+  eq('...denominated in the project label, not the live company column',
     taxInvoice.json.invoice.currency, 'USD');
   check('no API response describes the document as a tax invoice',
     !/tax invoice/i.test(JSON.stringify(taxInvoice.json)),
     taxInvoice.json?.invoice?.id);
 
-  // 13 ── The portal boundary stays structural.
+  // 10 ── The portal boundary stays structural.
   await call('PATCH', `/v1/projects/${fxProjectId}`, {
     token: fxOwner.token,
     companyId: fxCompany,
@@ -3300,7 +3106,7 @@ async function main(): Promise<void> {
   const portalJson = JSON.stringify(portalView.json);
   const leaked = ['fxRate', 'reportingCurrency', 'marginCents', 'laborCostCents', 'resolvedRate']
     .filter((needle) => portalJson.includes(needle));
-  check('...and the payload carries no exchange rate, PAY cost or margin', leaked.length === 0,
+  check('...and the payload carries no PAY cost or margin', leaked.length === 0,
     { leaked, sample: portalJson.slice(0, 400) });
   eq('...the client-facing shape is exactly the nine documented fields',
     Object.keys(portalView.json).sort(),

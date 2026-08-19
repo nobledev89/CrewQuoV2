@@ -23,7 +23,6 @@ function card(overrides: Partial<RateCardView>): RateCardView {
     active: true,
     // Approved-version provenance (Phase 6). A hand-entered card is version 1,
     // unlocked, sourced from no proposal, and inherits the company currency.
-    currency: null,
     version: 1,
     locked: false,
     sourceProposalId: null,

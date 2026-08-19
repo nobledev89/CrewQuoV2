@@ -1062,7 +1062,6 @@ function ScheduleDrawer({
         await api.createRateProposal(ctx.accessToken, ctx.companyId, {
           engagementId: agreement.engagementId,
           effectiveFrom,
-          currency: agreement.currency,
           note: note.trim() === '' ? null : note.trim(),
           predecessorProposalId: null,
           lines: payload,
@@ -1071,7 +1070,6 @@ function ScheduleDrawer({
       } else {
         await api.recordRateSchedule(ctx.accessToken, ctx.companyId, agreement.engagementId, {
           effectiveFrom,
-          currency: agreement.currency,
           note: note.trim() === '' ? null : note.trim(),
           retroactiveReason: retroReason.trim() === '' ? null : retroReason.trim(),
           lines: payload,

@@ -51,7 +51,6 @@ function summary(overrides: Partial<ProjectSummary> = {}): ProjectSummary {
         expenseCostCents: 0,
       },
     ],
-    conversionGaps: [],
     ...overrides,
   };
 }

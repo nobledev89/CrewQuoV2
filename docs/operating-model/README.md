@@ -17,7 +17,7 @@ heading is an unasked question, which is the failure mode §19.5 exists to preve
 | Commercial agreements — PAY rate proposals, engagement terms, acceptance | [commercial-agreements.md](./commercial-agreements.md) | Phase 6 |
 | Company ownership & creation — the first-company allowance, additional-company approval, duplicate routing, trial eligibility | [company-creation.md](./company-creation.md) | Phase 6 |
 | Durable delivery — transactional events/jobs, inbound webhooks, retry, dead letters and replay | [durable-delivery.md](./durable-delivery.md) | Phase 6 |
-| Money boundary — currency identity, project reporting currency, FX snapshots and the tax-compliance gate | [money-boundary.md](./money-boundary.md) | Phase 6 |
+| Money identity — one currency per company, the project label snapshot, its pin and the tax-compliance gate | [money-boundary.md](./money-boundary.md) | Phase 6 |
 | Notifications & the Action Centre — the durable per-recipient projection, channels, quiet hours, delivery evidence | [notifications.md](./notifications.md) | Phase 6 |
 | Time & time zones — company/project IANA zones, instant-vs-date, DST, date-bound rules | [time.md](./time.md) | Phase 6 |
 
@@ -55,3 +55,14 @@ are what produced the row-lock-then-count concurrency rule rather than a
 check-then-act; and §4's decision that a converted figure must cite its rate is
 what turned "an invoice converts BILL rates" into "an invoice refuses them",
 which removed a table from the migration instead of adding one.
+
+**It is also the first packet to be substantially reversed, and it kept its
+reasoning through the reversal.** Hours after the multi-currency design shipped,
+the owner decided that a company works in exactly one currency and the currency is
+a label. Migration 0017 undid most of 0013. The packet was rewritten rather than
+patched, and it now carries a *What went, and why it is not coming back by
+accident* section — because the way a withdrawn feature returns is one plausible
+column at a time, added by somebody who never knew it had been removed on purpose.
+The §3 pinning states and the row-lock concurrency rule survived the reversal
+unchanged, which is a fair sign they were about the domain rather than about the
+mechanism.

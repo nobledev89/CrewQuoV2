@@ -6,13 +6,10 @@ import {
   createSubmissionSchema,
   createTimeLogSchema,
   extractRate,
-  pickFxRate,
   rejectSchema,
   resolveRateLabel,
-  toFxSnapshot,
   updateExpenseSchema,
   updateTimeLogSchema,
-  type FxSnapshot,
   type ResolvedRateSnapshot,
   type ShiftType,
 } from '@crewquo/shared';
@@ -33,8 +30,6 @@ import { findEngagementEdge, type EngagementEdgeRow } from '../engagements/repo'
 import { getEffectiveTimeframeDefinitions, listResolveCandidates } from '../rates/repo';
 import { pickEffectiveCard } from '../rates/resolve';
 import { findCompanyById } from '../companies/repo';
-import { listFxRateCandidates } from '../money/repo';
-import { getProject } from '../projects/repo';
 import { recordAudit } from '../audit/record';
 import { enqueueOutboxEvent } from '../delivery/repo';
 import {
@@ -351,18 +346,16 @@ async function reviewGuard(req: Request) {
 }
 
 /**
- * Freeze what this log costs, and in which unit (§6, §3.3 decision #5).
+ * Freeze what this log costs (§6).
  *
- * The FX rate is resolved and frozen **here, at submit**, for exactly the reason
- * the amount is: what a provider is owed must not move because somebody recorded
- * a different rate next month. A log whose PAY currency already matches the
- * project's reporting currency carries no `fx` at all, which is the majority case
- * and costs nothing.
+ * The amount is pinned **here, at submit**, because what a provider is owed must
+ * not move afterwards because somebody edited a rate card next month.
  *
- * No rate available is **not** an error at submit: the work still happened and
- * the provider still submits it. The cost is frozen in its own currency, the `fx`
- * field stays absent, and the project summary withholds that figure and names the
- * gap — repairable later by recording the rate, which is the packet's §9 path.
+ * The unit is recorded alongside it for readability and is always the paying
+ * company's one currency — a company works in exactly one (owner decision,
+ * 2026-08-19). This function used to also resolve and freeze an exchange rate for
+ * logs whose PAY currency differed from the project's; there is no such case now,
+ * so that went with the rates themselves.
  */
 async function resolvePaySnapshot(args: {
   clientCompanyId: string;
@@ -394,22 +387,10 @@ async function resolvePaySnapshot(args: {
     otHours: args.hoursOt,
   });
 
-  // The paying company's own unit is the card's, falling back to its company
-  // default for every card written before 0009 gave cards a currency.
+  // The paying company's one currency. Read from the company rather than the card
+  // because cards no longer carry their own — see 0017.
   const payer = await findCompanyById(args.clientCompanyId);
-  const payCurrency = card.currency ?? payer?.currency ?? DEFAULT_CURRENCY;
-  const project = await getProject(args.clientCompanyId, args.projectId);
-  const reportingCurrency = project?.reportingCurrency ?? payCurrency;
-
-  let fx: FxSnapshot | undefined;
-  if (payCurrency !== reportingCurrency) {
-    const candidateRates = await listFxRateCandidates(
-      args.clientCompanyId,
-      [{ base: payCurrency, quote: reportingCurrency }]
-    );
-    const picked = pickFxRate(candidateRates, args.workDate);
-    if (picked) fx = toFxSnapshot(picked);
-  }
+  const payCurrency = payer?.currency ?? DEFAULT_CURRENCY;
 
   return {
     rateCardId: card.id,
@@ -421,7 +402,6 @@ async function resolvePaySnapshot(args: {
     hoursOt: args.hoursOt,
     costCents,
     currency: payCurrency,
-    ...(fx ? { fx } : {}),
   };
 }
 

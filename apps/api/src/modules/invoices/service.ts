@@ -107,7 +107,6 @@ async function loadDerivedItems(args: {
   const labelRules = await getEffectiveTimeframeDefinitions(args.ownerCompanyId, args.runner);
   const items: DerivedItem[] = [];
   const missingRateIds: string[] = [];
-  const unlikeCurrencies = new Set<string>();
   for (const log of logs) {
     const hoursRegular = Number(log.hours_regular);
     const hoursOt = Number(log.hours_ot);
@@ -126,15 +125,6 @@ async function loadDerivedItems(args: {
       missingRateIds.push(log.id);
       continue;
     }
-    // A BILL card may declare its own unit since 0009. The rate IS what the
-    // client is charged, so an unlike one is refused rather than converted:
-    // converting would bill them a number nobody agreed, at a rate only the
-    // owner has seen. §3.3 decision #5, money-boundary packet §4.
-    const billCurrency = bill.currency ?? args.invoiceCurrency;
-    if (billCurrency !== args.invoiceCurrency) {
-      unlikeCurrencies.add(billCurrency);
-      continue;
-    }
     const hours = `${hoursRegular}h${hoursOt ? ` + ${hoursOt}h OT` : ''}`;
     items.push({
       description: `${log.role_name} - ${log.work_date} (${hours})`,
@@ -143,16 +133,6 @@ async function loadDerivedItems(args: {
       sourceType: 'TIME_LOG',
       sourceId: log.id,
     });
-  }
-  if (unlikeCurrencies.size > 0) {
-    throw new AppError(
-      'VALIDATION',
-      `This project is invoiced in ${args.invoiceCurrency}, but a BILL rate for some ` +
-        `approved time is in ${[...unlikeCurrencies].sort().join(', ')}. An agreed ` +
-        `charge-out rate is what the client owes, so CrewQuo will not convert it. ` +
-        `Agree the rate in ${args.invoiceCurrency}, or invoice this work separately.`,
-      { currencies: [...unlikeCurrencies].sort() }
-    );
   }
   if (missingRateIds.length > 0) {
     throw new AppError('VALIDATION', 'Some approved time cannot be billed because a BILL rate is missing', {
@@ -208,10 +188,10 @@ export async function createProjectInvoice(
       issuerCompanyId,
       counterpartyCompanyId: project.clientCompanyId,
       projectId: project.id,
-      // The *project's* unit, not `company.currency`. The company column is live
-      // and an owner may change it; an invoice, its project summary and the
-      // client portal must never disagree about what unit a figure is in.
-      currency: project.reportingCurrency,
+      // No currency: it is read back from the project's snapshot on every select.
+      // The company column is live and an owner may change it, so the invoice, the
+      // project summary and the client portal all read the one snapshot rather than
+      // three copies that could disagree.
       dueAt,
       taxCents: input.taxCents,
     }, runner);

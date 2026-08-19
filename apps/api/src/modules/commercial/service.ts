@@ -6,17 +6,14 @@ import type {
   UpdateRateProposal,
 } from '@crewquo/shared';
 import {
-  currencyBoundaryRefusal,
   duplicateScheduleLineIndex,
   isRetroactive,
-  pickFxRate,
   todayInZone,
   supersededEffectiveTo,
 } from '@crewquo/shared';
 import { query, withTransaction, type Queryable } from '../../db';
 import { AppError } from '../../http/errors';
 import { findCompanyById } from '../companies/repo';
-import { listFxRateCandidates } from '../money/repo';
 import { recordRevision } from '../revisions/record';
 import {
   closeRateCardWindow,
@@ -167,30 +164,6 @@ async function validateScheduleAgainstEdge(
   }
 }
 
-/**
- * Does the hiring company hold a rate that covers this schedule's start date?
- *
- * Scoped to the *hiring* company because that is whose `rate_cards` an approval
- * writes and whose margin the converted figures land in — the same "resolve on
- * the hiring side" rule the proposal permissions already follow, so a free
- * subcontractor is never blocked by rates it does not own.
- */
-async function hasFxRate(args: {
-  companyId: string;
-  base: string;
-  quote: string;
-  asOf: string;
-  runner?: Queryable;
-}): Promise<boolean> {
-  if (args.base === args.quote) return true;
-  const candidates = await listFxRateCandidates(
-    args.companyId,
-    [{ base: args.base, quote: args.quote }],
-    args.runner
-  );
-  return pickFxRate(candidates, args.asOf) !== null;
-}
-
 // ── Draft lifecycle ───────────────────────────────────────────────────────────
 
 export async function createRateProposal(args: {
@@ -204,24 +177,12 @@ export async function createRateProposal(args: {
 
     const hiring = await findCompanyById(args.edge.clientCompanyId, runner);
     if (!hiring) throw new AppError('NOT_FOUND', 'Hiring company not found');
-    // The agreement records its own currency. An unlike one is now allowed —
-    // but only when the hiring company has recorded a rate that covers the day
-    // the schedule starts, so every figure it produces can name where its
-    // conversion came from (§3.3 decision #5).
-    const currency = args.input.currency ?? hiring.currency;
-    const refusal = currencyBoundaryRefusal({
-      proposalCurrency: currency,
-      hiringCompanyCurrency: hiring.currency,
-      effectiveFrom: args.input.effectiveFrom,
-      hasRate: await hasFxRate({
-        companyId: hiring.id,
-        base: currency,
-        quote: hiring.currency,
-        asOf: args.input.effectiveFrom,
-        runner,
-      }),
-    });
-    if (refusal) throw new AppError('VALIDATION', refusal);
+    // A PAY schedule is always in the hiring company's one currency: `rate_cards`
+    // resolve on the hiring side, so that is whose money the schedule governs. The
+    // proposer does not get to choose a unit, and there is nothing to refuse —
+    // the currency the caller used to be able to send went with the exchange rates
+    // on 2026-08-19 (owner decision: a company works in exactly one currency).
+    const currency = hiring.currency;
 
     if (args.input.predecessorProposalId) {
       const predecessor = await findChainablePredecessor(
@@ -619,22 +580,6 @@ export async function approveRateProposal(args: {
 
     const hiring = await findCompanyById(args.edge.clientCompanyId, runner);
     if (!hiring) throw new AppError('NOT_FOUND', 'Hiring company not found');
-    // Re-checked at approval, not just at draft: a rate could have been deleted
-    // between the two, and approval is the point the schedule becomes money.
-    const currencyRefusal = currencyBoundaryRefusal({
-      proposalCurrency: view.currency,
-      hiringCompanyCurrency: hiring.currency,
-      effectiveFrom: view.effectiveFrom,
-      hasRate: await hasFxRate({
-        companyId: hiring.id,
-        base: view.currency,
-        quote: hiring.currency,
-        asOf: view.effectiveFrom,
-        runner,
-      }),
-    });
-    if (currencyRefusal) throw new AppError('VALIDATION', currencyRefusal);
-
     const retroactive = isRetroactive(view.effectiveFrom, todayIso(hiring.time_zone));
     if (retroactive && !args.actorCanApproveRetroactively) {
       throw new AppError(
@@ -708,20 +653,8 @@ export async function recordDirectSchedule(args: {
     await lockEdge(args.edge.engagementId, runner);
     const hiring = await findCompanyById(args.edge.clientCompanyId, runner);
     if (!hiring) throw new AppError('NOT_FOUND', 'Hiring company not found');
-    const currency = args.input.currency ?? hiring.currency;
-    const refusal = currencyBoundaryRefusal({
-      proposalCurrency: currency,
-      hiringCompanyCurrency: hiring.currency,
-      effectiveFrom: args.input.effectiveFrom,
-      hasRate: await hasFxRate({
-        companyId: hiring.id,
-        base: currency,
-        quote: hiring.currency,
-        asOf: args.input.effectiveFrom,
-        runner,
-      }),
-    });
-    if (refusal) throw new AppError('VALIDATION', refusal);
+    // The hiring company's one currency — see `submitRateProposal` above.
+    const currency = hiring.currency;
 
     const retroactive = isRetroactive(args.input.effectiveFrom, todayIso(hiring.time_zone));
     if (retroactive && !args.actorCanApproveRetroactively) {

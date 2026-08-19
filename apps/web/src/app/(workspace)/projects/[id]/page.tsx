@@ -259,20 +259,6 @@ function SummaryPanel({
 
   return (
     <>
-      {s && s.conversionGaps.length > 0 ? (
-        <Notice>
-          <strong>Some money on this project is not in these totals.</strong> It was agreed in a
-          currency this project does not report in, and no recorded exchange rate covers it:{' '}
-          {s.conversionGaps
-            .map(
-              (g) =>
-                `${g.recordCount} ${g.recordCount === 1 ? 'record' : 'records'} in ${g.baseCurrency}, earliest ${g.earliestDate}`
-            )
-            .join('; ')}
-          . CrewQuo never estimates a rate, so those figures are left out and named here rather
-          than guessed. Record a rate in Settings to include them.
-        </Notice>
-      ) : null}
 
       {s && s.billCents === null && s.totalCostCents > 0 ? (
         <Notice>

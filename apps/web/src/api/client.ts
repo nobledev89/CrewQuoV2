@@ -38,7 +38,6 @@ import type {
   CreateCompanyRequest,
   CreateEngagement,
   CreateExpense,
-  CreateFxRate,
   CreateInvoice,
   CreateInvoiceItem,
   CreateLineItemNote,
@@ -54,7 +53,6 @@ import type {
   EntitlementsResponse,
   ExpenseView,
   FeatureKey,
-  FxRateView,
   InviteMember,
   NotificationPreferences,
   NotificationView,
@@ -269,18 +267,6 @@ export const api = {
       companyId: c,
       body,
     }),
-
-  // ── Exchange rates (§3.3 decision #5) — OWNER/ADMIN writes, any member reads ──
-  listFxRates: (t: string, c: string) =>
-    request<ListResponse<FxRateView>>('GET', '/v1/fx-rates', { accessToken: t, companyId: c }),
-  createFxRate: (t: string, c: string, body: CreateFxRate) =>
-    request<{ fxRate: FxRateView }>('POST', '/v1/fx-rates', {
-      accessToken: t,
-      companyId: c,
-      body,
-    }),
-  deleteFxRate: (t: string, c: string, id: string) =>
-    request<void>('DELETE', `/v1/fx-rates/${id}`, { accessToken: t, companyId: c }),
 
   // ── Notifications & the Action Centre ────────────────────────────────────────
   listNotifications: (t: string, c: string, filter: 'open' | 'unread' | 'all') =>

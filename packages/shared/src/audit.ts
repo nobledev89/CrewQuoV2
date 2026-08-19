@@ -72,10 +72,10 @@ export const AUDIT_ACTIONS = [
   'company.trial_comped',
   'company.override_applied',
   'company.override_removed',
-  // Money boundary (§3.3 decision #5) — a rate is an input to money owed, so who
-  // recorded it is evidence, not telemetry.
-  'fx_rate.recorded',
-  'fx_rate.deleted',
+  // Money identity (§3.3 decision #5). A project's currency is the label its whole
+  // history is printed with, so changing it is evidence rather than telemetry.
+  // `fx_rate.recorded` / `.deleted` were removed on 2026-08-19 with the exchange
+  // rates themselves — a company works in one currency and nothing is converted.
   'project.reporting_currency_set',
 ] as const;
 export const auditActionSchema = z.enum(AUDIT_ACTIONS);

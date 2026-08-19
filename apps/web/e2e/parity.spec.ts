@@ -834,55 +834,17 @@ test.describe('Web core workflows', () => {
   });
 
   /*
-   * Money boundary (§3.3 decision #5, docs/operating-model/money-boundary.md).
+   * Money identity (§3.3 decision #5, docs/operating-model/money-boundary.md).
    *
-   * The API script proves the arithmetic and every refusal. What only a browser
-   * can prove is that the repair path is *reachable*: a figure withheld for a
-   * missing rate is useless as a design if the person who can record that rate
-   * cannot find the screen. These walk that path.
+   * Two tests stood here — recording an exchange rate with its source, and
+   * deleting one nothing cited. Both went on 2026-08-19 with the owner decision
+   * that a company works in exactly one currency: there is no rate to record and
+   * no screen to record it on.
+   *
+   * What a browser still has to prove is that the *label* is visible where money
+   * is, and that the product says when it stops being changeable — because the one
+   * way a pure label can still cause harm is retroactively.
    */
-  test('an exchange rate is recorded with the source its figures will cite', async () => {
-    await contractor.goto('/settings');
-
-    const fx = contractor.getByRole('region').filter({ hasText: 'Exchange rates' });
-    await expect(
-      contractor.getByRole('heading', { name: 'Exchange rates' })
-    ).toBeVisible();
-    // The empty state has to say who needs this, because most companies never do.
-    await expect(contractor.getByText('No exchange rates recorded')).toBeVisible();
-
-    // `Field` wraps its control, so the accessible name is the caption plus the
-    // hint. Every label here is matched loosely for that reason — see the §40
-    // label note in PROGRESS.md.
-    await contractor.getByLabel(/^From \(ISO 4217\)/).fill('GBP');
-    await expect(contractor.getByLabel(/^To \(ISO 4217\)/)).toHaveValue('USD');
-    await contractor.getByLabel(/^Rate/).fill('1.2700');
-    await contractor.getByLabel(/^As of/).fill(FUTURE_DATE);
-    await contractor.getByLabel(/^Source/).fill('ECB reference rate');
-    await contractor.getByRole('button', { name: 'Record rate' }).click();
-
-    const row = contractor.getByRole('row', { name: /GBP to USD/ });
-    await expect(row).toBeVisible();
-    await expect(row).toContainText('1.2700000000');
-    // Provenance is on the screen, not just in the database: this is the whole
-    // reason Source is a required field rather than an optional note.
-    await expect(row).toContainText('ECB reference rate');
-    await expect(row).toContainText('not yet used');
-  });
-
-  test('a rate nothing cites can be deleted from the screen', async () => {
-    await contractor.goto('/settings');
-    const row = contractor.getByRole('row', { name: /GBP to USD/ });
-    await expect(row).toBeVisible();
-
-    // Nothing cites it, so Delete is live. There is deliberately no Edit control
-    // anywhere on this row: a correction is a new rate at a later date, so a
-    // figure that already cited the old one never moves.
-    await expect(row.getByRole('button', { name: 'Edit' })).toHaveCount(0);
-    await row.getByRole('button', { name: 'Delete' }).click();
-    await expect(contractor.getByText('No exchange rates recorded')).toBeVisible();
-  });
-
   test('a project names the currency it reports in, and says when that is fixed', async () => {
     await contractor.goto('/projects');
     await contractor.getByRole('link', { name: new RegExp(`Atrium refit ${RUN}`) }).click();

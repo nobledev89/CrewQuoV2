@@ -254,7 +254,6 @@ interface RateCardRow {
   effective_from: string; // date column → 'YYYY-MM-DD'
   effective_to: string | null;
   active: boolean;
-  currency: string | null;
   version: number;
   locked: boolean;
   source_proposal_id: string | null;
@@ -284,7 +283,6 @@ function toRateCardView(r: RateCardRow): RateCardView {
     effectiveFrom: r.effective_from,
     effectiveTo: r.effective_to,
     active: r.active,
-    currency: r.currency,
     version: r.version,
     locked: r.locked,
     sourceProposalId: r.source_proposal_id,
@@ -299,7 +297,7 @@ const RATE_CARD_COLS = `id, company_id, kind, counterparty_company_id, role_id, 
   min_hours, weekend_multiplier, night_multiplier,
   to_char(effective_from, 'YYYY-MM-DD') as effective_from,
   to_char(effective_to, 'YYYY-MM-DD') as effective_to,
-  active, currency, version, locked, source_proposal_id, supersedes_rate_card_id,
+  active, version, locked, source_proposal_id, supersedes_rate_card_id,
   created_at, updated_at`;
 
 export interface RateCardFilter {

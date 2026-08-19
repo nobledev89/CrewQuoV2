@@ -46,7 +46,10 @@ interface InvoiceItemRow {
 const INVOICE_SELECT = `
   select i.id, i.engagement_id, i.issuer_company_id, issuer.name as issuer_company_name,
          i.counterparty_company_id, counterparty.name as counterparty_company_name,
-         i.project_id, p.name as project_name, i.number, i.status, i.currency,
+         i.project_id, p.name as project_name, i.number, i.status,
+         -- The project's snapshot is the label. An invoice no longer stores its
+         -- own: it could only ever have been a copy of this.
+         p.reporting_currency as currency,
          i.subtotal_cents, i.tax_cents, i.total_cents, i.issued_at, i.due_at,
          i.created_at, i.updated_at
     from invoices i
@@ -134,16 +137,16 @@ export async function insertInvoice(input: {
   issuerCompanyId: string;
   counterpartyCompanyId: string;
   projectId: string;
-  currency: string;
   dueAt: string | null;
   taxCents: number;
 }, runner: Queryable): Promise<string> {
+  // No `currency`: the label is the project's snapshot, read back on every select.
   const row = await queryOne<{ id: string }>(
     `insert into invoices (engagement_id, issuer_company_id, counterparty_company_id,
-                           project_id, currency, due_at, tax_cents, total_cents)
-     values ($1,$2,$3,$4,$5,$6,$7,$7) returning id`,
+                           project_id, due_at, tax_cents, total_cents)
+     values ($1,$2,$3,$4,$5,$6,$6) returning id`,
     [input.engagementId, input.issuerCompanyId, input.counterpartyCompanyId, input.projectId,
-      input.currency, input.dueAt, input.taxCents],
+      input.dueAt, input.taxCents],
     runner
   );
   return row!.id;

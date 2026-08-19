@@ -6,7 +6,6 @@ import { Badge, Button, ErrorText, Field, Input, Notice, PageHeader, Row, Sectio
 import { Shell } from '@/components/Shell';
 import { api, ApiError } from '@/api/client';
 import { useAuth, useSessionCtx } from '@/auth/AuthProvider';
-import { FxRates } from './FxRates';
 
 /**
  * Company settings — the web surface for `PATCH /v1/companies/:id`.
@@ -215,7 +214,7 @@ function Settings() {
         )}
       </Section>
 
-      <FxRates canEdit={canEdit} companyCurrency={company?.currency ?? null} />
+
     </Stack>
   );
 }

@@ -185,8 +185,9 @@ export async function getPortalLineItems(project: {
       hoursOt,
       labelRules,
     });
-    const priced =
-      bill !== null && (bill.currency ?? project.reportingCurrency) === project.reportingCurrency;
+    // Priced or not — there is no third "priced in the wrong unit" case any more:
+    // a company works in exactly one currency (owner decision, 2026-08-19).
+    const priced = bill !== null;
     const amountCents = priced ? bill.amountCents : null;
     if (!priced) pricingComplete = false;
     else timeTotalCents += bill.amountCents;
