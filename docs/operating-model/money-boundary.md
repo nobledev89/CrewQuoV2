@@ -237,6 +237,36 @@ leaves the tenant.
 
 ---
 
+## The expense hole — named, because a named gap is not the same as a silent one
+
+**An expense carries no currency at all.** `expenses` (0004) has `amount_cents`,
+`category`, `description` and a receipt, and no unit anywhere on the row. Every
+other money-bearing table grew one — a rate proposal in 0009, an invoice in 0008,
+a project in 0013 — and this one did not, so an approved expense is taken at face
+value in the project's reporting currency.
+
+**What that means in practice.** A subcontractor working in another currency
+records 200 of *their* unit; the project summary, the invoice and the client
+portal all read it as 200 of the *project's*. Unlike the FX gaps this packet
+otherwise produces, nothing is withheld and nothing is named: the figure is
+silently wrong rather than visibly absent, which is the one outcome §41.1 exists
+to prevent. It is a live defect today for any cross-currency engagement, and
+invisible for the single-currency majority.
+
+**Why it is not closed here.** Closing it is a migration plus a decision this
+packet cannot make on its own: an FX conversion has to be *as of* a date, and an
+expense has no date column — only `created_at`, which is when somebody typed it in
+rather than when the cost was incurred. Adding `currency` alone would let an
+expense be converted at the wrong day's rate and look authoritative; the honest
+fix adds `currency` **and** an asserted `incurred_on`, and passes both through the
+same `convertToReportingCurrency` path the labour side already uses, so a missing
+rate withholds the figure and names it in `conversionGaps` instead of guessing.
+Backfill is safe in both directions — every existing row is genuinely in its
+project's unit, because until now that was the only unit it could have been.
+
+Recorded here rather than left as an omission, because the fault this packet spent
+its whole length arguing against is a figure that looks complete and is not.
+
 ## The tax gate — defining, deliberately not building
 
 The plan's wording is *"**Define** tax identity, addresses, line tax, credit notes

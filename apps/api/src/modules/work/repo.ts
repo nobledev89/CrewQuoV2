@@ -6,6 +6,7 @@ import type {
   TimeLogView,
   WorkStatus,
 } from '@crewquo/shared';
+import { effectiveTimeZone } from '@crewquo/shared';
 import { query, queryOne, type Queryable } from '../../db';
 
 /**
@@ -27,11 +28,15 @@ export async function listProviderWorkContext(providerCompanyId: string) {
     client_company_id: string;
     client_company_name: string;
     engagement_id: string;
+    project_time_zone: string | null;
+    owner_time_zone: string;
   }>(
     `select a.project_id, p.name as project_name,
-            e.client_company_id, cc.name as client_company_name, a.engagement_id
+            e.client_company_id, cc.name as client_company_name, a.engagement_id,
+            p.time_zone as project_time_zone, oc.time_zone as owner_time_zone
        from project_assignments a
        join projects p on p.id = a.project_id
+       join companies oc on oc.id = p.owner_company_id
        join engagements e on e.id = a.engagement_id
        join companies cc on cc.id = e.client_company_id
       where a.provider_company_id = $1 and e.status = 'ACTIVE'
@@ -60,6 +65,11 @@ export async function listProviderWorkContext(providerCompanyId: string) {
     clientCompanyId: a.client_company_id,
     clientCompanyName: a.client_company_name,
     engagementId: a.engagement_id,
+    // The *owner* company's zone is the fallback, not the provider's: the
+    // project's days belong to whoever runs the project, the same "resolve on the
+    // hiring side" rule the commercial module already follows. A Manila crew on a
+    // Dubai project asserts a Dubai day.
+    timeZone: effectiveTimeZone(a.project_time_zone, a.owner_time_zone),
     roles: rolesByClient.get(a.client_company_id) ?? [],
   }));
 }

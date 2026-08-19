@@ -220,18 +220,35 @@ export function convertToReportingCurrency(args: {
  * not an explanation — a user who sees "3 approved time logs" knows both why and
  * what a new project would cost them.
  */
-export function reportingCurrencyPinRefusal(pins: {
+export interface ProjectCommitmentPins {
   approvedTimeLogs: number;
   approvedExpenses: number;
   liveInvoices: number;
-}): string | null {
+}
+
+/**
+ * What this project has already committed, in words — or null when nothing is.
+ *
+ * Shared because two settings are pinned by the *same* facts: the reporting
+ * currency and the project time zone. Both restate history if they move after
+ * money commits, so both refuse on the same count, and a single description
+ * keeps the two refusals from drifting into disagreeing about what a project
+ * holds. A `VOID` invoice is deliberately excluded by every caller: it is a
+ * document withdrawn before it became a claim.
+ */
+export function describeProjectCommitments(pins: ProjectCommitmentPins): string | null {
   const parts: string[] = [];
   if (pins.approvedTimeLogs > 0) parts.push(plural(pins.approvedTimeLogs, 'approved time log'));
   if (pins.approvedExpenses > 0) parts.push(plural(pins.approvedExpenses, 'approved expense'));
   if (pins.liveInvoices > 0) parts.push(plural(pins.liveInvoices, 'invoice'));
-  if (parts.length === 0) return null;
+  return parts.length === 0 ? null : joinList(parts);
+}
+
+export function reportingCurrencyPinRefusal(pins: ProjectCommitmentPins): string | null {
+  const held = describeProjectCommitments(pins);
+  if (!held) return null;
   return (
-    `This project already reports money: ${joinList(parts)}. Changing its ` +
+    `This project already reports money: ${held}. Changing its ` +
     `reporting currency now would restate figures that are already committed, so ` +
     `it is fixed for the life of the project.`
   );

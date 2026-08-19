@@ -146,10 +146,41 @@ async function subscribe(companyId: string, planId: string): Promise<void> {
  * outbox events into notifications and the second sends their channels; a single
  * pass would leave every delivery row untouched and make step 5 a false negative.
  */
+/**
+ * Drain both worker loops until there is nothing left to claim.
+ *
+ * **Loops rather than running one batch each**, because a single batch is bounded
+ * and this script shares a database with the browser suite, which emits outbox
+ * events and never runs a worker. Once that backlog exceeds one batch, a fresh
+ * event sits behind it and an assertion like "the worker claims and delivers it"
+ * fails for a reason that has nothing to do with the code under test — which is
+ * exactly what happened at a 640-event backlog on 2026-08-19.
+ *
+ * Bounded by `MAX_PASSES` so a permanently-failing row cannot spin forever; the
+ * loop stops as soon as a pass claims nothing, which is the normal case after one
+ * or two passes.
+ */
 async function drainWorkers() {
-  await recoverStaleOutboxClaims(0);
-  const outbox = await runOutboxBatch({ workerId: 'verify-e2e', handlers: NOTIFICATION_HANDLERS });
-  const deliveries = await runNotificationDeliveryBatch();
+  const MAX_PASSES = 100;
+  let outbox = { claimed: 0, delivered: 0, failed: 0 };
+  let deliveries = { claimed: 0, sent: 0, skipped: 0, failed: 0 };
+  for (let pass = 0; pass < MAX_PASSES; pass += 1) {
+    await recoverStaleOutboxClaims(0);
+    const o = await runOutboxBatch({ workerId: 'verify-e2e', handlers: NOTIFICATION_HANDLERS });
+    const d = await runNotificationDeliveryBatch();
+    outbox = {
+      claimed: outbox.claimed + o.claimed,
+      delivered: outbox.delivered + o.delivered,
+      failed: outbox.failed + o.failed,
+    };
+    deliveries = {
+      claimed: deliveries.claimed + d.claimed,
+      sent: deliveries.sent + d.sent,
+      skipped: deliveries.skipped + d.skipped,
+      failed: deliveries.failed + d.failed,
+    };
+    if (o.claimed === 0 && d.claimed === 0) break;
+  }
   return { outbox, deliveries };
 }
 
@@ -2777,6 +2808,25 @@ async function main(): Promise<void> {
   eq('operations exposes durable-delivery health', deliveryOps.status, 200);
   check('...and the dead letter is visible to platform staff',
     deliveryOps.json.deadLetters.some((row: any) => row.id === deadDeliveryId));
+
+  // The notification channel queue is a *second* loop, drained separately from
+  // the outbox. Its counts were computable from the day it was written and shown
+  // nowhere, so an operator could watch a healthy outbox while every email in the
+  // system failed.
+  check('...alongside the notification channel queue, which drains separately',
+    deliveryOps.json.notifications !== undefined &&
+      ['pending', 'failed', 'sentLastDay', 'skippedLastDay']
+        .every((k) => typeof deliveryOps.json.notifications[k] === 'number'),
+    deliveryOps.json.notifications);
+  const opsServices = (deliveryOps.json.services as { name: string; status: string }[]);
+  check('...and notification delivery has a named service row',
+    opsServices.some((svc) => svc.name === 'Notification delivery'),
+    opsServices.map((s) => s.name));
+  // Configuration and queue health are separate rows on purpose: "no API key" and
+  // "the provider is rejecting us" are different problems with different repairs.
+  check('...separate from whether an email provider is configured at all',
+    opsServices.some((svc) => svc.name === 'Email provider'),
+    opsServices.map((s) => s.name));
   const replayDelivery = await call(
     'POST',
     `/v1/admin/delivery/OUTBOX/${deadDeliveryId}/replay`,
@@ -3505,6 +3555,101 @@ async function main(): Promise<void> {
     /missing from payload/i.test(poisoned.rows[0]?.last_error ?? ''),
     poisoned.rows[0]?.last_error);
 
+  // 12 ── Digests. `digest` was accepted, stored and ignored: a user could choose
+  // "daily" and get an email per event. Packet §6 — batch non-urgent email into
+  // one send per window.
+  //
+  // Deliberately last in this section: it raises two further tasks in the same
+  // company, which would otherwise turn an earlier step's "the open list is now
+  // empty" into a false failure.
+  const digestPrefs = await call('PUT', '/v1/notification-preferences', {
+    token: nSecond.token,
+    body: {
+      digest: 'DAILY',
+      quietHoursStart: null,
+      quietHoursEnd: null,
+      // Email on, so there is something to digest; push on, so the two channels
+      // of the same notification can be compared against each other.
+      channels: { 'work.submitted': { email: true, push: true } },
+    },
+  });
+  eq('a digest preference is saved', digestPrefs.json.preferences.digest, 'DAILY');
+
+  const digestLog = await call('POST', '/v1/time-logs', {
+    token: nProviderUser.token,
+    companyId: nProvider,
+    body: {
+      projectId: nProjectId, roleId: nRoleId, shiftType: 'WEEKDAY_DAY',
+      workDate: '2026-07-22', hoursRegular: 6, hoursOt: 0,
+    },
+  });
+  const digestLogId = digestLog.json.timeLog.id as string;
+  await call('POST', `/v1/time-logs/${digestLogId}/submit`, {
+    token: nProviderUser.token, companyId: nProvider,
+  });
+  await drainWorkers();
+
+  const digestInbox = await call('GET', '/v1/notifications?filter=open', {
+    token: nSecond.token, companyId: nCompany,
+  });
+  check('a digest does NOT hide the in-product task', digestInbox.json.data.length >= 1,
+    digestInbox.json.data.length);
+  const digestNotificationId = digestInbox.json.data[0].id as string;
+  const channels = await db.query<{ channel: string; held: boolean; status: string }>(
+    `select channel, deliver_after > now() + interval '1 minute' as held, status
+       from notification_deliveries where notification_id = $1 order by channel`,
+    [digestNotificationId]
+  );
+  const emailRow = channels.rows.find((r) => r.channel === 'EMAIL');
+  const pushRow = channels.rows.find((r) => r.channel === 'PUSH');
+  check('a daily digest holds the email to its window', emailRow?.held === true, channels.rows);
+  eq('...so nothing was sent yet', emailRow?.status, 'PENDING');
+  // The two channels of one notification legitimately have different due times.
+  check('...and does not batch the push, which goes out now', pushRow?.held === false,
+    channels.rows);
+
+  // Wind the window back rather than waiting for it: what is under test is that
+  // the batch is drained as one message, not how long the clock takes.
+  const digestSecond = await call('POST', '/v1/time-logs', {
+    token: nProviderUser.token,
+    companyId: nProvider,
+    body: {
+      projectId: nProjectId, roleId: nRoleId, shiftType: 'WEEKDAY_DAY',
+      workDate: '2026-07-23', hoursRegular: 2, hoursOt: 0,
+    },
+  });
+  await call('POST', `/v1/time-logs/${digestSecond.json.timeLog.id}/submit`, {
+    token: nProviderUser.token, companyId: nProvider,
+  });
+  await drainWorkers();
+  const heldEmails = await db.query<{ n: string }>(
+    `update notification_deliveries d set deliver_after = now() - interval '1 second'
+      from notifications n
+     where d.notification_id = n.id and n.recipient_user_id = $1
+       and d.channel = 'EMAIL' and d.status = 'PENDING'
+     returning d.id as n`,
+    [nSecond.userId]
+  );
+  check('two events are queued for one digest window', heldEmails.rowCount! >= 2,
+    heldEmails.rowCount);
+  await drainWorkers();
+  const drained = await db.query<{ status: string; skip_reason: string | null }>(
+    `select d.status, d.skip_reason from notification_deliveries d
+       join notifications n on n.id = d.notification_id
+      where n.recipient_user_id = $1 and d.channel = 'EMAIL'`,
+    [nSecond.userId]
+  );
+  check('the window drains every held email in one pass',
+    drained.rows.length >= 2 && drained.rows.every((r) => r.status !== 'PENDING'),
+    drained.rows);
+  // One provider call covered them all, so every row it covered records the same
+  // outcome. With no Resend key configured that outcome is a recorded SKIP, which
+  // is the honest state — absence of evidence must never look like success.
+  check('...recording one shared outcome rather than one send each',
+    new Set(drained.rows.map((r) => `${r.status}:${r.skip_reason ?? ''}`)).size === 1,
+    drained.rows);
+
+
   // ── Time zones (§42) ──────────────────────────────────────────────────────
   // docs/operating-model/time.md §12, implemented. The bug this section exists
   // for: `todayIso()` returned the SERVER's UTC date and the §3.3.1 back-dating
@@ -3662,6 +3807,120 @@ async function main(): Promise<void> {
     token: tzOwner.token, companyId: tzCompany, body: { timeZone: null },
   });
   eq('...and can go back to inheriting', backToInherit.json.project.timeZone, null);
+
+  // 6a ── The override has a reader. A stored setting nothing consults is an
+  // invented shape (§0 rule 3): `effectiveTimeZone` is what every consumer reads,
+  // and it resolves the inheritance rather than making each caller do it.
+  eq('an inheriting project reports the company zone as its effective one',
+    backToInherit.json.project.effectiveTimeZone, 'Pacific/Kiritimati');
+  const overriddenAgain = await call('PATCH', `/v1/projects/${tzProjectId}`, {
+    token: tzOwner.token, companyId: tzCompany, body: { timeZone: 'Asia/Dubai' },
+  });
+  eq('...and an overriding project reports its own',
+    overriddenAgain.json.project.effectiveTimeZone, 'Asia/Dubai');
+  // Inheritance is live, not copied: moving the company moves every project that
+  // never overrode it. A project that snapshotted the zone at creation would
+  // silently stop tracking the business it belongs to.
+  await call('PATCH', `/v1/companies/${tzCompany}`, {
+    token: tzOwner.token, companyId: tzCompany, body: { timeZone: 'Asia/Manila' },
+  });
+  const inheritor = await call('POST', '/v1/projects', {
+    token: tzOwner.token, companyId: tzCompany, body: { name: `Inheritor ${RUN}` },
+  });
+  eq('a project with no override follows the company when the company moves',
+    inheritor.json.project.effectiveTimeZone, 'Asia/Manila');
+
+  // 6b ── Only an owner or admin, per the packet's §4 matrix. Denied before
+  // allowed, so the role rule is genuinely what is under test.
+  const tzManagerInvite = await call('POST', '/v1/members/invite', {
+    token: tzOwner.token,
+    companyId: tzCompany,
+    body: { email: `tzmanager+${RUN}@verify.crewquo.test`, role: 'MANAGER' },
+  });
+  const tzManager = await register('tz-manager', undefined, `tzmanager+${RUN}@verify.crewquo.test`);
+  await call('POST', `/v1/invites/${tzManagerInvite.json.inviteToken}/accept`, {
+    token: tzManager.token,
+  });
+  const managerSetsZone = await call('PATCH', `/v1/projects/${tzProjectId}`, {
+    token: tzManager.token, companyId: tzCompany, body: { timeZone: 'Europe/London' },
+  });
+  eq("a MANAGER cannot change a project's time zone", managerSetsZone.status, 403);
+  const managerRenames = await call('PATCH', `/v1/projects/${tzProjectId}`, {
+    token: tzManager.token, companyId: tzCompany, body: { name: `Dubai tower B ${RUN}` },
+  });
+  eq('...but can still edit the rest of the project', managerRenames.status, 200);
+
+  // 6c ── The provider's log screen is told the *project's* zone, not its own and
+  // not the device's. This is the whole reason a project zone exists: a Manila
+  // crew on a Dubai project asserts a Dubai day.
+  const tzProviderCompany = tzProviderRes.json.provider.providerCompanyId as string;
+  await call('POST', `/v1/projects/${tzProjectId}/assignments`, {
+    token: tzOwner.token, companyId: tzCompany,
+    body: { providerCompanyId: tzProviderCompany },
+  });
+  const workCtx = await call('GET', '/v1/work-context', {
+    token: tzProviderUser.token, companyId: tzProviderCompany,
+  });
+  const dubaiAssignment = (workCtx.json.assignments as { projectId: string; timeZone: string }[])
+    .find((a) => a.projectId === tzProjectId);
+  eq("the work context carries the project's zone, not the provider's",
+    dubaiAssignment?.timeZone, 'Asia/Dubai');
+
+  // 6d ── The pin. An empty project may change zone; one holding approved work
+  // may not, because re-bucketing a committed day restates history.
+  const tzYesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  await call('POST', `/v1/commercial-agreements/${tzEngagement}/schedule`, {
+    token: tzOwner.token,
+    companyId: tzCompany,
+    body: {
+      effectiveFrom: tzYesterday,
+      retroactiveReason: 'Rates agreed before the project was set up in CrewQuo',
+      lines: [{
+        operation: 'CREATE', roleId: tzRoleId, rateLabel: 'MON_FRI_DAY',
+        rateMode: 'HOURLY', hourlyRateCents: 5000,
+      }],
+    },
+  });
+  const pinLog = await call('POST', '/v1/time-logs', {
+    token: tzProviderUser.token,
+    companyId: tzProviderCompany,
+    body: {
+      projectId: tzProjectId, roleId: tzRoleId, shiftType: 'WEEKDAY_DAY',
+      workDate: tzYesterday, hoursRegular: 8, hoursOt: 0,
+    },
+  });
+  const pinLogId = pinLog.json.timeLog.id as string;
+  await call('POST', `/v1/time-logs/${pinLogId}/submit`, {
+    token: tzProviderUser.token, companyId: tzProviderCompany,
+  });
+  await call('POST', `/v1/time-logs/${pinLogId}/approve`, {
+    token: tzOwner.token, companyId: tzCompany,
+  });
+  const pinnedZone = await call('PATCH', `/v1/projects/${tzProjectId}`, {
+    token: tzOwner.token, companyId: tzCompany, body: { timeZone: 'Europe/London' },
+  });
+  eq('a project holding approved work refuses a zone change', pinnedZone.status, 409);
+  check('...naming what pins it',
+    /1 approved time log/.test(pinnedZone.json?.error?.message ?? ''),
+    pinnedZone.json);
+  const stillDubai = await call('GET', `/v1/projects/${tzProjectId}`, {
+    token: tzOwner.token, companyId: tzCompany,
+  });
+  eq('...and the zone is unchanged', stillDubai.json.project.timeZone, 'Asia/Dubai');
+  // A no-op is still allowed through, or a client PATCHing the whole form back
+  // would be unable to edit anything else on a pinned project.
+  const noOpZone = await call('PATCH', `/v1/projects/${tzProjectId}`, {
+    token: tzOwner.token, companyId: tzCompany,
+    body: { timeZone: 'Asia/Dubai', notes: 'Pinned, but still editable' },
+  });
+  eq('re-sending the same zone on a pinned project is not a refusal', noOpZone.status, 200);
+  eq('...and the rest of the form still saves', noOpZone.json.project.notes,
+    'Pinned, but still editable');
+  // Nothing moved: the refused change left the committed work exactly where it was.
+  const pinnedLog = await db.query(
+    `select to_char(work_date, 'YYYY-MM-DD') as d from time_logs where id = $1`, [pinLogId]
+  );
+  eq('a refused zone change moves no stored work date', pinnedLog.rows[0]?.d, tzYesterday);
 
   // 7 ── The database validates against its own IANA list, not a pattern, so a
   // route that ever forgets to validate still cannot store a broken zone.

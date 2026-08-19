@@ -129,6 +129,37 @@ event. Urgency is a property of the kind, not of the sender's mood, and exactly 
 category is `URGENT` today — a dead-lettered operation — which bypasses quiet hours
 because the whole point of an operator alert is to arrive when things are broken.
 
+The four rules the implementation commits to, because each is a decision rather
+than a detail:
+
+1. **Email only.** A digest batches *messages*; a push is a knock on a device, and
+   one knock standing in for six is not a summary, it is five notifications that
+   never arrived. `deliveryHoldMinutes` takes the channel as an input for exactly
+   this reason, so the function that would have to change to break the rule
+   cannot express it.
+2. **A window that has just opened closes at the next boundary.** At exactly 09:00
+   an hourly digest waits the full hour, so everything raised in that hour arrives
+   together at 10:00. Sending the first event of each window on its own and
+   batching only the remainder is a digest that does not digest.
+3. **`DAILY` goes out at the end of quiet hours, or at 08:00.** Neither the plan
+   nor this packet names an hour, so this is a chosen default: a digest delivered
+   at local midnight is read at 08:00 anyway, and one delivered at 08:00 is the one
+   people act on. When somebody has set quiet hours, the end of their own window is
+   a better statement of "I am available again" than any default.
+4. **Quiet hours apply at the digest boundary, not at now.** Taking the larger of
+   the two delays is the tempting shortcut and it is wrong: at 21:30 with quiet
+   hours from 22:00, the hourly boundary lands *inside* the window and neither
+   delay on its own catches it.
+
+**Batching happens in the delivery worker, not only at dispatch.** Holding six
+emails until 10:00 and then sending six emails at 10:00 is a delay, not a digest.
+The worker groups the due email of each recipient who asked for one and makes a
+single provider call, recording that one outcome against every delivery row it
+covered — so "was I told?" stays answerable per notification. Grouping is bounded
+by the claimed batch: a recipient with more due email than the batch limit gets
+two messages rather than one, which errs toward sending and stops one person's
+backlog holding up everybody else's.
+
 ## 7. Data classification + retention
 
 A notification body is **commercial and personal**: it names amounts, projects and

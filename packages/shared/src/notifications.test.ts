@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_DAILY_DIGEST_TIME,
   DEFAULT_NOTIFICATION_PREFERENCES,
+  deliveryHoldMinutes,
+  digestDelayMinutes,
   NOTIFICATION_KINDS,
   NOTIFICATION_KIND_SPECS,
   isOpenAction,
@@ -253,6 +256,116 @@ describe('preferences', () => {
           quietHoursEnd: '07:00',
         }).success
       ).toBe(false);
+    }
+  });
+});
+
+describe('digests (packet §6)', () => {
+  it('never holds an IMMEDIATE delivery', () => {
+    expect(digestDelayMinutes({ localTime: '09:37', digest: 'IMMEDIATE' })).toBe(0);
+  });
+
+  it('sends an hourly digest at the next top of the hour', () => {
+    expect(digestDelayMinutes({ localTime: '09:37', digest: 'HOURLY' })).toBe(23);
+    expect(digestDelayMinutes({ localTime: '09:59', digest: 'HOURLY' })).toBe(1);
+  });
+
+  it('starts a fresh window rather than sending the first event of it alone', () => {
+    // The bug this pins: `60 - (t % 60)` returning 0 at exactly :00 would send
+    // one email on its own and batch only the remainder of the hour.
+    expect(digestDelayMinutes({ localTime: '09:00', digest: 'HOURLY' })).toBe(60);
+  });
+
+  it('sends a daily digest at the start of the working day by default', () => {
+    expect(digestDelayMinutes({ localTime: '20:00', digest: 'DAILY' })).toBe(12 * 60);
+    expect(digestDelayMinutes({ localTime: '06:30', digest: 'DAILY' })).toBe(90);
+    expect(DEFAULT_DAILY_DIGEST_TIME).toBe('08:00');
+  });
+
+  it('lets the end of quiet hours override the daily send time', () => {
+    // Somebody's own "I am available again" beats any default we could pick.
+    expect(digestDelayMinutes({ localTime: '20:00', digest: 'DAILY', dailySendTime: '06:00' }))
+      .toBe(10 * 60);
+  });
+
+  it('waits a full day when the boundary is exactly now', () => {
+    expect(digestDelayMinutes({ localTime: '08:00', digest: 'DAILY' })).toBe(24 * 60);
+  });
+});
+
+describe('composing digests, quiet hours and urgency', () => {
+  const base = {
+    channel: 'EMAIL' as const,
+    digest: 'IMMEDIATE' as const,
+    quietHoursStart: null as string | null,
+    quietHoursEnd: null as string | null,
+    urgency: 'NORMAL' as const,
+  };
+
+  it('holds nothing when the user has expressed no preference', () => {
+    expect(deliveryHoldMinutes({ ...base, localTime: '23:00' })).toBe(0);
+  });
+
+  it('never digests a push, however the user set their digest', () => {
+    // A digest batches messages. One knock standing in for six is not a summary.
+    expect(deliveryHoldMinutes({ ...base, channel: 'PUSH', digest: 'HOURLY', localTime: '09:37' }))
+      .toBe(0);
+  });
+
+  it('still applies quiet hours to a push', () => {
+    expect(deliveryHoldMinutes({
+      ...base, channel: 'PUSH', digest: 'HOURLY', localTime: '23:00',
+      quietHoursStart: '22:00', quietHoursEnd: '07:00',
+    })).toBe(8 * 60);
+  });
+
+  it('applies quiet hours at the digest boundary, not at now', () => {
+    // 21:30 is outside quiet hours, so the quiet delay alone is 0 — but the
+    // hourly boundary lands at 22:00, which is inside. Taking the larger of the
+    // two delays (the tempting shortcut) would email this person at 22:00.
+    expect(deliveryHoldMinutes({
+      ...base, digest: 'HOURLY', localTime: '21:30',
+      quietHoursStart: '22:00', quietHoursEnd: '07:00',
+    })).toBe(9 * 60 + 30); // 21:30 → 07:00
+  });
+
+  it('leaves an immediate delivery inside quiet hours exactly as it was', () => {
+    // Backwards compatibility, asserted: the default preference must produce the
+    // same hold this code produced before digests existed.
+    expect(deliveryHoldMinutes({
+      ...base, localTime: '23:00', quietHoursStart: '22:00', quietHoursEnd: '07:00',
+    })).toBe(8 * 60);
+  });
+
+  it('never holds an urgent alert, digest or quiet hours notwithstanding', () => {
+    expect(deliveryHoldMinutes({
+      ...base, digest: 'DAILY', urgency: 'URGENT', localTime: '03:00',
+      quietHoursStart: '22:00', quietHoursEnd: '07:00',
+    })).toBe(0);
+  });
+
+  it('lands a daily digest at the end of quiet hours rather than inside them', () => {
+    expect(deliveryHoldMinutes({
+      ...base, digest: 'DAILY', localTime: '23:00',
+      quietHoursStart: '22:00', quietHoursEnd: '07:00',
+    })).toBe(8 * 60);
+  });
+
+  it('holds a digest to a whole number of minutes, never a negative one', () => {
+    for (const digest of ['IMMEDIATE', 'HOURLY', 'DAILY'] as const) {
+      for (let minute = 0; minute < 24 * 60; minute += 7) {
+        const localTime =
+          `${String(Math.floor(minute / 60)).padStart(2, '0')}:` +
+          `${String(minute % 60).padStart(2, '0')}`;
+        const held = deliveryHoldMinutes({
+          ...base, digest, localTime, quietHoursStart: '22:00', quietHoursEnd: '07:00',
+        });
+        expect(Number.isInteger(held)).toBe(true);
+        expect(held).toBeGreaterThanOrEqual(0);
+        // Nothing is ever held more than a day: a digest plus a quiet window
+        // cannot compound into work that arrives after it stopped mattering.
+        expect(held).toBeLessThanOrEqual(24 * 60);
+      }
     }
   });
 });

@@ -34,6 +34,17 @@ export const projectViewSchema = z.object({
    * creation would silently stop tracking it (§ `docs/operating-model/time.md`).
    */
   timeZone: z.string().nullable(),
+  /**
+   * The zone this project's days are actually counted in — its own override, or
+   * the owner company's when it has none. Derived on read rather than stored, so
+   * a company that moves its zone moves every inheriting project with it.
+   *
+   * This is the field a client renders and defaults a work date from; `timeZone`
+   * above is the *setting*, and answers a different question ("has anyone
+   * overridden this?"). Read-only: it is computed from the two stored columns and
+   * is not accepted on create or update.
+   */
+  effectiveTimeZone: z.string(),
   startsOn: isoDate.nullable(),
   endsOn: isoDate.nullable(),
   notes: z.string().nullable(),

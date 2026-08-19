@@ -371,6 +371,22 @@ export const adminOperationsSchema = z.object({
     processingWebhooks: z.number().int().nonnegative(),
     deadWebhooks: z.number().int().nonnegative(),
   }),
+  /**
+   * The intrusive half of notifications — the queue an operator cannot see from
+   * the outbox figures above, because a channel send is separately claimed,
+   * separately retried and separately failed (notifications packet §6).
+   *
+   * `skippedLastDay` is here on purpose and is not a rounding error: a skip is a
+   * deliberate non-send with a recorded reason — no API key, no registered
+   * device, channel turned off — and a rising count usually means a
+   * misconfiguration rather than a user preference.
+   */
+  notifications: z.object({
+    pending: z.number().int().nonnegative(),
+    failed: z.number().int().nonnegative(),
+    sentLastDay: z.number().int().nonnegative(),
+    skippedLastDay: z.number().int().nonnegative(),
+  }),
   deadLetters: z.array(z.object({
     id: z.string().uuid(),
     source: z.enum(['OUTBOX', 'WEBHOOK']),

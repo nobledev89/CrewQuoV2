@@ -241,7 +241,18 @@ export function Shell({ children }: { children: ReactNode }) {
 
   if (!ready) return <CenteredMessage>Loading workspace…</CenteredMessage>;
   if (!session) return <CenteredMessage>Redirecting to sign in…</CenteredMessage>;
-  if (activeMembership && workspace.loading) {
+  /*
+   * `loading && no views yet` rather than `loading` — a *reload* must not unmount
+   * the page, the same rule the profile screen already applies to its own fetch.
+   *
+   * The bug this closes: `refreshUser()` mints a new session object, which
+   * re-runs the workspace effect, which flipped `loading` true and replaced
+   * `children` with this message. Any screen that saves and then re-reads the
+   * session was therefore torn down mid-save and rebuilt with its local state
+   * gone — so "Your profile was saved." was a race with a network round-trip and
+   * usually lost. Found as an intermittent browser-suite failure on 2026-08-19.
+   */
+  if (activeMembership && workspace.loading && workspace.workspaces.length === 0) {
     return <CenteredMessage>Loading workspace views…</CenteredMessage>;
   }
 

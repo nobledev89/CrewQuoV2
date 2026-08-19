@@ -1,8 +1,8 @@
 import type { NotificationKind } from '@crewquo/shared';
 import {
   NOTIFICATION_KIND_SPECS,
+  deliveryHoldMinutes,
   notificationDedupeKey,
-  quietHoursDelayMinutes,
   resolveChannels,
 } from '@crewquo/shared';
 import { query, queryOne, type Queryable } from '../../db';
@@ -13,11 +13,11 @@ import { getNotificationPreferences, insertNotification } from './repo';
  * Operating-model packet: `docs/operating-model/notifications.md`.
  *
  * The shape that matters: **the in-product row is written first and
- * unconditionally, and the intrusive channels are derived from it.** Preferences
- * and quiet hours only ever subtract from the channel list — they can never stop
- * the notification existing. A person who has turned everything off still opens
- * the app and sees what is waiting for them, which is the difference between a
- * preference and a way to lose work.
+ * unconditionally, and the intrusive channels are derived from it.** Preferences,
+ * quiet hours and digests only ever subtract from, or delay, the channel list —
+ * they can never stop the notification existing. A person who has turned
+ * everything off still opens the app and sees what is waiting for them, which is
+ * the difference between a preference and a way to lose work.
  */
 
 /** Approvers of a company — the cohort a "needs a decision" event goes to. */
@@ -104,14 +104,20 @@ export async function dispatchNotification(input: DispatchInput): Promise<{ writ
     const channels = resolveChannels(input.kind, prefs.channels);
     if (channels.length === 0) continue;
 
-    const delayMinutes = quietHoursDelayMinutes({
-      localTime: await localTimeFor(prefs.timeZone),
-      quietHoursStart: prefs.quietHoursStart,
-      quietHoursEnd: prefs.quietHoursEnd,
-      urgency: spec.urgency,
-    });
+    // Resolved once per recipient, then per channel: email may be held to a
+    // digest boundary while push goes out on quiet hours alone, so the two
+    // channels of one notification can legitimately have different due times.
+    const localTime = await localTimeFor(prefs.timeZone);
 
     for (const channel of channels) {
+      const delayMinutes = deliveryHoldMinutes({
+        channel,
+        localTime,
+        digest: prefs.digest,
+        quietHoursStart: prefs.quietHoursStart,
+        quietHoursEnd: prefs.quietHoursEnd,
+        urgency: spec.urgency,
+      });
       await query(
         `insert into notification_deliveries (notification_id, channel, deliver_after)
          values ($1, $2, now() + ($3 || ' minutes')::interval)

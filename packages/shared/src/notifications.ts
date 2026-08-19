@@ -86,12 +86,20 @@ export type NotificationChannelOverrides = z.infer<typeof notificationChannelOve
 
 const timeOfDay = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'expected HH:MM');
 
+export const NOTIFICATION_DIGESTS = ['IMMEDIATE', 'HOURLY', 'DAILY'] as const;
+export const notificationDigestSchema = z.enum(NOTIFICATION_DIGESTS);
+export type NotificationDigest = z.infer<typeof notificationDigestSchema>;
+
 export const notificationPreferencesSchema = z.object({
   /** IANA zone. Quiet hours are a property of the person, so the zone is too. */
   timeZone: z.string().min(1).max(64),
   quietHoursStart: timeOfDay.nullable(),
   quietHoursEnd: timeOfDay.nullable(),
-  digest: z.enum(['IMMEDIATE', 'HOURLY', 'DAILY']),
+  /**
+   * How often intrusive **email** may arrive: every event, or one message per
+   * window. Push is deliberately not digested — see `digestDelayMinutes`.
+   */
+  digest: notificationDigestSchema,
   channels: notificationChannelOverridesSchema,
 });
 export type NotificationPreferences = z.infer<typeof notificationPreferencesSchema>;
@@ -194,6 +202,95 @@ export function quietHoursDelayMinutes(args: {
   const end = minutesOfDay(args.quietHoursEnd!);
   const untilEnd = end > now ? end - now : 24 * 60 - now + end;
   return untilEnd;
+}
+
+// ── Digests ───────────────────────────────────────────────────────────────────
+
+const DAY_MINUTES = 24 * 60;
+
+/**
+ * The local time a `DAILY` digest is sent when the user has set no quiet hours.
+ *
+ * A daily digest has to arrive at *some* hour and neither the plan nor the packet
+ * names one, so this is a decision rather than a discovered constant: start of the
+ * working day, because a digest delivered at local midnight is read at 08:00
+ * anyway and one delivered at 08:00 is the one people act on. When quiet hours
+ * *are* set, they win — the end of somebody's own quiet window is a better
+ * statement of "I am available again" than any default could be.
+ */
+export const DEFAULT_DAILY_DIGEST_TIME = '08:00';
+
+function addMinutes(localTime: string, minutes: number): string {
+  const total = (((minutesOfDay(localTime) + minutes) % DAY_MINUTES) + DAY_MINUTES) % DAY_MINUTES;
+  const h = String(Math.floor(total / 60)).padStart(2, '0');
+  const m = String(total % 60).padStart(2, '0');
+  return `${h}:${m}`;
+}
+
+/**
+ * How long to hold an email so it lands on this user's next digest boundary.
+ *
+ * **A window that has just opened closes at the *next* boundary, not this one.**
+ * At exactly 09:00 an hourly digest waits the full hour, so everything raised
+ * between 09:00 and 09:59 arrives in one message at 10:00. Returning 0 there
+ * would send the first event of every hour on its own and batch only the rest,
+ * which is a digest that does not digest.
+ *
+ * `IMMEDIATE` is 0 by definition, and is the default: a person who has expressed
+ * no preference is not opted into a delay.
+ */
+export function digestDelayMinutes(args: {
+  localTime: string;
+  digest: NotificationDigest;
+  /** Where the daily boundary sits — the end of quiet hours, or the default. */
+  dailySendTime?: string;
+}): number {
+  if (args.digest === 'IMMEDIATE') return 0;
+  const now = minutesOfDay(args.localTime);
+  if (args.digest === 'HOURLY') return 60 - (now % 60);
+  const send = minutesOfDay(args.dailySendTime ?? DEFAULT_DAILY_DIGEST_TIME);
+  return send > now ? send - now : DAY_MINUTES - now + send;
+}
+
+/**
+ * The total hold before an intrusive delivery may be attempted, in minutes.
+ *
+ * The single place the three rules compose, because composing them wrongly is
+ * easy and invisible:
+ *
+ *  - **Urgency beats everything.** An operator alert is not batched and not held.
+ *  - **Push is never digested.** A digest batches *messages*; a push is a knock on
+ *    a device, and one knock standing in for six is not a summary, it is five
+ *    missing notifications. The packet's §6 says email, and this says email.
+ *  - **Quiet hours are applied at the digest boundary, not at now.** Taking the
+ *    larger of the two delays is the tempting shortcut and it is wrong: at 21:30
+ *    with quiet hours from 22:00, the hourly boundary is 22:00 — inside the
+ *    window — and neither delay on its own catches that.
+ */
+export function deliveryHoldMinutes(args: {
+  channel: NotificationChannel;
+  localTime: string;
+  digest: NotificationDigest;
+  quietHoursStart: string | null;
+  quietHoursEnd: string | null;
+  urgency: NotificationUrgency;
+}): number {
+  if (args.urgency === 'URGENT') return 0;
+  const digestDelay =
+    args.channel === 'EMAIL'
+      ? digestDelayMinutes({
+          localTime: args.localTime,
+          digest: args.digest,
+          dailySendTime: args.quietHoursEnd ?? DEFAULT_DAILY_DIGEST_TIME,
+        })
+      : 0;
+  const quietDelay = quietHoursDelayMinutes({
+    localTime: addMinutes(args.localTime, digestDelay),
+    quietHoursStart: args.quietHoursStart,
+    quietHoursEnd: args.quietHoursEnd,
+    urgency: args.urgency,
+  });
+  return digestDelay + quietDelay;
 }
 
 // ── Identity and state ────────────────────────────────────────────────────────

@@ -62,7 +62,64 @@ function renderEmailHtml(message: OutgoingMessage): string {
   ].join('\n');
 }
 
-export async function sendEmail(message: OutgoingMessage): Promise<ChannelOutcome> {
+/**
+ * One email standing in for a window's worth of notifications (packet §6).
+ *
+ * A digest is a **different message**, not the same one sent later: it says how
+ * many things happened and lists them, because six separate emails arriving at
+ * 10:00 is the thing the preference exists to prevent. The subject carries the
+ * count so the inbox line is useful before it is opened.
+ */
+export async function sendDigestEmail(args: {
+  recipientEmail: string | null;
+  recipientName: string | null;
+  items: readonly OutgoingMessage[];
+}): Promise<ChannelOutcome> {
+  const { items } = args;
+  if (items.length === 0) {
+    return { status: 'skipped', reason: 'Nothing to digest' };
+  }
+  const [only] = items;
+  // A digest of one is just an email. Rendering "1 update from CrewQuo" around a
+  // single item is a worse message than the item itself.
+  if (items.length === 1 && only) {
+    return sendEmail({ ...only, recipientEmail: args.recipientEmail, recipientName: args.recipientName });
+  }
+  return sendEmail(
+    {
+      recipientEmail: args.recipientEmail,
+      recipientName: args.recipientName,
+      title: `${items.length} updates from CrewQuo`,
+      body: '',
+      actionUrl: null,
+    },
+    renderDigestHtml(items)
+  );
+}
+
+function renderDigestHtml(items: readonly OutgoingMessage[]): string {
+  const rows = items.map((item) => {
+    const link = item.actionUrl
+      ? ` <a href="${escapeHtml(new URL(item.actionUrl, env.APP_BASE_URL).toString())}">Open</a>`
+      : '';
+    return (
+      `<li style="margin-bottom:12px"><strong>${escapeHtml(item.title)}</strong><br>` +
+      `${escapeHtml(item.body)}${link}</li>`
+    );
+  });
+  return [
+    `<p>${items.length} things happened while your notifications were batched:</p>`,
+    `<ul>${rows.join('')}</ul>`,
+    `<p style="color:#666;font-size:12px">You are receiving one message instead of ` +
+      `${items.length} because your notification settings use a digest. Everything ` +
+      `below has been in your CrewQuo inbox since it happened.</p>`,
+  ].join('');
+}
+
+export async function sendEmail(
+  message: OutgoingMessage,
+  html?: string
+): Promise<ChannelOutcome> {
   if (!message.recipientEmail) {
     // Permanent by nature: no retry produces an address.
     return { status: 'failed', error: 'Recipient has no email address', retryable: false };
@@ -85,7 +142,7 @@ export async function sendEmail(message: OutgoingMessage): Promise<ChannelOutcom
         from: env.NOTIFICATION_FROM_EMAIL,
         to: [message.recipientEmail],
         subject: message.title,
-        html: renderEmailHtml(message),
+        html: html ?? renderEmailHtml(message),
       }),
     });
     if (res.ok) {

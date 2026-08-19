@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { describeProjectCommitments, type ProjectCommitmentPins } from './money';
 
 /**
  * Time and time zones (CREWQUO_V2_PLAN.md §42).
@@ -104,6 +105,30 @@ export function effectiveTimeZone(
   companyZone: string | null | undefined
 ): string {
   return projectZone ?? companyZone ?? DEFAULT_TIME_ZONE;
+}
+
+/**
+ * Why a project's time zone can no longer be changed, or null when it still can.
+ *
+ * **The same pin the reporting currency uses, for the same reason** (packet §3):
+ * a zone decides which local day an instant falls on, so moving it after work has
+ * been approved would re-bucket committed days and restate history — the exact
+ * outcome the whole domain exists to prevent. The invariant is "changing a zone
+ * changes presentation and future bucketing, never a stored value"; once a
+ * project holds committed money, a zone change is no longer only presentation.
+ *
+ * Refuses by naming what pins it, because "you cannot do that" is not an
+ * explanation. Set the zone at creation instead — which is why
+ * `createProjectSchema` accepts one and this refusal never fires on a new project.
+ */
+export function projectTimeZonePinRefusal(pins: ProjectCommitmentPins): string | null {
+  const held = describeProjectCommitments(pins);
+  if (!held) return null;
+  return (
+    `This project already holds committed work: ${held}. Changing its time zone ` +
+    `now would move which local day that work counts against, so it is fixed for ` +
+    `the life of the project.`
+  );
 }
 
 /**

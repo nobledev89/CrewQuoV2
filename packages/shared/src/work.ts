@@ -159,6 +159,16 @@ export const workContextAssignmentSchema = z.object({
   clientCompanyId: z.string().uuid(),
   clientCompanyName: z.string(),
   engagementId: z.string().uuid(),
+  /**
+   * The zone the *project* counts its days in — the project's own override, or
+   * the owner company's when it has none (`docs/operating-model/time.md` §2).
+   *
+   * Carried here because the device's zone is the wrong answer and the provider
+   * company's is too: a Manila crew working a Dubai project asserts a Dubai day.
+   * The log screen defaults `workDate` from this, which is the packet's
+   * multi-region persona and the one case a device clock gets silently wrong.
+   */
+  timeZone: z.string(),
   roles: z.array(z.object({ id: z.string().uuid(), name: z.string() })),
 });
 export type WorkContextAssignment = z.infer<typeof workContextAssignmentSchema>;

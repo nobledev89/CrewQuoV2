@@ -1,7 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import type { NotificationPreferences, NotificationView } from '@crewquo/shared';
+import type {
+  NotificationDigest,
+  NotificationPreferences,
+  NotificationView,
+} from '@crewquo/shared';
 import {
   Badge,
   Button,
@@ -13,6 +17,7 @@ import {
   PageHeader,
   Row,
   Section,
+  Select,
   Stack,
 } from '@crewquo/ui';
 import { Shell } from '@/components/Shell';
@@ -195,6 +200,7 @@ function Preferences() {
   const [prefs, setPrefs] = useState<NotificationPreferences | null>(null);
   const [start, setStart] = useState('');
   const [end, setEnd] = useState('');
+  const [digest, setDigest] = useState<NotificationDigest>('IMMEDIATE');
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -206,6 +212,7 @@ function Preferences() {
       setPrefs(preferences);
       setStart(preferences.quietHoursStart ?? '');
       setEnd(preferences.quietHoursEnd ?? '');
+      setDigest(preferences.digest);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not load your preferences');
     }
@@ -228,6 +235,7 @@ function Preferences() {
       const { preferences } = await api.saveNotificationPreferences(ctx.accessToken, {
         quietHoursStart: both ? start : null,
         quietHoursEnd: both ? end : null,
+        digest,
       });
       setPrefs(preferences);
       setSaved(true);
@@ -245,9 +253,10 @@ function Preferences() {
     >
       <Stack>
         <Notice>
-          Quiet hours hold back email and push only. <strong>Anything waiting on you still
-          appears on this screen straight away</strong> — silencing a channel can never hide a
-          task from you.
+          Quiet hours and digests hold back email and push only. <strong>Anything waiting on
+          you still appears on this screen straight away</strong> — silencing or batching a
+          channel can never hide a task from you. A digest batches email; push is never
+          batched, because one notification standing in for six is not a summary.
         </Notice>
         <form onSubmit={save}>
           <Stack>
@@ -269,6 +278,27 @@ function Preferences() {
                   onChange={(e) => setEnd(e.target.value)}
                   disabled={busy}
                 />
+              </Field>
+              <Field
+                label="Email digest"
+                hint={
+                  digest === 'IMMEDIATE'
+                    ? 'One email per event.'
+                    : digest === 'HOURLY'
+                      ? 'One email per hour, covering everything raised in it.'
+                      : `One email a day, at ${end || '08:00'}.`
+                }
+              >
+                <Select
+                  name="digest"
+                  value={digest}
+                  onChange={(e) => setDigest(e.target.value as NotificationDigest)}
+                  disabled={busy}
+                >
+                  <option value="IMMEDIATE">Send each one</option>
+                  <option value="HOURLY">Hourly summary</option>
+                  <option value="DAILY">Daily summary</option>
+                </Select>
               </Field>
             </div>
             <Row>

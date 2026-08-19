@@ -60,6 +60,21 @@ happens somewhere else. The user zone is *only* for when to disturb a person, an
 must never decide what day a figure belongs to — otherwise the same timesheet
 would land on different days for two people looking at it.
 
+**One resolver, and every consumer reads it.** `effectiveTimeZone(project, company)`
+is resolved once, in the project read model, and surfaced as
+`ProjectView.effectiveTimeZone` and on each `WorkContextAssignment`. `timeZone`
+stays alongside it as the *setting* — it answers "has anyone overridden this?",
+which is a different question and the one the settings screen asks. A second
+implementation of the inheritance would eventually disagree with this one, and the
+disagreement would be a day of somebody's work.
+
+**Where it is consumed today.** The commercial service resolves the hiring
+company's zone for the §3.3.1 back-dating safeguard, and the log-time screens on
+web and mobile default `work_date` to the *project's* today. The mobile screen
+previously defaulted to `new Date().toISOString().slice(0, 10)` — the **UTC** date,
+not even the device's — which for a Manila crew is yesterday every morning before
+08:00, precisely when a night shift gets written up.
+
 ## 3. State machine
 
 Zones have no workflow. What matters is when a zone may still change:
@@ -175,7 +190,13 @@ location data about a customer's operations.
 5. **Nothing moved.** Setting the zone changes no `work_date`, no `effective_from`
    and no stored instant. Asserted by comparing before and after.
 6. **Project override.** A project in another zone reports its own day boundaries;
-   an empty project may change zone, one holding approved work may not.
+   an empty project may change zone, one holding approved work may not. The pin
+   counts the same three committed facts as the reporting currency, inside the
+   transaction that holds the project row lock, and the refusal names them. Also
+   asserted: inheritance is live rather than copied, so moving the company moves
+   every project that never overrode it; a MANAGER is refused where an OWNER is
+   allowed; and re-sending the same zone on a pinned project is not a refusal, or
+   a client PATCHing the whole form back could not edit anything else.
 7. **Overnight shift.** Work asserted against Tuesday stays on Tuesday whatever
    time it was submitted and whatever zone the submitter is in.
 8. **DST.** A gap time and an overlap time both resolve deterministically and

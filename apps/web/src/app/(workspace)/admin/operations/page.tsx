@@ -28,6 +28,21 @@ function Operations() {
       <div className="cq-kpi"><span className="cq-overline">Webhooks ready</span><strong>{data.delivery.receivedWebhooks}</strong><span className="cq-muted">{data.delivery.processingWebhooks} processing</span></div>
       <div className="cq-kpi"><span className="cq-overline">Dead letters</span><strong>{data.delivery.deadOutbox + data.delivery.deadWebhooks}</strong><span className="cq-muted">Outbox and webhook failures</span></div>
     </div></Section>
+    {/*
+      * A second queue, shown separately because it drains separately. The outbox
+      * can be empty and healthy while every email in the system is failing — the
+      * channel send is claimed, retried and failed on its own loop.
+      *
+      * Skipped is given equal billing with sent deliberately: a skip is a
+      * recorded non-send, not a quiet success, and a climbing skip count is
+      * almost always a misconfiguration rather than a user preference.
+      */}
+    <Section title="Notification delivery" description="Email and push. In-product delivery is the inbox row itself and never queues."><div className="cq-kpi-grid">
+      <div className="cq-kpi"><span className="cq-overline">Queued</span><strong>{data.notifications.pending}</strong><span className="cq-muted">Waiting on quiet hours, a digest window or a retry</span></div>
+      <div className="cq-kpi"><span className="cq-overline">Sent (24h)</span><strong>{data.notifications.sentLastDay}</strong><span className="cq-muted">Accepted by the provider</span></div>
+      <div className="cq-kpi"><span className="cq-overline">Skipped (24h)</span><strong>{data.notifications.skippedLastDay}</strong><span className="cq-muted">Deliberately not sent, with a recorded reason</span></div>
+      <div className="cq-kpi"><span className="cq-overline">Failed</span><strong>{data.notifications.failed}</strong><span className="cq-muted">Out of retries</span></div>
+    </div></Section>
     <DeadLetters rows={data.deadLetters} onChanged={operations.reload} />
     <CompanyCreationQueue />
     <Section title="Pending invitations" className="cq-section--table">{data.pendingInvites.length ? <Table label="Pending invitations" compact><thead><tr><th>Company</th><th>Kind</th><th>Recipient</th><th>Expires</th></tr></thead><tbody>

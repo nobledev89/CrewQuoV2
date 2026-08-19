@@ -5,6 +5,7 @@ import {
   createProjectSchema,
   updateProjectSchema,
 } from '@crewquo/shared';
+import { withTransaction } from '../../db';
 import { asyncHandler } from '../../http/asyncHandler';
 import { getCompanyCtx } from '../../http/context';
 import { AppError } from '../../http/errors';
@@ -33,6 +34,7 @@ import {
 } from './repo';
 import { registerExportRoutes } from '../exports/routes';
 import { setProjectReportingCurrency } from './reportingCurrency';
+import { setProjectTimeZone } from './timeZone';
 import { computeProjectSummary } from './summary';
 
 export const projectsRouter = Router();
@@ -89,7 +91,8 @@ projectsRouter.patch(
   asyncHandler(async (req, res) => {
     const ctx = getCompanyCtx(req);
     assertManager(ctx.role);
-    const { reportingCurrency, ...patch } = updateProjectSchema.parse(req.body);
+    const { reportingCurrency, timeZone, ...patch } = updateProjectSchema.parse(req.body);
+    const projectId = param(req, 'id');
 
     // The reporting currency is split out of the ordinary patch on purpose. It
     // needs a stricter role than the rest of the form (OWNER/ADMIN, not any
@@ -105,20 +108,51 @@ projectsRouter.patch(
       }
       await setProjectReportingCurrency({
         ownerCompanyId: ctx.companyId,
-        projectId: param(req, 'id'),
+        projectId,
         actorUserId: ctx.userId,
         reportingCurrency,
       });
     }
 
-    const project = await updateProject(ctx.companyId, param(req, 'id'), patch);
+    // The time zone is split out for the same three reasons, from the time
+    // packet's §4 matrix rather than the money one's: OWNER/ADMIN, a pin check
+    // under the row lock, and a refusal that names what pins it. `undefined`
+    // means "not in this form"; `null` means "go back to inheriting the company".
+    const zoneChanging = timeZone !== undefined;
+    if (zoneChanging && !isOwnerOrAdmin(ctx.role)) {
+      throw new AppError('FORBIDDEN', "Only an owner or admin may change a project's time zone");
+    }
+
+    // One transaction when the zone moves, so a pinned project cannot accept the
+    // rest of the form and then refuse the zone — leaving a half-applied edit and
+    // an audit row claiming more than happened.
+    const { project, zone } = await withTransaction(async (runner) => {
+      const moved = zoneChanging
+        ? await setProjectTimeZone({
+            ownerCompanyId: ctx.companyId,
+            projectId,
+            timeZone: timeZone ?? null,
+            runner,
+          })
+        : null;
+      return { project: await updateProject(ctx.companyId, projectId, patch, runner), zone: moved };
+    });
+
     await recordAudit({
       companyId: ctx.companyId,
       actorUserId: ctx.userId,
       action: 'project.updated',
       entityType: 'PROJECT',
       entityId: project.id,
-      changes: { ...patch, ...(reportingCurrency ? { reportingCurrency } : {}) },
+      changes: {
+        ...patch,
+        ...(reportingCurrency ? { reportingCurrency } : {}),
+        // Recorded as from/to rather than the bare new value: a zone is only
+        // meaningful against the one it replaced, and `null` reads as "inherits"
+        // rather than as a missing field. The time packet's §5 — audited, and no
+        // outbox event, because nothing downstream recomputes.
+        ...(zone?.changed ? { timeZone: { from: zone.from, to: zone.to } } : {}),
+      },
       description: `Project "${project.name}" updated`,
       visibleToClient: project.clientVisible,
     });

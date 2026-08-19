@@ -10,7 +10,9 @@ import type {
   AdminUserSummary,
 } from '@crewquo/shared';
 import { query, queryOne, withTransaction, type Queryable } from '../../db';
+import { env } from '../../env';
 import { AppError } from '../../http/errors';
+import { notificationDeliveryHealth } from '../notifications/deliveryWorker';
 
 const DEFAULT_SETTINGS: AdminPlatformSettings = {
   platformName: 'CrewQuo Platform',
@@ -336,7 +338,8 @@ export async function getAdminReporting(days: number): Promise<AdminReporting> {
 }
 
 export async function getAdminOperations(): Promise<AdminOperations> {
-  const [invites, overrides, recentAudit, delivery, deadLetters] = await Promise.all([
+  const [invites, overrides, recentAudit, delivery, deadLetters, notifications] =
+    await Promise.all([
     query<{ id: string; kind: string; email: string; company_name: string; expires_at: Date }>(
       `select i.id, i.kind, i.email, c.name as company_name, i.expires_at
          from invites i join companies c on c.id = i.target_company_id
@@ -369,9 +372,15 @@ export async function getAdminOperations(): Promise<AdminOperations> {
          from webhook_inbox where status = 'DEAD_LETTER'
        order by failed_at desc limit 50`
     ),
+    // The notification channel queue is a second, separately-drained loop. Its
+    // health was computable from day one and shown nowhere, which meant an
+    // operator watching this screen could see a perfectly healthy outbox while
+    // every email in the system was failing.
+    notificationDeliveryHealth(),
   ]);
   return {
     delivery: delivery!,
+    notifications,
     deadLetters: deadLetters.map((row) => ({
       id: row.id,
       source: row.source,
@@ -396,8 +405,30 @@ export async function getAdminOperations(): Promise<AdminOperations> {
         status: (delivery!.deadOutbox + delivery!.deadWebhooks) > 0 ? 'ATTENTION' : 'HEALTHY',
         detail: `${delivery!.pendingOutbox} outbox and ${delivery!.receivedWebhooks} webhook events ready; ${delivery!.deadOutbox + delivery!.deadWebhooks} dead-lettered.`,
       },
-      { name: 'Merchant of Record', status: 'NOT_CONFIGURED', detail: 'Gumroad lifecycle integration has not been connected.' },
-      { name: 'Email delivery', status: 'NOT_CONFIGURED', detail: 'Resend delivery and history are still planned.' },
+      {
+        name: 'Notification delivery',
+        status: notifications.failed > 0 ? 'ATTENTION' : 'HEALTHY',
+        detail:
+          `${notifications.pending} queued; ${notifications.sentLastDay} sent and ` +
+          `${notifications.skippedLastDay} skipped in the last day; ` +
+          `${notifications.failed} failed.`,
+      },
+      {
+        name: 'Merchant of Record',
+        status: 'NOT_CONFIGURED',
+        detail: 'No merchant of record is selected; checkout is off.',
+      },
+      {
+        name: 'Email provider',
+        // Configuration, not queue health — the row above is the queue. Split
+        // because "no API key" and "the provider is rejecting us" are different
+        // problems with different fixes, and one row cannot say both.
+        status: env.RESEND_API_KEY && env.NOTIFICATION_FROM_EMAIL ? 'HEALTHY' : 'NOT_CONFIGURED',
+        detail:
+          env.RESEND_API_KEY && env.NOTIFICATION_FROM_EMAIL
+            ? `Resend is configured; mail is sent from ${env.NOTIFICATION_FROM_EMAIL}.`
+            : 'No Resend API key or from-address, so every email is recorded as skipped.',
+      },
     ],
   };
 }

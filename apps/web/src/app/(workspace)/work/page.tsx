@@ -1,8 +1,9 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   SHIFT_TYPES,
+  todayInZone,
   type ExpenseView,
   type PendingAssignmentView,
   type ShiftType,
@@ -301,6 +302,10 @@ function NewTimeLog({
   const [roleId, setRoleId] = useState('');
   const [shiftType, setShiftType] = useState<ShiftType>('WEEKDAY_DAY');
   const [workDate, setWorkDate] = useState(todayIso());
+  // Whether the person has picked a date themselves. Until they have, the field
+  // tracks the project's own today; after they have, nothing moves it — switching
+  // project must not silently rewrite a date somebody deliberately set.
+  const [dateTouched, setDateTouched] = useState(false);
   const [hoursRegular, setHoursRegular] = useState('8');
   const [hoursOt, setHoursOt] = useState('0');
   const [busy, setBusy] = useState(false);
@@ -309,6 +314,19 @@ function NewTimeLog({
 
   const assignment = context.assignments.find((a) => a.projectId === projectId) ?? null;
   const roles = assignment?.roles ?? [];
+
+  /**
+   * The default work date is the **project's** today, not this browser's.
+   * `docs/operating-model/time.md` §1: a Manila crew working a Dubai project
+   * asserts a Dubai day, and a device in a third zone is simply the wrong answer.
+   * The visible cost of getting this wrong is an 8-hour shift filed against
+   * yesterday, found weeks later at approval.
+   */
+  const projectZone = assignment?.timeZone ?? null;
+  useEffect(() => {
+    if (dateTouched || !projectZone) return;
+    setWorkDate(todayInZone(projectZone, new Date()));
+  }, [projectZone, dateTouched]);
   // The chosen role must belong to the selected project's client, so reset it when the
   // project changes rather than sending a role the API will reject.
   const effectiveRoleId = roles.some((r) => r.id === roleId) ? roleId : (roles[0]?.id ?? '');
@@ -391,11 +409,21 @@ function NewTimeLog({
               ))}
             </Select>
           </Field>
-          <Field label="Work date">
+          <Field
+            label="Work date"
+            hint={
+              projectZone
+                ? `Which day the work counts against, in the project's zone (${projectZone}).`
+                : undefined
+            }
+          >
             <Input
               type="date"
               value={workDate}
-              onChange={(e) => setWorkDate(e.target.value)}
+              onChange={(e) => {
+                setDateTouched(true);
+                setWorkDate(e.target.value);
+              }}
               required
             />
           </Field>

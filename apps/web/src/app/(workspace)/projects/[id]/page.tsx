@@ -680,6 +680,21 @@ function ExpensePanel({
 
 // ── Edit / delete ──────────────────────────────────────────────────────────────
 
+/**
+ * Every zone the runtime knows, or nothing on a browser without
+ * `supportedValuesOf`. Deliberately not a curated list — the same reasoning as
+ * the company settings screen, and the server validates against Postgres's own
+ * `pg_timezone_names` regardless.
+ */
+function timeZoneOptions(): string[] {
+  const intl = Intl as typeof Intl & { supportedValuesOf?: (key: string) => string[] };
+  try {
+    return intl.supportedValuesOf?.('timeZone') ?? [];
+  } catch {
+    return [];
+  }
+}
+
 function EditPanel({
   project,
   onSaved,
@@ -697,10 +712,13 @@ function EditPanel({
   const [notes, setNotes] = useState(project.notes ?? '');
   const [clientVisible, setClientVisible] = useState(project.clientVisible);
   const [reportingCurrency, setReportingCurrency] = useState(project.reportingCurrency);
+  // Empty means "inherit the company", which is what `null` means on the wire.
+  const [timeZone, setTimeZone] = useState(project.timeZone ?? '');
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const nextZone = timeZone.trim() === '' ? null : timeZone.trim();
   const dirty =
     name.trim() !== project.name ||
     status !== project.status ||
@@ -708,7 +726,8 @@ function EditPanel({
     (endsOn || null) !== project.endsOn ||
     (notes.trim() || null) !== project.notes ||
     clientVisible !== project.clientVisible ||
-    reportingCurrency.toUpperCase() !== project.reportingCurrency;
+    reportingCurrency.toUpperCase() !== project.reportingCurrency ||
+    nextZone !== project.timeZone;
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
@@ -729,6 +748,7 @@ function EditPanel({
         ...(reportingCurrency.toUpperCase() !== project.reportingCurrency
           ? { reportingCurrency: reportingCurrency.toUpperCase() }
           : {}),
+        ...(nextZone !== project.timeZone ? { timeZone: nextZone } : {}),
       });
       setSaved(true);
       onSaved();
@@ -786,17 +806,54 @@ function EditPanel({
           </Field>
         </div>
 
-        <Field
-          label="Reporting currency"
-          hint="The unit every cost, bill and margin figure on this project is shown in. Owner or admin only, and fixed once the project holds approved work or a live invoice."
-        >
-          <Input
-            value={reportingCurrency}
-            onChange={(e) => setReportingCurrency(e.target.value.toUpperCase().slice(0, 3))}
-            maxLength={3}
-            required
-          />
-        </Field>
+        <div className="cq-form-grid">
+          <Field
+            label="Reporting currency"
+            hint="The unit every cost, bill and margin figure on this project is shown in. Owner or admin only, and fixed once the project holds approved work or a live invoice."
+          >
+            <Input
+              value={reportingCurrency}
+              onChange={(e) => setReportingCurrency(e.target.value.toUpperCase().slice(0, 3))}
+              maxLength={3}
+              required
+            />
+          </Field>
+          <Field
+            label="Time zone"
+            hint={`Which day work on this project counts against. Leave blank to follow the company (${project.effectiveTimeZone}). Owner or admin only, and fixed once the project holds approved work.`}
+          >
+            <Input
+              name="project-time-zone"
+              list="cq-project-time-zones"
+              value={timeZone}
+              onChange={(e) => setTimeZone(e.target.value)}
+              placeholder={`Inherits ${project.effectiveTimeZone}`}
+            />
+          </Field>
+        </div>
+
+        {/*
+          * The browser's own IANA list rather than a bundled one, for the same
+          * reason the company settings screen uses it: a hard-coded list goes
+          * stale whenever a country changes its rules, and the server validates
+          * against Postgres's list regardless.
+          */}
+        <datalist id="cq-project-time-zones">
+          {timeZoneOptions().map((zone) => (
+            <option key={zone} value={zone} />
+          ))}
+        </datalist>
+
+        {nextZone !== project.timeZone ? (
+          <Notice>
+            {nextZone
+              ? <>Work on this project will count against days in <strong>{nextZone}</strong> from
+                now on. <strong>Nothing already recorded moves</strong> — every work date stays
+                exactly as it was asserted.</>
+              : <>This project will follow the company zone again. Nothing already recorded
+                moves.</>}
+          </Notice>
+        ) : null}
 
         <Field label="Notes">
           <Input value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={2000} />

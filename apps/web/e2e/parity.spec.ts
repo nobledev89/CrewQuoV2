@@ -981,4 +981,75 @@ test.describe('Web core workflows', () => {
     await contractor.reload();
     await expect(zone()).toHaveValue('UTC');
   });
+
+  /*
+   * The project zone had no screen at all until this slice: the column was
+   * stored, validated and reachable only from the API, which meant the one
+   * persona it exists for — "my office is in Manila and this project is in
+   * Dubai" — could not use it. A setting nobody can set is not a setting.
+   */
+  test('a project can be given its own zone, and says whose day it follows', async () => {
+    await contractor.goto('/projects');
+    await contractor.getByRole('link', { name: new RegExp(`Atrium refit ${RUN}`) }).click();
+    await contractor.getByRole('button', { name: 'Settings' }).click();
+
+    const zone = contractor.getByLabel(/^Time zone/);
+    // Blank is not "unset" — it is "follow the company", and the placeholder has
+    // to say which zone that actually resolves to or the blank field is a shrug.
+    await expect(zone).toHaveValue('');
+    await expect(zone).toHaveAttribute('placeholder', /^Inherits /);
+
+    await zone.fill('Asia/Dubai');
+    await expect(contractor.getByText(/Nothing already recorded moves/)).toBeVisible();
+    await contractor.getByRole('button', { name: 'Save changes' }).click();
+
+    // This project already carries approved work, so the zone is pinned for the
+    // same reason the currency is: re-bucketing a committed day restates history.
+    await expect(contractor.getByText(/already holds committed work/)).toBeVisible();
+    await expect(contractor.getByText(/approved time log/)).toBeVisible();
+  });
+
+  test('the digest preference is on the screen and survives a reload', async () => {
+    // `digest` was accepted by the API, stored, and settable nowhere — and then
+    // ignored at delivery. Both halves are closed; this is the half a person meets.
+    await contractor.goto('/notifications');
+    const digest = contractor.getByLabel(/^Email digest/);
+
+    await digest.selectOption('DAILY');
+    await contractor.getByRole('button', { name: 'Save preferences' }).click();
+    await contractor.reload();
+    await expect(digest).toHaveValue('DAILY');
+
+    // The promise that a digest batches email and never batches push, where the
+    // person deciding actually reads it.
+    await expect(contractor.getByText(/push is never batched/i)).toBeVisible();
+
+    // Back to immediate, so nothing later in the file inherits a held channel.
+    await digest.selectOption('IMMEDIATE');
+    await contractor.getByRole('button', { name: 'Save preferences' }).click();
+    await contractor.reload();
+    await expect(digest).toHaveValue('IMMEDIATE');
+  });
+
+  test('platform operations shows the notification queue beside the outbox', async ({ browser }) => {
+    // Two queues, drained by two loops. Showing only the outbox let an operator
+    // watch a healthy screen while every email in the system was failing.
+    const email = await registerHeadless({ handle: 'platform-ops', name: 'Ola Ops' });
+    await makeSuperAdmin(email);
+    const staff = await freshPage(browser);
+    await signIn(staff, email);
+
+    await staff.goto('/admin/operations');
+    // Scoped to its own section: "Failed" is also a column on the dead-letter
+    // table below, and a page-wide match would pass for the wrong element.
+    const queue = staff.locator('section.cq-section', {
+      has: staff.getByRole('heading', { name: 'Notification delivery' }),
+    });
+    await expect(queue).toBeVisible();
+    for (const label of ['Queued', 'Sent (24h)', 'Skipped (24h)', 'Failed']) {
+      await expect(queue.getByText(label, { exact: true })).toBeVisible();
+    }
+    // A skip is a recorded non-send, not a quiet success — it gets equal billing.
+    await expect(queue.getByText('Deliberately not sent, with a recorded reason')).toBeVisible();
+  });
 });

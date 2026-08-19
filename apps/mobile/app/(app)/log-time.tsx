@@ -1,13 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
-import { SHIFT_TYPES, type ShiftType, type WorkContextAssignment } from '@crewquo/shared';
+import { SHIFT_TYPES, todayInZone, type ShiftType, type WorkContextAssignment } from '@crewquo/shared';
 import { api, ApiError } from '@/api/client';
 import { useAuth } from '@/auth/AuthProvider';
 import { styles } from '@/ui/theme';
 
-const todayIso = () => new Date().toISOString().slice(0, 10);
 
 /** Provider logs time against an assigned project, then submits it for approval. */
 export default function LogTimeScreen() {
@@ -25,13 +24,33 @@ export default function LogTimeScreen() {
   const [projectId, setProjectId] = useState<string | null>(null);
   const [roleId, setRoleId] = useState<string | null>(null);
   const [shiftType, setShiftType] = useState<ShiftType>('WEEKDAY_DAY');
-  const [workDate, setWorkDate] = useState(todayIso());
+  const [workDate, setWorkDate] = useState('');
+  // Until the person types a date themselves, the field tracks the project's own
+  // today. After that nothing moves it: switching project must not rewrite a date
+  // somebody deliberately entered.
+  const [dateTouched, setDateTouched] = useState(false);
   const [hours, setHours] = useState('8');
   const [error, setError] = useState<string | null>(null);
 
   const selected: WorkContextAssignment | undefined = assignments.find(
     (assignment) => assignment.projectId === projectId
   );
+
+  /**
+   * The default work date is the **project's** today.
+   *
+   * This screen used to default to `new Date().toISOString().slice(0, 10)` — the
+   * *UTC* date, not even the device's. For a Manila crew (UTC+8) that is yesterday
+   * every morning before 08:00, which is precisely when a night shift gets logged:
+   * the whole shift filed against the wrong day, found weeks later at approval.
+   * `docs/operating-model/time.md` §1 and §8 — the device's zone is diagnostic
+   * metadata, never an input to which day work counts against.
+   */
+  const projectZone = selected?.timeZone ?? null;
+  useEffect(() => {
+    if (dateTouched || !projectZone) return;
+    setWorkDate(todayInZone(projectZone, new Date()));
+  }, [projectZone, dateTouched]);
 
   const submit = useMutation({
     mutationFn: async () => {
@@ -110,11 +129,14 @@ export default function LogTimeScreen() {
         />
       </Field>
 
-      <Field label="Work date">
+      <Field label={projectZone ? `Work date (${projectZone})` : 'Work date'}>
         <TextInput
           style={styles.input}
           value={workDate}
-          onChangeText={setWorkDate}
+          onChangeText={(value) => {
+            setDateTouched(true);
+            setWorkDate(value);
+          }}
           placeholder="YYYY-MM-DD"
           autoCapitalize="none"
         />

@@ -8,11 +8,13 @@ import {
   isValidTimeZone,
   nextIsoDate,
   offsetMinutes,
+  projectTimeZonePinRefusal,
   timeInZone,
   timeZoneLabel,
   timeZoneSchema,
   todayInZone,
 } from './time';
+import { reportingCurrencyPinRefusal } from './money';
 
 /**
  * One test per rule (§13, §44). The DST cases are pinned against real transition
@@ -193,6 +195,46 @@ describe('supporting rules', () => {
   it('labels a half-hour zone without mangling the minutes', () => {
     expect(timeZoneLabel('Asia/Kolkata', new Date('2026-08-20T12:00:00Z'))).toBe(
       'Asia/Kolkata (UTC+05:30)'
+    );
+  });
+});
+
+describe('the project time-zone pin (packet §3, §12 step 6)', () => {
+  const empty = { approvedTimeLogs: 0, approvedExpenses: 0, liveInvoices: 0 };
+
+  it('lets an empty project change zone', () => {
+    expect(projectTimeZonePinRefusal(empty)).toBeNull();
+  });
+
+  it('refuses once the project holds approved work, and names what pins it', () => {
+    const refusal = projectTimeZonePinRefusal({ ...empty, approvedTimeLogs: 3 });
+    expect(refusal).toContain('3 approved time logs');
+    // "You cannot do that" is not an explanation: the reason has to say that the
+    // days already counted would move.
+    expect(refusal).toContain('which local day');
+  });
+
+  it('counts one of something as singular', () => {
+    expect(projectTimeZonePinRefusal({ ...empty, liveInvoices: 1 })).toContain('1 invoice');
+    expect(projectTimeZonePinRefusal({ ...empty, liveInvoices: 2 })).toContain('2 invoices');
+  });
+
+  it('lists every kind of commitment, not just the first', () => {
+    const refusal = projectTimeZonePinRefusal({
+      approvedTimeLogs: 2, approvedExpenses: 1, liveInvoices: 4,
+    });
+    expect(refusal).toContain('2 approved time logs, 1 approved expense and 4 invoices');
+  });
+
+  it('pins on exactly the same facts as the reporting currency', () => {
+    // Two settings, one set of committed facts. If these ever diverge, one screen
+    // will offer a change the other refuses, for the same project on the same day.
+    const pins = { approvedTimeLogs: 1, approvedExpenses: 0, liveInvoices: 0 };
+    expect(projectTimeZonePinRefusal(pins) === null).toBe(
+      reportingCurrencyPinRefusal(pins) === null
+    );
+    expect(projectTimeZonePinRefusal(empty) === null).toBe(
+      reportingCurrencyPinRefusal(empty) === null
     );
   });
 });

@@ -5,6 +5,7 @@ import type {
   ProjectView,
   UpdateProject,
 } from '@crewquo/shared';
+import { effectiveTimeZone } from '@crewquo/shared';
 import { query, queryOne, type Queryable } from '../../db';
 import { AppError } from '../../http/errors';
 
@@ -25,6 +26,7 @@ interface ProjectRow {
   client_visible: boolean;
   reporting_currency: string;
   time_zone: string | null;
+  owner_time_zone: string;
   starts_on: string | null;
   ends_on: string | null;
   notes: string | null;
@@ -44,6 +46,10 @@ function toProjectView(r: ProjectRow): ProjectView {
     clientVisible: r.client_visible,
     reportingCurrency: r.reporting_currency,
     timeZone: r.time_zone,
+    // The one production caller of `effectiveTimeZone`. Resolved here rather than
+    // in each consumer so there is a single answer to "which day is it for this
+    // project" — a second implementation would eventually disagree with this one.
+    effectiveTimeZone: effectiveTimeZone(r.time_zone, r.owner_time_zone),
     startsOn: r.starts_on,
     endsOn: r.ends_on,
     notes: r.notes,
@@ -55,10 +61,12 @@ function toProjectView(r: ProjectRow): ProjectView {
 const PROJECT_SELECT = `
   select p.id, p.owner_company_id, p.client_company_id, cc.name as client_company_name,
          p.engagement_id, p.name, p.status, p.client_visible, p.reporting_currency, p.time_zone,
+         oc.time_zone as owner_time_zone,
          to_char(p.starts_on, 'YYYY-MM-DD') as starts_on,
          to_char(p.ends_on, 'YYYY-MM-DD') as ends_on,
          p.notes, p.created_at, p.updated_at
     from projects p
+    join companies oc on oc.id = p.owner_company_id
     left join companies cc on cc.id = p.client_company_id`;
 
 export async function listProjects(ownerCompanyId: string): Promise<ProjectView[]> {
@@ -113,7 +121,8 @@ export async function createProject(
 export async function updateProject(
   ownerCompanyId: string,
   id: string,
-  patch: UpdateProject
+  patch: UpdateProject,
+  runner?: Queryable
 ): Promise<ProjectView> {
   const has = (k: keyof UpdateProject) => k in patch;
   const row = await queryOne<{ id: string }>(
@@ -126,7 +135,6 @@ export async function updateProject(
        starts_on = case when $10::boolean then $11::date else starts_on end,
        ends_on = case when $12::boolean then $13::date else ends_on end,
        notes = case when $14::boolean then $15 else notes end,
-       time_zone = case when $16::boolean then $17 else time_zone end,
        updated_at = now()
      where owner_company_id = $1 and id = $2 returning id`,
     [
@@ -145,12 +153,11 @@ export async function updateProject(
       patch.endsOn ?? null,
       has('notes'),
       patch.notes ?? null,
-      has('timeZone'),
-      patch.timeZone ?? null,
-    ]
+    ],
+    runner
   );
   if (!row) throw new AppError('NOT_FOUND', 'Project not found');
-  return (await getProject(ownerCompanyId, id))!;
+  return (await getProject(ownerCompanyId, id, runner))!;
 }
 
 export async function deleteProject(ownerCompanyId: string, id: string): Promise<void> {
