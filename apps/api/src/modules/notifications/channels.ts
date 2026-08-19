@@ -24,12 +24,21 @@ export type ChannelOutcome =
   | { status: 'failed'; error: string; retryable: boolean };
 
 export interface OutgoingMessage {
-  recipientUserId: string;
   recipientEmail: string | null;
   recipientName: string | null;
   title: string;
   body: string;
   actionUrl: string | null;
+}
+
+/**
+ * Push needs a user to look devices up against; email needs only an address.
+ * Kept as separate types so an account email — a password reset, which belongs to
+ * a person who may not be able to sign in — is not forced to invent a user id it
+ * has no use for.
+ */
+export interface PushMessage extends OutgoingMessage {
+  recipientUserId: string;
 }
 
 /** Escape before any value reaches HTML: a project name is user-controlled. */
@@ -100,7 +109,7 @@ export async function sendEmail(message: OutgoingMessage): Promise<ChannelOutcom
 
 const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
 
-export async function sendPush(message: OutgoingMessage): Promise<ChannelOutcome> {
+export async function sendPush(message: PushMessage): Promise<ChannelOutcome> {
   const tokens = (await tokensForUser(message.recipientUserId)).filter(
     (t) => t.startsWith('ExponentPushToken') || t.startsWith('ExpoPushToken')
   );

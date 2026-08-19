@@ -56,6 +56,8 @@ import type {
   FeatureKey,
   FxRateView,
   InviteMember,
+  NotificationPreferences,
+  NotificationView,
   InviteView,
   InvoiceView,
   LimitKey,
@@ -85,6 +87,7 @@ import type {
   TimeLogView,
   UpdateAuditSettings,
   UpdateCompany,
+  UpdateNotificationPreferences,
   UpdateEngagement,
   UpdateEngagementTerms,
   UpdateExpense,
@@ -278,6 +281,34 @@ export const api = {
     }),
   deleteFxRate: (t: string, c: string, id: string) =>
     request<void>('DELETE', `/v1/fx-rates/${id}`, { accessToken: t, companyId: c }),
+
+  // ── Notifications & the Action Centre ────────────────────────────────────────
+  listNotifications: (t: string, c: string, filter: 'open' | 'unread' | 'all') =>
+    request<{ data: NotificationView[]; nextBefore: string | null }>(
+      'GET',
+      `/v1/notifications?filter=${filter}`,
+      { accessToken: t, companyId: c }
+    ),
+  notificationOpenCount: (t: string, c: string) =>
+    request<{ openCount: number }>('GET', '/v1/notifications/open-count', {
+      accessToken: t,
+      companyId: c,
+    }),
+  actOnNotification: (t: string, c: string, id: string, verb: 'read' | 'resolve' | 'dismiss') =>
+    request<{ notification: NotificationView }>('POST', `/v1/notifications/${id}/actions`, {
+      accessToken: t,
+      companyId: c,
+      body: { verb },
+    }),
+  notificationPreferences: (t: string) =>
+    request<{ preferences: NotificationPreferences }>('GET', '/v1/notification-preferences', {
+      accessToken: t,
+    }),
+  saveNotificationPreferences: (t: string, body: UpdateNotificationPreferences) =>
+    request<{ preferences: NotificationPreferences }>('PUT', '/v1/notification-preferences', {
+      accessToken: t,
+      body,
+    }),
 
   // ── Entitlements ─────────────────────────────────────────────────────────────
   entitlements: (t: string, c: string) =>

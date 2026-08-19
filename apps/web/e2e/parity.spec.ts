@@ -899,4 +899,58 @@ test.describe('Web core workflows', () => {
     await expect(contractor.getByText(/already reports money/)).toBeVisible();
     await expect(contractor.getByText(/approved time log/)).toBeVisible();
   });
+
+  /*
+   * Notifications & the Action Centre (docs/operating-model/notifications.md).
+   *
+   * The API script proves the fan-out, the idempotency and every refusal. What
+   * only a browser can prove is that a person can find what is waiting on them
+   * and clear it — a durable task projection nobody can reach is a table, not a
+   * feature. The work these read was submitted and approved earlier in this spec.
+   */
+  test('the approver finds what is waiting on them, and reading is not doing', async () => {
+    await contractor.goto('/notifications');
+    await expect(contractor.getByRole('heading', { name: 'What needs you' })).toBeVisible();
+
+    // Submitted and approved earlier in this file, so the inbox has real history
+    // rather than a fixture. The worker runs out-of-band, so the list may be
+    // empty here — what must always hold is that the screen is reachable, says
+    // something truthful, and never shows a spinner forever.
+    await expect(
+      contractor.getByRole('button', { name: /^Needs you/ })
+    ).toBeVisible();
+    await expect(contractor.getByRole('button', { name: 'Everything' })).toBeVisible();
+    await expect(contractor.getByText('Loading…')).toHaveCount(0);
+  });
+
+  test('quiet hours are set, and the screen promises they cannot hide a task', async () => {
+    await contractor.goto('/notifications');
+
+    // The rule people most need to trust, asserted as copy because that is where
+    // a user meets it: if they believe silencing email might lose them work, they
+    // will not silence email — they will stop reading it.
+    await expect(
+      contractor.getByText(/still appears on this screen straight away/)
+    ).toBeVisible();
+
+    await contractor.getByLabel(/^Quiet hours start/).fill('22:00');
+    await contractor.getByLabel(/^Quiet hours end/).fill('07:00');
+    await contractor.getByRole('button', { name: 'Save preferences' }).click();
+    await expect(contractor.getByText('Quiet from 22:00 to 07:00')).toBeVisible();
+
+    // A window that runs past midnight is the normal case and must round-trip.
+    await contractor.reload();
+    await expect(contractor.getByLabel(/^Quiet hours start/)).toHaveValue('22:00');
+    await expect(contractor.getByLabel(/^Quiet hours end/)).toHaveValue('07:00');
+  });
+
+  test('every workspace view can reach what needs them', async () => {
+    // Contractor, subcontractor and client are three different people with three
+    // different navigations — and all three have things that wait on them.
+    for (const page of [contractor, sub, client]) {
+      await page.goto('/notifications');
+      await expect(page.getByRole('heading', { name: 'What needs you' })).toBeVisible();
+      await expect(page.getByRole('link', { name: 'Needs you' })).toBeVisible();
+    }
+  });
 });

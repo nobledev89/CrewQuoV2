@@ -375,10 +375,10 @@ export async function findIdentityCandidates(input: {
         and (
           (registration_id_normalized is not null
              and registration_id_normalized = $2 and upper(country) = $1)
-          or lower(name) like $3
+          or ${NAME_HAYSTACK} like $3
         )
       limit 50`,
-    [input.country, input.registrationIdNormalized, `%${firstWord(input.nameNormalized)}%`]
+    [input.country, input.registrationIdNormalized, `%${nameNeedle(input.nameNormalized)}%`]
   );
 
   const requests = await query<{
@@ -393,10 +393,10 @@ export async function findIdentityCandidates(input: {
         and (
           (registration_id_normalized is not null
              and registration_id_normalized = $2 and upper(country) = $1)
-          or lower(legal_name) like $3
+          or ${LEGAL_NAME_HAYSTACK} like $3
         )
       limit 50`,
-    [input.country, input.registrationIdNormalized, `%${firstWord(input.nameNormalized)}%`, input.excludeUserId]
+    [input.country, input.registrationIdNormalized, `%${nameNeedle(input.nameNormalized)}%`, input.excludeUserId]
   );
 
   return [
@@ -421,9 +421,29 @@ export async function findIdentityCandidates(input: {
  * shared, where it is unit-tested. Matching in SQL would put the same rule in two
  * places written two ways.
  */
-function firstWord(nameNormalized: string): string {
-  return (nameNormalized.split(' ')[0] ?? '').replace(/[%_]/g, '');
+/**
+ * The needle the SQL prefilter searches for: the whole normalised name with its
+ * separators removed.
+ *
+ * **This used to be the first word only, and that was a real bug.** The prefilter
+ * is capped at 50 rows with no ordering, so a common first word — `smith`,
+ * `acme`, `construction` — silently pushed the genuine match out of the window,
+ * and the duplicate-name warning then fired or did not fire essentially at
+ * random. Found on 2026-08-19 when a verification database crossed 56 companies
+ * sharing one first word and the warning quietly stopped appearing.
+ *
+ * Matching the full name keeps the cap non-binding in practice while staying
+ * *looser* than equality: the haystack strips separators too, so "Northlight
+ * Rigging Ltd" still contains the core "northlightrigging" and is still offered
+ * to the JS matcher, which is where the real suffix-aware comparison happens.
+ */
+function nameNeedle(nameNormalized: string): string {
+  return nameNormalized.replace(/[^a-z0-9]/g, '');
 }
+
+/** Strip separators from the stored side so the two are compared like for like. */
+const NAME_HAYSTACK = `regexp_replace(lower(name), '[^a-z0-9]', '', 'g')`;
+const LEGAL_NAME_HAYSTACK = `regexp_replace(lower(legal_name), '[^a-z0-9]', '', 'g')`;
 
 // ── Rate limiting (§3.1.1(7)) ─────────────────────────────────────────────────
 

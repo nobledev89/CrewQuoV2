@@ -1,6 +1,6 @@
 import { deliveryFailureState } from '../delivery/model';
 import { query, queryOne } from '../../db';
-import { sendEmail, sendPush, type ChannelOutcome, type OutgoingMessage } from './channels';
+import { sendEmail, sendPush, type ChannelOutcome, type PushMessage } from './channels';
 
 /**
  * Drains `notification_deliveries` — the intrusive half of a notification, after
@@ -106,7 +106,7 @@ export async function runNotificationDeliveryBatch(
       skipped += 1;
       continue;
     }
-    const message: OutgoingMessage = {
+    const message: PushMessage = {
       recipientUserId: row.recipient_user_id,
       recipientEmail: row.recipient_email,
       recipientName: row.recipient_name,

@@ -44,6 +44,7 @@ const VIEW_NAV: Record<WorkspaceView, NavGroup[]> = {
       label: 'Workspace',
       items: [
         { href: '/app', label: 'Overview', icon: 'overview' },
+        { href: '/notifications', label: 'Needs you', icon: 'check' },
         { href: '/projects', label: 'Projects', icon: 'template' },
         { href: '/review', label: 'Approvals', icon: 'check', requiresDownstream: true },
       ],
@@ -89,7 +90,10 @@ const VIEW_NAV: Record<WorkspaceView, NavGroup[]> = {
   SUBCONTRACTOR: [
     {
       label: 'Work',
-      items: [{ href: '/work', label: 'My work', icon: 'clock' }],
+      items: [
+        { href: '/notifications', label: 'Needs you', icon: 'check' },
+        { href: '/work', label: 'My work', icon: 'clock' },
+      ],
     },
     {
       label: 'Commercial',
@@ -112,6 +116,7 @@ const VIEW_NAV: Record<WorkspaceView, NavGroup[]> = {
     {
       label: 'Workspace',
       items: [
+        { href: '/notifications', label: 'Needs you', icon: 'check' },
         { href: '/portal', label: 'Projects', icon: 'portal' },
         { href: '/invoices', label: 'Invoices', icon: 'card' },
       ],

@@ -2406,7 +2406,7 @@ async function main(): Promise<void> {
   // this is the warning path — it proceeds, and says why it is unsure.
   eq('the same number in another country is not a duplicate', otherCountry.status, 201);
   check('...but the matching name is warned about', Boolean(otherCountry.json.warning),
-    otherCountry.json.warning);
+    { warning: otherCountry.json.warning, status: otherCountry.status, body: otherCountry.json });
   const warnedRequestId = otherCountry.json.request.id as string;
 
   // 6. One open request per identity.

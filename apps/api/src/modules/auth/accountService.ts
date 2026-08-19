@@ -1,4 +1,5 @@
 import { env } from '../../env';
+import { sendEmail } from '../notifications/channels';
 import { findUserByEmail, markEmailVerified, updatePasswordHash } from '../users/repo';
 import { hashPassword } from './passwords';
 import { revokeAllRefreshTokens } from './refreshTokens';
@@ -8,14 +9,37 @@ const RESET_TTL_SECONDS = 60 * 60; // 1 hour
 const VERIFY_TTL_SECONDS = 24 * 60 * 60; // 24 hours
 
 /**
- * Deliver a link. Email (Resend) lands in Phase 5 (§5); until then we log the
- * link in non-production so the flow is testable end to end.
+ * Deliver an account link through the same adapter notifications use, so there is
+ * one email path in the codebase rather than two that drift.
+ *
+ * **Deliberately not routed through the notification tables.** A password reset
+ * belongs to a *user*, not to a company, and it must work for somebody who cannot
+ * sign in — so it has no inbox row, no preferences and no quiet hours. Holding a
+ * reset link until 07:00 because somebody set quiet hours would be an outage
+ * dressed up as a feature. It shares the transport and nothing else.
+ *
+ * Fire-and-forget on purpose: `requestPasswordReset` must resolve identically
+ * whether or not the account exists (see below), so it cannot wait on a provider
+ * call whose timing would leak the answer.
  */
 function deliverLink(kind: string, email: string, url: string): void {
   if (env.NODE_ENV !== 'production') {
     console.log(`[auth] ${kind} link for ${email}: ${url}`);
   }
-  // TODO(Phase 5): send via Resend.
+  void sendEmail({
+    recipientEmail: email,
+    recipientName: null,
+    title: kind === 'password-reset' ? 'Reset your CrewQuo password' : 'Verify your CrewQuo email',
+    body:
+      kind === 'password-reset'
+        ? 'Use the link below to choose a new password. It expires in one hour.'
+        : 'Use the link below to confirm your email address. It expires in 24 hours.',
+    actionUrl: url,
+  }).then((outcome) => {
+    if (outcome.status === 'failed') {
+      console.error(`[auth] ${kind} email to ${email} failed: ${outcome.error}`);
+    }
+  });
 }
 
 /** Always resolves the same way — never reveal whether the account exists. */
