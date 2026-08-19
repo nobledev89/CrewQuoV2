@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import {
   DEFAULT_CURRENCY,
   type AuthResponse,
@@ -88,14 +89,40 @@ export async function register(input: RegisterRequest): Promise<AuthResponse> {
   return buildAuthResponse(user);
 }
 
+/**
+ * A bcrypt hash of a value nobody knows, verified against when no account exists.
+ *
+ * The cost has to match the one real hashes were written with, or the decoy is
+ * faster than the real path and the timing signal survives in the other
+ * direction. Generated once at module load rather than per request — hashing on
+ * every unknown address would hand an attacker a cheap CPU-exhaustion lever.
+ */
+const DECOY_PASSWORD_HASH = hashPassword(randomBytes(32).toString('base64url'));
+
 export async function login(input: LoginRequest): Promise<AuthResponse> {
   const user = await findUserByEmail(input.email);
-  // Constant-ish: still run verify to avoid trivial user-enumeration timing.
-  if (!user || !user.password_hash) {
-    throw new AppError('UNAUTHENTICATED', 'Invalid email or password');
-  }
-  const ok = await verifyPassword(input.password, user.password_hash);
-  if (!ok) {
+
+  /*
+   * **Verify against a decoy when there is no account.** The previous version
+   * carried the comment "Constant-ish: still run verify to avoid trivial
+   * user-enumeration timing" and then did the opposite — it returned immediately
+   * when no user was found, and only reached bcrypt when one existed.
+   *
+   * bcrypt is deliberately slow (~800ms in this project's own test output), so an
+   * unknown address answered in milliseconds and a known one took most of a
+   * second. That is not a subtle side channel: it is an account-existence oracle
+   * with a hundredfold signal, readable from a browser, on an endpoint that until
+   * this slice had no rate limit either. The bodies always matched; the clock gave
+   * it away.
+   *
+   * A Google-only account (`password_hash` null) takes the same path for the same
+   * reason — "that address exists but has no password" is the same disclosure
+   * wearing a different hat.
+   */
+  const hash = user?.password_hash ?? (await DECOY_PASSWORD_HASH);
+  const ok = await verifyPassword(input.password, hash);
+
+  if (!user || !user.password_hash || !ok) {
     throw new AppError('UNAUTHENTICATED', 'Invalid email or password');
   }
   return buildAuthResponse(user);

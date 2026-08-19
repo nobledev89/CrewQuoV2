@@ -13,7 +13,7 @@ heading is an unasked question, which is the failure mode §19.5 exists to preve
 
 | Domain | Packet | Shipped in |
 |---|---|---|
-| Access, sessions & platform security — factors and recovery, session/device lifecycle, rate limiting, secret rotation, support access | [access.md](./access.md) | Phase 6 — **draft**, three owner decisions open |
+| Access, sessions & platform security — factors and recovery, session/device lifecycle, rate limiting, secret rotation, support access | [access.md](./access.md) | Phase 6 |
 | Commercial agreements — PAY rate proposals, engagement terms, acceptance | [commercial-agreements.md](./commercial-agreements.md) | Phase 6 |
 | Company ownership & creation — the first-company allowance, additional-company approval, duplicate routing, trial eligibility | [company-creation.md](./company-creation.md) | Phase 6 |
 | Durable delivery — transactional events/jobs, inbound webhooks, retry, dead letters and replay | [durable-delivery.md](./durable-delivery.md) | Phase 6 |
@@ -33,13 +33,19 @@ and invitations keep no packet until something reopens them" until 2026-08-19, w
 the §42 security-hardening bullet reopened auth and sessions — so they got theirs.
 Invitations still have none, and still do not need one.
 
-**`access.md` is the first packet to ship as `draft` rather than `adopted`**, which
-is the template's own distinction being used for the first time rather than
-skipped. Three of its questions — who must hold a second factor, what happens when
-somebody loses both their device and their recovery codes, and whether platform
-support access exists at all — change what gets built rather than how, and are the
-owner's to answer. Writing them down as open beat guessing at them and discovering
-the guess in code review.
+**`access.md` is the first packet to have been written as `draft` and promoted to
+`adopted`**, which is the template's own distinction being used rather than skipped.
+Three of its questions — who must hold a second factor, what happens when somebody
+loses both their device and their recovery codes, and whether platform support
+access exists at all — changed *what* got built rather than how, so they went to the
+owner instead of into a guess. All three were answered the same day and are recorded
+in its §13 **with their rejected alternatives**, because a decision whose options are
+lost reads a year later like something nobody considered.
+
+It also earned its timing the way `money-boundary.md` did. Surveying `app.ts` to
+answer §10 is what found the wide-open CORS and the absent login rate limit — neither
+of which is in the §42 bullet the packet was written for, and the second of which is
+the most severe hole in the product.
 
 `money-boundary.md` is the same rule applied twice over: the money boundary
 reopened **rates** and **invoices** together, so it was written before the

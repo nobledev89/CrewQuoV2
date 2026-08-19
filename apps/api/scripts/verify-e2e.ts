@@ -3932,6 +3932,152 @@ async function main(): Promise<void> {
   }
   check('the database refuses an unknown zone independently of the route', dbRejectedZone);
 
+  // ── Access hardening (§42) ────────────────────────────────────────────────
+  // docs/operating-model/access.md §12. The hole this section exists for:
+  // POST /v1/auth/login had no rate limit of any kind, against a population of
+  // accounts that all have exactly one factor — and login answered an unknown
+  // address in milliseconds while taking most of a second for a known one, which
+  // is an account-existence oracle with a hundredfold signal.
+  section('Access hardening — the front door');
+
+  const rlUser = await register('rl-user', `Lockout Ltd ${RUN}`);
+  const rlEmail = rlUser.email;
+
+  // 1 ── Not an oracle. The bodies already matched; the *timings* did not.
+  const timedLogin = async (email: string): Promise<{ status: number; ms: number }> => {
+    const started = Date.now();
+    const res = await call('POST', '/v1/auth/login', {
+      body: { email, password: 'definitely-not-the-password' },
+    });
+    return { status: res.status, ms: Date.now() - started };
+  };
+  const knownAddress = await timedLogin(rlEmail);
+  const unknownAddress = await timedLogin(`nobody-${RUN}@verify.crewquo.test`);
+  eq('a wrong password for a real account is refused', knownAddress.status, 401);
+  eq('...and an unknown address is refused identically', unknownAddress.status, 401);
+  // bcrypt at cost 12 runs ~0.5-1s here, so the old code differed by two orders of
+  // magnitude. A generous ratio still catches that; a tight one would flake on a
+  // loaded machine, which is worse than not asserting at all.
+  const slowest = Math.max(knownAddress.ms, unknownAddress.ms);
+  const fastest = Math.max(1, Math.min(knownAddress.ms, unknownAddress.ms));
+  check('...and takes comparable time, so the clock is not an oracle either',
+    slowest / fastest < 4,
+    { knownMs: knownAddress.ms, unknownMs: unknownAddress.ms });
+
+  // 2 ── Limited. The identity budget is 10 failures in 15 minutes; one is
+  // already spent above, so the run below reaches it.
+  let rlRefusal: { status: number; json: any } | null = null;
+  for (let attempt = 0; attempt < 14; attempt += 1) {
+    const res = await call('POST', '/v1/auth/login', {
+      body: { email: rlEmail, password: `wrong-${attempt}` },
+    });
+    if (res.status === 429) { rlRefusal = res; break; }
+  }
+  check('repeated wrong passwords are eventually rate-limited', rlRefusal !== null);
+  eq('...with 429, not a generic failure', rlRefusal?.status, 429);
+  check('...naming how long to wait',
+    typeof rlRefusal?.json?.error?.details?.retryAfterSeconds === 'number',
+    rlRefusal?.json?.error);
+
+  // 3 ── The refusal is not an oracle either. A limiter that says "too many
+  // attempts for this account" is a better account-existence oracle than the
+  // endpoint it was added to protect.
+  const refusalText = String(rlRefusal?.json?.error?.message ?? '').toLowerCase();
+  check('...and says nothing about whether the account exists',
+    !['account', 'user', 'email', 'address', 'exists', 'password'].some((word) =>
+      refusalText.includes(word)),
+    refusalText);
+
+  // 4 ── A correct password is refused too while the budget is spent. Anything
+  // else makes the limiter a formality an attacker simply outlasts.
+  const correctWhileLocked = await call('POST', '/v1/auth/login', {
+    body: { email: rlEmail, password: 'Verify-passw0rd!' },
+  });
+  eq('even the right password is refused while locked out', correctWhileLocked.status, 429);
+
+  // 5 ── Recorded, and nothing about the secret is stored with it.
+  const rlAttempts = await db.query<{ succeeded: boolean; n: string }>(
+    `select succeeded, count(*)::text as n from auth_attempts
+      where scope = 'LOGIN' and identity_key = $1 group by succeeded`,
+    [rlEmail.toLowerCase()]
+  );
+  const rlFailures = Number(rlAttempts.rows.find((r) => r.succeeded === false)?.n ?? 0);
+  check('every failed attempt is recorded', rlFailures >= 10, rlAttempts.rows);
+  const attemptColumns = await db.query<{ column_name: string }>(
+    `select column_name from information_schema.columns where table_name = 'auth_attempts'`
+  );
+  check('...and the table holds nothing derived from the password',
+    attemptColumns.rows.every((r) => !/pass|secret|credential/i.test(r.column_name)),
+    attemptColumns.rows.map((r) => r.column_name));
+
+  // 6 ── The lockout told the holder once, not once per attempt — an alert per
+  // attempt would turn the sign-in form into a mail bomb aimed at any address.
+  const lockoutAudit = await db.query<{ n: string }>(
+    `select count(*)::text as n from platform_audit_logs
+      where action = 'auth.lockout' and entity_id = $1`,
+    [rlUser.userId]
+  );
+  eq('a lockout is recorded once, not once per attempt', lockoutAudit.rows[0]?.n, '1');
+
+  // 7 ── Not a weapon. Locking one address must not lock another, or the limiter
+  // is a denial-of-service anybody can aim at anybody.
+  const bystander = await register('rl-bystander', `Bystander ${RUN}`);
+  const bystanderLogin = await call('POST', '/v1/auth/login', {
+    body: { email: bystander.email, password: 'Verify-passw0rd!' },
+  });
+  eq('another account signs in normally while the first is locked out',
+    bystanderLogin.status, 200);
+
+  // 8 ── Reset is limited per address, because the abuse there is mail-bombing an
+  // inbox rather than guessing a secret.
+  let resetRefused = 0;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const res = await call('POST', '/v1/auth/request-password-reset', {
+      body: { email: bystander.email },
+    });
+    if (res.status === 429) resetRefused += 1;
+  }
+  check('password-reset requests are rate-limited per address', resetRefused > 0, resetRefused);
+
+  // 9 ── Security headers on every response.
+  const headerProbe = await call('GET', '/healthz');
+  for (const [header, expected] of [
+    ['x-content-type-options', 'nosniff'],
+    ['x-frame-options', 'DENY'],
+    ['referrer-policy', 'no-referrer'],
+    ['cache-control', 'no-store'],
+  ] as const) {
+    eq(`every response carries ${header}`, headerProbe.headers.get(header), expected);
+  }
+  check('...and does not advertise the framework',
+    headerProbe.headers.get('x-powered-by') === null);
+
+  // 10 ── CORS is an allowlist, not a mirror. The bare `cors()` this replaced
+  // reflected whatever Origin it was sent, so any page a signed-in user visited
+  // could call this API with their bearer token.
+  const evilOrigin = await fetch(`${BASE}/healthz`, {
+    headers: { origin: 'https://evil.example' },
+  });
+  eq('an unknown origin is not reflected back',
+    evilOrigin.headers.get('access-control-allow-origin'), null);
+  const appOrigin = await fetch(`${BASE}/healthz`, {
+    headers: { origin: env.APP_BASE_URL },
+  });
+  eq('...while the app origin is allowed',
+    appOrigin.headers.get('access-control-allow-origin'), env.APP_BASE_URL);
+
+  // `localhost` and `127.0.0.1` are the same server. The browser suite binds the
+  // second and `APP_BASE_URL` names the first, so without this the allowlist would
+  // reject the whole web app on a spelling — which it did, once, before this line.
+  const sibling = env.APP_BASE_URL.includes('//localhost')
+    ? env.APP_BASE_URL.replace('//localhost', '//127.0.0.1')
+    : env.APP_BASE_URL.replace('//127.0.0.1', '//localhost');
+  if (sibling !== env.APP_BASE_URL) {
+    const loopback = await fetch(`${BASE}/healthz`, { headers: { origin: sibling } });
+    eq('...and so is the other spelling of the same loopback host',
+      loopback.headers.get('access-control-allow-origin'), sibling);
+  }
+
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);
   if (failures.length === 0) {

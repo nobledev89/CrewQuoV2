@@ -2,6 +2,7 @@ import cors from 'cors';
 import express, { type Express } from 'express';
 import { healthResponseSchema } from '@crewquo/shared';
 import { pingDb } from './db';
+import { env } from './env';
 import { errorHandler, notFoundHandler } from './http/errorHandler';
 import { requireAuth, requireSuperAdmin } from './http/middleware/auth';
 import { authRouter } from './modules/auth/routes';
@@ -45,11 +46,125 @@ import {
 } from './modules/commercial/routes';
 import { companyCreationRouter } from './modules/company-creation/routes';
 
+/**
+ * Browser origins this API answers to (`docs/operating-model/access.md` §10.4).
+ *
+ * The app's own origin, plus whatever `CORS_EXTRA_ORIGINS` names. Deduplicated so
+ * a deployment that repeats `APP_BASE_URL` in the extras list is not a bug.
+ */
+function allowedOrigins(): string[] {
+  const extras = env.CORS_EXTRA_ORIGINS.split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin !== '');
+  return [...new Set([env.APP_BASE_URL, ...extras].flatMap(loopbackSiblings))];
+}
+
+/**
+ * `http://localhost:3000` and `http://127.0.0.1:3000` are the same server, so
+ * allowing one allows the other.
+ *
+ * **Not a convenience — a correctness fix for a footgun this repo has already been
+ * bitten by twice.** The Playwright config binds `127.0.0.1` explicitly and says
+ * why: on this platform the two names resolve differently enough to break a health
+ * check while the server is perfectly fine, the same shadowing the Phase 1 Postgres
+ * note recorded. Without this, the allowlist would have rejected the browser suite
+ * on a spelling, and the obvious "fix" is a developer widening `CORS_EXTRA_ORIGINS`
+ * by hand until it eventually gets widened too far.
+ *
+ * Costs nothing in security: both names address the same loopback interface, and
+ * anybody able to serve a page from your loopback already owns the machine. Applies
+ * only to loopback, so a production `APP_BASE_URL` generates no siblings at all.
+ */
+function loopbackSiblings(origin: string): string[] {
+  try {
+    const url = new URL(origin);
+    if (url.hostname === 'localhost') {
+      return [origin, origin.replace('//localhost', '//127.0.0.1')];
+    }
+    if (url.hostname === '127.0.0.1') {
+      return [origin, origin.replace('//127.0.0.1', '//localhost')];
+    }
+    return [origin];
+  } catch {
+    // A malformed entry is kept verbatim rather than dropped: it will simply never
+    // match, and silently discarding configuration is how a deployment ends up
+    // wondering why its origin is refused.
+    return [origin];
+  }
+}
+
+/**
+ * Headers every response carries, whatever it is.
+ *
+ * A JSON API is not a document, so most of these are about what a browser must
+ * *refuse* to do with the response rather than how to render it. Hand-written
+ * rather than pulled from `helmet`: six headers with a stated reason each is
+ * easier to audit than a dependency whose defaults change between majors, and
+ * nothing here needs the rest of what helmet does.
+ */
+function securityHeaders(): express.RequestHandler {
+  return (_req, res, next) => {
+    // No HTML is ever served, so the safest CSP is one that permits nothing at
+    // all: if a response is somehow rendered as a document, it can load nothing.
+    res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'");
+    // Stops a browser second-guessing a JSON content type into something
+    // executable, which is the whole content-sniffing attack class.
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    // An API URL can carry a project or invoice id; no referrer means no leaking
+    // one to whatever a link happens to point at.
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    // Error bodies name projects and companies. A shared cache holding one is a
+    // cross-tenant leak that never touches this code.
+    res.setHeader('Cache-Control', 'no-store');
+    if (env.NODE_ENV === 'production') {
+      // Only in production: sending HSTS from a dev server pins localhost to
+      // HTTPS in the developer's browser, which is a very annoying afternoon.
+      res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    }
+    next();
+  };
+}
+
 /** Build the Express app. Kept separate from listen() so tests can import it. */
 export function buildApp(): Express {
   const app = express();
-  app.use(cors());
-  app.use(express.json());
+
+  // Rate limiting keys on `req.ip`, and behind a proxy every request arrives from
+  // the proxy — so without this the source budget sees the entire internet as one
+  // caller. Not defaulted to `true`: trusting a header nobody set lets a caller
+  // forge their own source and escape the budget, so the hop count is stated per
+  // deployment.
+  app.set('trust proxy', env.TRUST_PROXY_HOPS);
+
+  app.disable('x-powered-by');
+  app.use(securityHeaders());
+
+  /*
+   * **An allowlist, replacing `cors()` with no options.**
+   *
+   * The bare call reflects whatever `Origin` it is sent, which combined with
+   * bearer tokens held in browser storage meant any page a signed-in user visited
+   * could call this API as them. `credentials` stays off because CrewQuo
+   * authenticates with an `Authorization` header rather than a cookie — there is
+   * nothing for a browser to attach automatically, and turning it on would only
+   * widen what a future cookie could do.
+   *
+   * A request with no `Origin` is allowed: that is every server-to-server caller,
+   * the mobile app and curl, none of which a browser policy governs anyway.
+   */
+  const origins = allowedOrigins();
+  app.use(
+    cors({
+      origin: (origin, callback) => callback(null, !origin || origins.includes(origin)),
+      credentials: false,
+    })
+  );
+
+  // An explicit ceiling rather than the framework default, so the limit is a
+  // decision. Every payload this API accepts is a form; file content goes to
+  // object storage through a presigned URL and never through here.
+  app.use(express.json({ limit: '256kb' }));
 
   app.get('/', (_req, res) => {
     res.json({ name: 'crewquo-api', version: '0.1.0' });

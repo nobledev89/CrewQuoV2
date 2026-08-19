@@ -5,17 +5,17 @@ device, and what a platform operator may do to somebody else's tenant. Covers
 authentication factors and recovery, session and device lifecycle, step-up
 re-authentication, request rate limiting, signing-secret rotation, support access,
 and the tenant-boundary threat model the rest of the packets assume.
-**Phase:** 6 · **Status:** draft · **Last updated:** 2026-08-19
+**Phase:** 6 · **Status:** adopted · **Last updated:** 2026-08-19
 **Plan refs:** §4 (auth context), §5 (tokens), §5B (platform staff), §3.1.1(7)
 (recent authentication, rate limiting, immutable decision record), §19.5 (this
 packet's shape), §42 (the security-hardening bullet this answers), §44 (the test
 discipline).
 
-> **Draft, and deliberately so.** Three questions in this packet are the owner's
-> rather than the implementer's, and they are marked as such in §13. Nothing is
-> built against this file until they are answered — the point of writing the packet
-> first is that a wrong guess here is expensive in a way a wrong guess about a
-> column name is not.
+> **Drafted with three questions open, adopted once they were answered** — both on
+> 2026-08-19. The owner took all three recommendations; §13 records them as
+> decisions with the reasoning that produced them, because a decision whose
+> alternatives are lost is indistinguishable a year later from something nobody
+> thought about.
 
 ---
 
@@ -63,7 +63,7 @@ stops being recorded, which is a data-integrity failure dressed as a security wi
 | A recovery code | enrolment | the user | shown **once**, hashed thereafter | regenerate, which invalidates the whole set | the user |
 | A signing secret | deployment | the platform | **nobody** — environment only, never logged, never in a payload | rotation, overlapping | the platform |
 | A rate-limit counter | the request | nobody | operators, in aggregate | expires on its own | discarded, not retained |
-| A support-access grant | a super admin | **the customer**, not the operator | the customer and platform audit | expiry, or customer revocation | the company |
+| A second-factor reset by an operator | a super admin | the account holder | the holder and platform audit | the holder re-enrols | the platform |
 
 **"Nobody" appears four times and each one is load-bearing.** A password hash, a
 TOTP secret, a recovery code after first display and a signing secret are all
@@ -81,12 +81,17 @@ future screen that wants to display one is a bug in the request, not a feature.
 | `REVOKED` | ended deliberately | user signs out · user ends it from the device list · password reset revokes all · a super admin revokes with a reason |
 | `EXPIRED` | past `expires_at` | lazy, like every other expiry in this product — derived on read, never by a timer |
 
-**Refresh rotation is the change with teeth.** Today a refresh token is a bearer
-string valid for thirty days that survives being used. Rotating it on every exchange
-means a stolen token is good only until the real user next refreshes — and when both
-the thief and the user present the same retired token, that is *detectable*. **Reuse
-of a retired token revokes the entire family**, because the only two explanations
-are theft and a client bug, and both deserve a re-login.
+**Rotation already happens; detection is what is missing.** `refresh()` revokes the
+presented token and issues a successor, so a refresh token does *not* survive use —
+that half is done. What is missing is what happens **next**: replaying a retired
+token returns a plain `UNAUTHENTICATED`, identical to the one an expired token
+produces, and the legitimate session carries on untouched. So the single strongest
+signal of theft the product could have — the same token presented twice, which has
+only two explanations, a thief or a client bug — is currently thrown away as a 401.
+
+**Reuse of a retired token must revoke the entire family**, and that needs a lineage
+the schema does not have: `refresh_tokens` has no session or predecessor column, so
+"the family" is not currently expressible. That, not rotation, is the work.
 
 ### A second factor
 
@@ -116,7 +121,8 @@ they learn to distrust the alarm.
 | Remove a second factor | none | any authenticated user | — | own account, **and step-up re-auth required** |
 | Spend a recovery code | none | unauthenticated — that is the point | — | own account |
 | Revoke another user's sessions | none | **super admin** | — | any user; reason required; platform-audited |
-| Grant support access to a tenant | none | **super admin** | — | one company, time-boxed, reason required, customer-visible |
+| Reset another user's second factor | none | **super admin** | — | any user; reason required; unconditional email to the holder; platform-audited (§13.2) |
+| Impersonate a customer, or read one tenant's data as an operator | — | **nobody, by decision** (§13.3) | — | there is no such route, and adding one is a decision to reopen, not a feature to add |
 | Rotate a signing secret | none | **deployment** — not an API surface at all | — | platform |
 
 **No entitlement key, and §43 adds none.** Selling a security floor as a plan feature
@@ -137,7 +143,12 @@ people who never turn it on.
 | `session.revoked` | userId, sessionId, actor, reason | `session.revoked:<sessionId>` | notifications — the user is told a session ended and by whom |
 | `mfa.enrolled` / `mfa.removed` | userId, factor kind | `mfa.<verb>:<userId>:<occurrence>` | notifications — **always email**, because if it was not you, this is the only warning you get |
 | `auth.suspicious_activity` | userId, kind (`token_reuse` \| `lockout`), counts | per occurrence | notifications to the user; an Action Centre item for operators |
-| `support_access.granted` / `.revoked` | companyId, operator, reason, expiry | per grant | notifications to the tenant's owners; platform audit |
+| `mfa.reset_by_operator` | userId, operator, reason | `mfa.reset:<userId>:<occurrence>` | notifications — **unconditional email to the holder**, because this is the one path that removes their protection without them |
+
+There is deliberately **no `support_access.*` event**, because §13.3 decided the
+capability does not exist. Recorded as an absence rather than left as an omission:
+the difference between "we never built it" and "we decided not to" is invisible in
+a codebase and decisive during an incident.
 
 **Each of these is a notification a user cannot turn off.** The notifications packet's
 rule is that preferences govern *email and push*, never the in-product row; this
@@ -153,7 +164,7 @@ preference being respected, it is the alarm being disconnected.
 | Password changed or reset | the account holder | in-product + **email, unconditional** | `URGENT` | bypasses both |
 | Refresh-token reuse detected | the account holder | in-product + email | `URGENT` | bypasses both |
 | Sessions revoked by an operator | the account holder | in-product + email | `NORMAL` | normal rules — a human did this deliberately and can explain it |
-| Support access granted to your company | every OWNER/ADMIN of that company | in-product + email | `URGENT` | bypasses both |
+| An operator reset your second factor | the account holder | in-product + **email, unconditional** | `URGENT` | bypasses both |
 | Repeated failed sign-ins | the account holder | in-product + email, **once per window** | `NORMAL` | rate-limited itself, or the alarm becomes the attack |
 
 **That last row is a trap worth naming.** An email per failed attempt turns the
@@ -211,14 +222,23 @@ cannot keep.
 | Too many attempts | after the window | how long until they can retry, and nothing about whether the address exists | wait, or reset |
 | Wrong TOTP code | yes, within a small budget | "that code did not match" | retry, or spend a recovery code |
 | Lost device, has recovery codes | n/a | spend one; it is consumed and cannot be reused | re-enrol, regenerate the set |
-| **Lost device, no recovery codes** | n/a | locked out | **owner decision — §13.2** |
+| **Lost device, no recovery codes** | n/a | told to contact support, and *not* told the account is unrecoverable | a super admin resets the factor with a reason; the holder is emailed unconditionally and the reset is platform-audited (§13.2) |
 | Refresh-token reuse detected | no | signed out everywhere, told why | sign in again; change the password if it was not them |
 | Signing secret rotated | n/a | nothing — overlapping validation means no forced logout | none |
 
 **Sign-in failures are deliberately indistinguishable.** "No account with that
 address" is a free account-existence oracle, and this product already refused to build
 one for company names in §3.1.1 for exactly that reason. Wrong password, unknown
-address and locked account produce one message and one timing profile.
+address and locked account must produce one message **and one timing profile**.
+
+> **The bodies already match; the timings do not.** `login()` carries the comment
+> *"Constant-ish: still run verify to avoid trivial user-enumeration timing"* and then
+> does the opposite — it throws immediately when no user is found, and only reaches
+> bcrypt when one exists. bcrypt is deliberately slow (~800ms in this project's own
+> test output), so an unknown address answers in milliseconds and a known one takes
+> most of a second. **That is not a subtle side channel, it is a account-existence
+> oracle with a 100× signal**, readable from a browser, on an endpoint with no rate
+> limit. The comment describes the correct design; the code never implemented it.
 
 ## 10. Security / threat model
 
@@ -235,8 +255,11 @@ checks are expressed.
 1. **No login rate limit.** Unlimited guesses against single-factor accounts, and no
    record that it happened. The highest-severity item in this packet.
 2. **No second factor anywhere**, including super admins who can read every tenant.
-3. **A refresh token is a thirty-day bearer string that survives use.** Stolen once,
-   valid for a month, and undetectable.
+3. **Refresh reuse is silent.** Rotation is already implemented, but a replayed
+   retired token is answered with the same 401 an expired one gets, and the real
+   session keeps running — so the clearest evidence of theft the product could
+   collect is discarded. `refresh_tokens` also has no lineage column, so revoking a
+   compromised family is not expressible today.
 4. **`app.use(cors())` allows every origin.** Combined with bearer tokens held in
    browser storage, any page the user visits can call the API with their token. Not in
    the §42 bullet list; it belongs in this packet regardless.
@@ -244,10 +267,11 @@ checks are expressed.
 6. **A single static JWT secret with no key id**, so rotation means signing out every
    user on the platform simultaneously — which means, in practice, that it never
    happens.
-7. **Support access is undefined.** No impersonation exists today, which is the *good*
-   default; what is missing is a written stance, because "we never built it" and "we
-   decided not to" behave identically until somebody is asked to add it in a hurry
-   during an incident.
+7. ~~**Support access is undefined.**~~ **Closed by decision on 2026-08-19 (§13.3):
+   there is no impersonation and no per-tenant operator read, now or by default
+   later.** The hole was never the missing capability — it was that "we never built
+   it" and "we decided not to" behave identically until somebody is asked to add it
+   in a hurry during an incident. It is now the latter, in writing.
 
 **Secret rotation.** Access tokens gain a `kid` header; the verifier accepts any key in
 a small active set while signing only with the current one. Rotation becomes
@@ -271,8 +295,12 @@ holder rather than silently succeeding for the attacker.
 ## 11. Analytics contract
 
 Sign-in success rate, MFA enrolment rate among privileged accounts, lockouts per day,
-refresh-reuse detections per day, support grants outstanding, and the age of the oldest
-active signing key.
+refresh-reuse detections per day, operator-initiated factor resets per month, and the
+age of the oldest active signing key.
+
+**Operator factor resets are a metric on purpose.** §13.2 accepted a path that lets an
+operator remove a customer's protection; a number that climbs is the early warning that
+the path is being used as a convenience rather than as a last resort.
 
 **Excluded as sensitive, explicitly:** any password or code material even in hashed
 form, precise IP addresses, full user-agent strings, and anything correlating a named
@@ -296,8 +324,8 @@ leaked password list.**
 5. **Enrolled.** Dana enrols TOTP; enrolment is incomplete until she produces a correct
    code; recovery codes are displayed exactly once and never again.
 6. **Denied.** Removing the factor without step-up re-authentication is refused. A
-   MEMBER cannot revoke anybody's sessions. A non-super-admin cannot grant support
-   access.
+   MEMBER cannot revoke anybody's sessions. A non-super-admin cannot reset anybody's
+   second factor.
 7. **Recovered.** A recovery code signs her in once, is consumed, and cannot be reused.
    Regenerating the set invalidates every old code.
 8. **Sessions.** Dana sees her own sessions and no one else's; another user's session id
@@ -307,45 +335,60 @@ leaked password list.**
 10. **Secret rotation.** A key is rotated with both keys active: tokens signed by the old
     key still verify, new tokens carry the new `kid`, and **nobody is signed out**.
     Asserted by holding a live session across the rotation.
-11. **Support access.** Ola cannot reach a tenant's data without a grant; a grant requires
-    a reason, expires on its own, notifies the tenant's owners at the moment it is
-    created, and stays visible to them afterwards.
+11. **No back door.** There is no route by which Ola can read one tenant's records or
+    act as one of its users — asserted as an *absence*, by walking the platform surface
+    and finding only aggregates and metadata. Ola resetting Dana's lost second factor
+    requires a reason, emails Dana unconditionally, and lands in `platform_audit_logs`;
+    it grants Ola no access to Dana's data at any point.
 12. **Correction.** Everything above is reversible by the account holder without an
     operator: remove the factor, regenerate codes, end sessions, revoke a grant.
 
-## 13. Open — owner decisions
+## 13. Decisions — answered 2026-08-19
 
-These three are not implementation choices, and are not being guessed at.
+All three were put to the owner with options costed and a recommendation. All three
+recommendations were taken. Recorded with their alternatives, because a decision
+whose rejected options are lost reads a year later like something nobody considered.
 
-- [ ] **1. Who must have a second factor?** Cheapest first: (a) **super admins only,
-  mandatory** — smallest slice, protects the accounts that can read every tenant, and no
-  customer's login flow changes at all; (b) **super admins mandatory, customer
-  OWNER/ADMIN optional but offered**; (c) as (b) plus a per-company policy toggle letting
-  an owner mandate it for their own admins. The work roughly doubles at each step.
-  **Recommendation: (b)** — (a) leaves every customer's money-moving account on a
-  password alone, and (c) is a policy engine that can be added later without redoing (b).
-  Crew-plan field accounts are out of scope under all three.
+- [x] **1. Who must hold a second factor? → Super admins mandatory, customer
+  OWNER/ADMIN optional but offered.** Rejected: super-admins-only, which leaves every
+  customer's money-moving account on a password alone — and customer accounts are
+  where the actual losses happen. Also rejected *for now*: a per-company policy toggle
+  letting an owner mandate MFA for their own admins. That is a policy engine, it can
+  be added on top of this without redoing it, and buying it before anyone has asked is
+  the definition of a shape with no reader. **Crew-plan field accounts are out of
+  scope**, per §1: the persona that logs hours from a car park gets no new friction.
 
-- [ ] **2. What happens when somebody loses their device *and* their recovery codes?**
-  Either (a) **a super admin can reset a factor**, with a reason, an unconditional email
-  to the account holder and a platform-audit row — recoverable, but it means an operator
-  can strip a customer's MFA, so the operator becomes the weakest link; or (b) **nobody
-  can**, and the account is genuinely unrecoverable. **Recommendation: (a)**, because (b)
-  means a lost phone destroys a company owner's access to their own books, and the
-  realistic outcome is a support process that does it through the database anyway —
-  unlogged. Better to make the path exist, narrow it, and record it.
+- [x] **2. Device and recovery codes both lost? → A super admin can reset the factor**,
+  with a reason, an unconditional email to the account holder and a platform-audit
+  row. Rejected: genuinely unrecoverable. It is stronger on paper and worse in
+  practice — a lost phone would destroy a company owner's access to their own books,
+  and the realistic outcome is somebody doing it directly against the database,
+  unlogged. Better that the path exists, is narrow, and is recorded. The cost is
+  stated rather than hidden: **this makes the operator the weakest link**, which is
+  precisely why decision 1 puts those same operators under mandatory MFA, and why §11
+  counts resets as a metric.
 
-- [ ] **3. Does support access exist at all?** (a) **No impersonation, ever** — operators
-  keep the aggregate and metadata reads they already have, and a customer problem is
-  diagnosed from audit rows and logs; (b) **time-boxed, reason-required,
-  customer-notified read-only access** to one tenant; (c) full impersonation.
-  **Recommendation: (a) for now**, revisited when a real support case proves the aggregate
-  views insufficient — this is the highest-blast-radius capability in the product and
-  there is currently no support organisation to need it. (c) is not recommended at any
-  point without a customer-facing consent step.
+- [x] **3. Does platform support access exist? → No. No impersonation, and no
+  per-tenant operator read.** Operators keep the aggregate and metadata views they
+  already have; a customer problem is diagnosed from audit rows and logs. Rejected:
+  time-boxed customer-notified read-only grants — a real capability with real work and
+  no support organisation yet to need it. Rejected outright: full impersonation, which
+  makes every operator account equivalent to every customer account. **Revisit only
+  when a real support case proves the aggregate views insufficient**, and not by
+  reaching for (c) when it does.
 
-Until these are answered, the buildable subset — everything needing no decision — is:
-**login and reset rate limiting, refresh-token rotation with reuse detection,
-self-service session and device management, a CORS origin allowlist, security headers,
-and `kid`-based signing-secret rotation.** That subset also happens to close the
-highest-severity holes in §10, which is a convenient accident rather than a plan.
+## 14. Build order
+
+Nothing here needs another decision. Ordered by severity from §10 rather than by
+convenience:
+
+1. **Rate limiting** (login, reset, register), Postgres-backed, keyed on address *and*
+   source, with the lockout notification itself rate-limited. Plus the CORS origin
+   allowlist, security headers and an explicit body limit — small, and they close §10.4
+   and §10.5 in the same pass.
+2. **Refresh rotation with reuse detection**, and self-service session/device
+   management on top of it.
+3. **MFA**: TOTP with recovery codes, mandatory for super admins, offered to customer
+   OWNER/ADMIN, plus the operator reset path from §13.2.
+4. **`kid`-based signing-secret rotation**, asserted by holding a live session across
+   a rotation.

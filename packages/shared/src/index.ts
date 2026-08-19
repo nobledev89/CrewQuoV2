@@ -18,3 +18,4 @@ export * from './notifications';
 export * from './time';
 export * from './workspace';
 export * from './company-creation';
+export * from './access';

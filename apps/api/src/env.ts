@@ -50,6 +50,32 @@ const EnvSchema = z.object({
   RESEND_API_KEY: z.string().optional(),
   NOTIFICATION_FROM_EMAIL: z.string().email().optional(),
 
+  /**
+   * Comma-separated browser origins allowed to call this API
+   * (`docs/operating-model/access.md` §10.4).
+   *
+   * `APP_BASE_URL` is always allowed and needs no repeating here; this is for the
+   * extra ones — a preview deployment, a second domain. Empty is the common case.
+   *
+   * **Not a wildcard, and deliberately without an escape hatch.** The API used to
+   * run `cors()` with no options, which reflects every origin — so any page a
+   * signed-in user happened to visit could call it with their bearer token. An
+   * env var that accepted `*` would be that hole with an audit trail.
+   */
+  CORS_EXTRA_ORIGINS: z.string().default(''),
+
+  /**
+   * Trusted reverse-proxy hops in front of the API, for `req.ip`.
+   *
+   * Matters to rate limiting rather than to routing: behind a proxy every request
+   * arrives from the proxy's address, so a source-keyed budget would see the whole
+   * internet as one caller and lock everybody out together. Left at 0 by default
+   * because trusting a header nobody set lets a caller *forge* their source and
+   * escape the budget entirely — the failure runs in both directions, so it has to
+   * be stated per deployment rather than guessed.
+   */
+  TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(0),
+
 });
 
 const parsed = EnvSchema.safeParse(process.env);
