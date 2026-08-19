@@ -36,6 +36,10 @@ import { lineItemNotesRouter } from './modules/notes/routes';
 import { invoicesRouter } from './modules/invoices/routes';
 import { fxRatesRouter } from './modules/money/routes';
 import {
+  notificationPreferencesRouter,
+  notificationsRouter,
+} from './modules/notifications/routes';
+import {
   commercialAgreementsRouter,
   rateProposalsRouter,
 } from './modules/commercial/routes';
@@ -103,6 +107,11 @@ export function buildApp(): Express {
   // Money boundary (§3.3 decision #5): the exchange rates a converted figure
   // cites. No entitlement gate — see the note in the router.
   app.use('/v1/fx-rates', requireAuth, fxRatesRouter);
+
+  // The inbox, and the Universal Action Centre as its actionable subset. Reads
+  // are scoped to the calling user, never to a company role — see the router.
+  app.use('/v1/notifications', requireAuth, notificationsRouter);
+  app.use('/v1/notification-preferences', requireAuth, notificationPreferencesRouter);
 
   app.use('/v1/rate-proposals', requireAuth, rateProposalsRouter);
   app.use('/v1/commercial-agreements', requireAuth, commercialAgreementsRouter);
