@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import {
-  DEFAULT_CURRENCY,
   acceptanceDecisionSchema,
   createAssignmentSchema,
   createProjectSchema,
@@ -14,8 +13,8 @@ import {
   canDecideAcceptance,
   canManage,
   isEngagementParticipant,
+  isOwnerOrAdmin,
 } from '../../authorization/policies';
-import { findCompanyById } from '../companies/repo';
 import { findEngagementByPair, findEngagementEdge } from '../engagements/repo';
 import {
   decideAssignmentAcceptance,
@@ -33,6 +32,7 @@ import {
   updateProject,
 } from './repo';
 import { registerExportRoutes } from '../exports/routes';
+import { setProjectReportingCurrency } from './reportingCurrency';
 import { computeProjectSummary } from './summary';
 
 export const projectsRouter = Router();
@@ -89,7 +89,28 @@ projectsRouter.patch(
   asyncHandler(async (req, res) => {
     const ctx = getCompanyCtx(req);
     assertManager(ctx.role);
-    const patch = updateProjectSchema.parse(req.body);
+    const { reportingCurrency, ...patch } = updateProjectSchema.parse(req.body);
+
+    // The reporting currency is split out of the ordinary patch on purpose. It
+    // needs a stricter role than the rest of the form (OWNER/ADMIN, not any
+    // manager), a pin check that must hold the project's row lock, and its own
+    // audit line — none of which the generic column update can express. Money
+    // boundary packet §3/§4.
+    if (reportingCurrency !== undefined) {
+      if (!isOwnerOrAdmin(ctx.role)) {
+        throw new AppError(
+          'FORBIDDEN',
+          "Only an owner or admin may change a project's reporting currency"
+        );
+      }
+      await setProjectReportingCurrency({
+        ownerCompanyId: ctx.companyId,
+        projectId: param(req, 'id'),
+        actorUserId: ctx.userId,
+        reportingCurrency,
+      });
+    }
+
     const project = await updateProject(ctx.companyId, param(req, 'id'), patch);
     await recordAudit({
       companyId: ctx.companyId,
@@ -97,7 +118,7 @@ projectsRouter.patch(
       action: 'project.updated',
       entityType: 'PROJECT',
       entityId: project.id,
-      changes: { ...patch },
+      changes: { ...patch, ...(reportingCurrency ? { reportingCurrency } : {}) },
       description: `Project "${project.name}" updated`,
       visibleToClient: project.clientVisible,
     });
@@ -252,12 +273,13 @@ projectsRouter.get(
     const ctx = getCompanyCtx(req);
     const project = await getProject(ctx.companyId, param(req, 'id'));
     if (!project) throw new AppError('NOT_FOUND', 'Project not found');
-    const owner = await findCompanyById(ctx.companyId);
     const summary = await computeProjectSummary({
       id: project.id,
       ownerCompanyId: project.ownerCompanyId,
       clientCompanyId: project.clientCompanyId,
-      currency: owner?.currency ?? DEFAULT_CURRENCY,
+      // The project's own unit, not the owner company's live column: a company
+      // that changes currency must not restate a project that has closed.
+      currency: project.reportingCurrency,
     });
     res.json({ summary });
   })

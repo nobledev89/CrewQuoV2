@@ -1,14 +1,18 @@
 import { Router, type Request } from 'express';
 import {
+  DEFAULT_CURRENCY,
   calculateCost,
   createExpenseSchema,
   createSubmissionSchema,
   createTimeLogSchema,
   extractRate,
+  pickFxRate,
   rejectSchema,
   resolveRateLabel,
+  toFxSnapshot,
   updateExpenseSchema,
   updateTimeLogSchema,
+  type FxSnapshot,
   type ResolvedRateSnapshot,
   type ShiftType,
 } from '@crewquo/shared';
@@ -28,6 +32,9 @@ import {
 import { findEngagementEdge, type EngagementEdgeRow } from '../engagements/repo';
 import { getEffectiveTimeframeDefinitions, listResolveCandidates } from '../rates/repo';
 import { pickEffectiveCard } from '../rates/resolve';
+import { findCompanyById } from '../companies/repo';
+import { listFxRateCandidates } from '../money/repo';
+import { getProject } from '../projects/repo';
 import { notifyCompanyManagers, notifyUser } from '../push/send';
 import { recordAudit } from '../audit/record';
 import {
@@ -185,6 +192,7 @@ timeLogsRouter.post(
     const snapshot = await resolvePaySnapshot({
       clientCompanyId: edge.client_company_id,
       providerCompanyId: edge.provider_company_id,
+      projectId: log.projectId,
       roleId: log.roleId,
       shiftType: log.shiftType,
       workDate: log.workDate,
@@ -296,9 +304,24 @@ async function reviewGuard(req: Request) {
   return { log, edge };
 }
 
+/**
+ * Freeze what this log costs, and in which unit (§6, §3.3 decision #5).
+ *
+ * The FX rate is resolved and frozen **here, at submit**, for exactly the reason
+ * the amount is: what a provider is owed must not move because somebody recorded
+ * a different rate next month. A log whose PAY currency already matches the
+ * project's reporting currency carries no `fx` at all, which is the majority case
+ * and costs nothing.
+ *
+ * No rate available is **not** an error at submit: the work still happened and
+ * the provider still submits it. The cost is frozen in its own currency, the `fx`
+ * field stays absent, and the project summary withholds that figure and names the
+ * gap — repairable later by recording the rate, which is the packet's §9 path.
+ */
 async function resolvePaySnapshot(args: {
   clientCompanyId: string;
   providerCompanyId: string;
+  projectId: string;
   roleId: string;
   shiftType: ShiftType;
   workDate: string;
@@ -324,6 +347,24 @@ async function resolvePaySnapshot(args: {
     quantity: args.hoursRegular,
     otHours: args.hoursOt,
   });
+
+  // The paying company's own unit is the card's, falling back to its company
+  // default for every card written before 0009 gave cards a currency.
+  const payer = await findCompanyById(args.clientCompanyId);
+  const payCurrency = card.currency ?? payer?.currency ?? DEFAULT_CURRENCY;
+  const project = await getProject(args.clientCompanyId, args.projectId);
+  const reportingCurrency = project?.reportingCurrency ?? payCurrency;
+
+  let fx: FxSnapshot | undefined;
+  if (payCurrency !== reportingCurrency) {
+    const candidateRates = await listFxRateCandidates(
+      args.clientCompanyId,
+      [{ base: payCurrency, quote: reportingCurrency }]
+    );
+    const picked = pickFxRate(candidateRates, args.workDate);
+    if (picked) fx = toFxSnapshot(picked);
+  }
+
   return {
     rateCardId: card.id,
     label,
@@ -333,6 +374,8 @@ async function resolvePaySnapshot(args: {
     hoursRegular: args.hoursRegular,
     hoursOt: args.hoursOt,
     costCents,
+    currency: payCurrency,
+    ...(fx ? { fx } : {}),
   };
 }
 

@@ -34,6 +34,7 @@ import { auditLogsRouter, auditSettingsRouter } from './modules/audit/routes';
 import { portalRouter } from './modules/portal/routes';
 import { lineItemNotesRouter } from './modules/notes/routes';
 import { invoicesRouter } from './modules/invoices/routes';
+import { fxRatesRouter } from './modules/money/routes';
 import {
   commercialAgreementsRouter,
   rateProposalsRouter,
@@ -99,6 +100,10 @@ export function buildApp(): Express {
 
   // Commercial agreements (§3.3.1): cross-company PAY schedule negotiation, and one
   // engagement's whole commercial picture (terms + live rates + proposal history).
+  // Money boundary (§3.3 decision #5): the exchange rates a converted figure
+  // cites. No entitlement gate — see the note in the router.
+  app.use('/v1/fx-rates', requireAuth, fxRatesRouter);
+
   app.use('/v1/rate-proposals', requireAuth, rateProposalsRouter);
   app.use('/v1/commercial-agreements', requireAuth, commercialAgreementsRouter);
 

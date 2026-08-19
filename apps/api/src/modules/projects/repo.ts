@@ -23,6 +23,7 @@ interface ProjectRow {
   name: string;
   status: ProjectStatus;
   client_visible: boolean;
+  reporting_currency: string;
   starts_on: string | null;
   ends_on: string | null;
   notes: string | null;
@@ -40,6 +41,7 @@ function toProjectView(r: ProjectRow): ProjectView {
     name: r.name,
     status: r.status,
     clientVisible: r.client_visible,
+    reportingCurrency: r.reporting_currency,
     startsOn: r.starts_on,
     endsOn: r.ends_on,
     notes: r.notes,
@@ -50,7 +52,7 @@ function toProjectView(r: ProjectRow): ProjectView {
 
 const PROJECT_SELECT = `
   select p.id, p.owner_company_id, p.client_company_id, cc.name as client_company_name,
-         p.engagement_id, p.name, p.status, p.client_visible,
+         p.engagement_id, p.name, p.status, p.client_visible, p.reporting_currency,
          to_char(p.starts_on, 'YYYY-MM-DD') as starts_on,
          to_char(p.ends_on, 'YYYY-MM-DD') as ends_on,
          p.notes, p.created_at, p.updated_at
@@ -84,8 +86,10 @@ export async function createProject(
 ): Promise<ProjectView> {
   const row = await queryOne<{ id: string }>(
     `insert into projects (owner_company_id, client_company_id, engagement_id, name, status,
-                           client_visible, starts_on, ends_on, notes)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9) returning id`,
+                           client_visible, starts_on, ends_on, notes, reporting_currency)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,
+             coalesce($10, (select currency from companies where id = $1)))
+     returning id`,
     [
       ownerCompanyId,
       input.clientCompanyId,
@@ -96,6 +100,7 @@ export async function createProject(
       input.startsOn,
       input.endsOn,
       input.notes,
+      input.reportingCurrency ?? null,
     ]
   );
   return (await getProject(ownerCompanyId, row!.id))!;

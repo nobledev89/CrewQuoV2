@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import {
-  DEFAULT_CURRENCY,
   type PortalProjectDetail,
   type PortalProjectView,
 } from '@crewquo/shared';
@@ -10,7 +9,6 @@ import { AppError } from '../../http/errors';
 import { param } from '../../http/params';
 import { canReadPortal, type EngagementEdge } from '../../authorization/policies';
 import { findEngagementByPair } from '../engagements/repo';
-import { findCompanyById } from '../companies/repo';
 import { hasFeature } from '../entitlements/guards';
 import { getAuditSettings } from '../audit/repo';
 import { getPortalLineItems, getPortalProject, listPortalProjects } from './repo';
@@ -57,7 +55,11 @@ portalRouter.get(
     const found = await getPortalProject(ctx.companyId, param(req, 'id'));
     // Unpublished, or not this client's: both are "no such project" from here.
     if (!found) throw new AppError('NOT_FOUND', 'Project not found');
-    const { ownerCompanyId, ...project } = found;
+    // **This destructure is the client boundary.** Everything left in `project`
+    // is sent to the client verbatim, so every owner-side field the repo attaches
+    // must be named here — `reportingCurrency` reached a client payload once,
+    // caught by the e2e, precisely because it was not.
+    const { ownerCompanyId, reportingCurrency, ...project } = found;
 
     const edge: EngagementEdge = {
       clientCompanyId: ctx.companyId,
@@ -75,6 +77,7 @@ portalRouter.get(
         id: project.id,
         ownerCompanyId,
         clientCompanyId: ctx.companyId,
+        reportingCurrency,
       });
 
     // Comment/trail toggles live on the edge; a project without one shows defaults.
@@ -84,11 +87,13 @@ portalRouter.get(
         : await findEngagementByPair(ctx.companyId, ownerCompanyId);
     const settings = engagement ? await getAuditSettings(engagement.id) : null;
     const ownerHasNotes = await hasFeature(ownerCompanyId, 'client_portal_notes');
-    const owner = await findCompanyById(ownerCompanyId);
 
     const body: PortalProjectDetail = {
       project,
-      currency: owner?.currency ?? DEFAULT_CURRENCY,
+      // The project's own unit, not the owner company's live column: a company
+      // that changes currency must not restate what a client was already shown
+      // for a project that has closed (§3.3 decision #5).
+      currency: reportingCurrency,
       lineItems,
       timeTotalCents,
       expenseTotalCents,

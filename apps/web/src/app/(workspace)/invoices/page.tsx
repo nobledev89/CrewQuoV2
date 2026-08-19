@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import type { InvoiceView, ProjectView } from '@crewquo/shared';
+import { TAX_IS_MANUAL_NOTICE, type InvoiceView, type ProjectView } from '@crewquo/shared';
 import {
   Badge,
   Button,
@@ -257,7 +257,7 @@ function InvoiceDetail({ invoice, editable, onChange, onDeleted }: {
           </form>
           <Row between>
             <Row>
-              <Field label={`Tax (${invoice.currency})`}><Input type="number" min="0" step="0.01" value={tax} onChange={(e) => setTax(e.target.value)} /></Field>
+              <Field label={`Tax (${invoice.currency})`} hint={TAX_IS_MANUAL_NOTICE}><Input type="number" min="0" step="0.01" value={tax} onChange={(e) => setTax(e.target.value)} /></Field>
               <Button variant="secondary" disabled={busy} onClick={() => void act(() => api.updateInvoice(ctx.accessToken, ctx.companyId, invoice.id, { taxCents: Math.round(Number(tax) * 100) }))}>Save tax</Button>
             </Row>
             <Row>

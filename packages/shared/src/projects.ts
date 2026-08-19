@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { assignmentAcceptanceSchema, projectStatusSchema } from './enums';
+import { conversionGapSchema } from './money';
 
 /**
  * Projects, assignments & the server-computed summary (CREWQUO_V2_PLAN.md §3.4, §7).
@@ -18,6 +19,14 @@ export const projectViewSchema = z.object({
   name: z.string(),
   status: projectStatusSchema,
   clientVisible: z.boolean(),
+  /**
+   * The single unit this project's cost/bill/margin are reported in (§3.3
+   * decision #5). Snapshotted from the owner company when the project is created
+   * rather than read live, so changing the company currency next year cannot
+   * silently restate a project that closed last year. Immutable once the project
+   * holds committed money — see `reportingCurrencyPinRefusal`.
+   */
+  reportingCurrency: z.string().regex(/^[A-Z]{3}$/),
   startsOn: isoDate.nullable(),
   endsOn: isoDate.nullable(),
   notes: z.string().nullable(),
@@ -32,6 +41,8 @@ export const createProjectSchema = z.object({
   engagementId: z.string().uuid().nullable().default(null),
   status: projectStatusSchema.default('ACTIVE'),
   clientVisible: z.boolean().default(false),
+  /** Omitted means "the owner company's currency" — the majority case never sets it. */
+  reportingCurrency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).optional(),
   startsOn: isoDate.nullable().default(null),
   endsOn: isoDate.nullable().default(null),
   notes: z.string().trim().max(2000).nullable().default(null),
@@ -45,6 +56,7 @@ export const updateProjectSchema = z
     engagementId: z.string().uuid().nullable(),
     status: projectStatusSchema,
     clientVisible: z.boolean(),
+    reportingCurrency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/),
     startsOn: isoDate.nullable(),
     endsOn: isoDate.nullable(),
     notes: z.string().trim().max(2000).nullable(),
@@ -99,6 +111,11 @@ export type ProviderRollup = z.infer<typeof providerRollupSchema>;
  */
 export const projectSummarySchema = z.object({
   projectId: z.string().uuid(),
+  /**
+   * The project's reporting currency — every figure below is in this unit. Read
+   * from `projects.reporting_currency` rather than the owner company's live
+   * column, so a company that changes currency does not restate closed projects.
+   */
   currency: z.string(),
   approvedTimeLogs: z.number().int(),
   approvedExpenses: z.number().int(),
@@ -109,5 +126,15 @@ export const projectSummarySchema = z.object({
   marginCents: z.number().int().nullable(),
   marginPct: z.number().nullable(),
   byProvider: z.array(providerRollupSchema),
+  /**
+   * Money this project holds that could not be reported, because no recorded
+   * exchange rate covers it (§41.1 — CrewQuo never estimates a rate).
+   *
+   * A non-empty list means the totals above are **incomplete, and knowingly so**.
+   * The alternative — folding an unconvertible amount in at zero, or quietly
+   * dropping it — would produce a total that looks complete and is not, which is
+   * the one outcome the money boundary exists to prevent.
+   */
+  conversionGaps: z.array(conversionGapSchema).default([]),
 });
 export type ProjectSummary = z.infer<typeof projectSummarySchema>;

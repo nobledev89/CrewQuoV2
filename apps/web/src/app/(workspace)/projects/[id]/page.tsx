@@ -94,7 +94,11 @@ function ProjectDetail() {
     [ctx?.companyId, id]
   );
 
-  const currency = summary.data?.currency ?? activeMembership?.currency ?? 'USD';
+  // The project's reporting currency, which is what the summary is denominated in
+  // (§3.3 decision #5). The project row is the fallback rather than the company,
+  // because a company that changed currency must not relabel a closed project.
+  const currency =
+    summary.data?.currency ?? project.data?.reportingCurrency ?? activeMembership?.currency ?? 'USD';
   // In the URL so a section is linkable and survives a reload — "look at the expenses on
   // Pier 9" should be a link, not an instruction to click twice.
   const [section, setSection] = useUrlQuery('section');
@@ -255,6 +259,21 @@ function SummaryPanel({
 
   return (
     <>
+      {s && s.conversionGaps.length > 0 ? (
+        <Notice>
+          <strong>Some money on this project is not in these totals.</strong> It was agreed in a
+          currency this project does not report in, and no recorded exchange rate covers it:{' '}
+          {s.conversionGaps
+            .map(
+              (g) =>
+                `${g.recordCount} ${g.recordCount === 1 ? 'record' : 'records'} in ${g.baseCurrency}, earliest ${g.earliestDate}`
+            )
+            .join('; ')}
+          . CrewQuo never estimates a rate, so those figures are left out and named here rather
+          than guessed. Record a rate in Settings to include them.
+        </Notice>
+      ) : null}
+
       {s && s.billCents === null && s.totalCostCents > 0 ? (
         <Notice>
           This project has cost but no billable total. Either it has no client, or no BILL rate
@@ -677,6 +696,7 @@ function EditPanel({
   const [endsOn, setEndsOn] = useState(project.endsOn ?? '');
   const [notes, setNotes] = useState(project.notes ?? '');
   const [clientVisible, setClientVisible] = useState(project.clientVisible);
+  const [reportingCurrency, setReportingCurrency] = useState(project.reportingCurrency);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -687,7 +707,8 @@ function EditPanel({
     (startsOn || null) !== project.startsOn ||
     (endsOn || null) !== project.endsOn ||
     (notes.trim() || null) !== project.notes ||
-    clientVisible !== project.clientVisible;
+    clientVisible !== project.clientVisible ||
+    reportingCurrency.toUpperCase() !== project.reportingCurrency;
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
@@ -705,6 +726,9 @@ function EditPanel({
         ...((endsOn || null) !== project.endsOn ? { endsOn: endsOn || null } : {}),
         ...((notes.trim() || null) !== project.notes ? { notes: notes.trim() || null } : {}),
         ...(clientVisible !== project.clientVisible ? { clientVisible } : {}),
+        ...(reportingCurrency.toUpperCase() !== project.reportingCurrency
+          ? { reportingCurrency: reportingCurrency.toUpperCase() }
+          : {}),
       });
       setSaved(true);
       onSaved();
@@ -761,6 +785,18 @@ function EditPanel({
             <Input type="date" value={endsOn} onChange={(e) => setEndsOn(e.target.value)} />
           </Field>
         </div>
+
+        <Field
+          label="Reporting currency"
+          hint="The unit every cost, bill and margin figure on this project is shown in. Owner or admin only, and fixed once the project holds approved work or a live invoice."
+        >
+          <Input
+            value={reportingCurrency}
+            onChange={(e) => setReportingCurrency(e.target.value.toUpperCase().slice(0, 3))}
+            maxLength={3}
+            required
+          />
+        </Field>
 
         <Field label="Notes">
           <Input value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={2000} />

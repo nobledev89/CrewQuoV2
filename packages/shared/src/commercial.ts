@@ -140,24 +140,36 @@ export function isRetroactive(effectiveFrom: string, today: string): boolean {
 // ── Money boundary (§3.3, and the Phase 6 bullet that follows this one) ────────
 
 /**
- * Why these two currencies cannot meet yet, or null when they are the same.
+ * Why this schedule's currency cannot be accepted, or null when it can.
  *
- * CrewQuo holds no exchange rate anywhere (decision #5) and margin must never
- * subtract unlike units (§41). The proposal *carries* a currency so that the
- * agreement records its own unit, but until the money-boundary work lands — the
- * project reporting currency plus a frozen FX snapshot — an unlike currency is
- * refused rather than silently treated as equivalent.
+ * **This used to be an outright refusal of anything unlike, and is now a
+ * condition.** CrewQuo still holds no exchange rate of its own and margin must
+ * never subtract unlike units (§41) — but since the money boundary landed, a
+ * company that genuinely trades across currencies can record a rate with its
+ * source, and an unlike schedule becomes reportable rather than impossible.
+ *
+ * `hasRate` is passed in rather than looked up here so this stays pure: the
+ * caller resolves whether a rate covers `effectiveFrom` using `pickFxRate`, and
+ * the decision itself is unit-tested without a database.
+ *
+ * The refusal names the exact missing row, because "unlike currencies are not
+ * supported" is no longer true and was never actionable.
  */
-export function currencyBoundaryRefusal(
-  proposalCurrency: string,
-  hiringCompanyCurrency: string
-): string | null {
-  if (proposalCurrency === hiringCompanyCurrency) return null;
+export function currencyBoundaryRefusal(args: {
+  proposalCurrency: string;
+  hiringCompanyCurrency: string;
+  effectiveFrom: string;
+  hasRate: boolean;
+}): string | null {
+  if (args.proposalCurrency === args.hiringCompanyCurrency) return null;
+  if (args.hasRate) return null;
   return (
-    `This schedule is in ${proposalCurrency} but the hiring company works in ` +
-    `${hiringCompanyCurrency}. CrewQuo holds no exchange rate, so approving it ` +
-    `would mix units in every cost and margin figure. Unlike currencies need the ` +
-    `project reporting currency and frozen FX snapshot that are still to be built.`
+    `This schedule is in ${args.proposalCurrency} but the hiring company works in ` +
+    `${args.hiringCompanyCurrency}, and no exchange rate covers ` +
+    `${args.effectiveFrom}. CrewQuo never estimates a rate, so approving this ` +
+    `would mix units in every cost and margin figure. Record a ` +
+    `${args.proposalCurrency} to ${args.hiringCompanyCurrency} rate with its ` +
+    `source, then submit again.`
   );
 }
 

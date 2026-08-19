@@ -58,6 +58,8 @@ async function loadDerivedItems(args: {
   projectId: string;
   ownerCompanyId: string;
   clientCompanyId: string;
+  /** The unit this invoice is denominated in — the project's reporting currency. */
+  invoiceCurrency: string;
   only?: { sourceType: 'TIME_LOG' | 'EXPENSE'; sourceId: string };
   runner: Queryable;
 }): Promise<DerivedItem[]> {
@@ -105,10 +107,11 @@ async function loadDerivedItems(args: {
   const labelRules = await getEffectiveTimeframeDefinitions(args.ownerCompanyId, args.runner);
   const items: DerivedItem[] = [];
   const missingRateIds: string[] = [];
+  const unlikeCurrencies = new Set<string>();
   for (const log of logs) {
     const hoursRegular = Number(log.hours_regular);
     const hoursOt = Number(log.hours_ot);
-    const amount = await resolveBillCentsForLog({
+    const bill = await resolveBillCentsForLog({
       ownerCompanyId: args.ownerCompanyId,
       clientCompanyId: args.clientCompanyId,
       roleId: log.role_id,
@@ -119,18 +122,37 @@ async function loadDerivedItems(args: {
       labelRules,
       runner: args.runner,
     });
-    if (amount === null) {
+    if (bill === null) {
       missingRateIds.push(log.id);
+      continue;
+    }
+    // A BILL card may declare its own unit since 0009. The rate IS what the
+    // client is charged, so an unlike one is refused rather than converted:
+    // converting would bill them a number nobody agreed, at a rate only the
+    // owner has seen. §3.3 decision #5, money-boundary packet §4.
+    const billCurrency = bill.currency ?? args.invoiceCurrency;
+    if (billCurrency !== args.invoiceCurrency) {
+      unlikeCurrencies.add(billCurrency);
       continue;
     }
     const hours = `${hoursRegular}h${hoursOt ? ` + ${hoursOt}h OT` : ''}`;
     items.push({
       description: `${log.role_name} - ${log.work_date} (${hours})`,
       quantity: 1,
-      unitAmountCents: amount,
+      unitAmountCents: bill.amountCents,
       sourceType: 'TIME_LOG',
       sourceId: log.id,
     });
+  }
+  if (unlikeCurrencies.size > 0) {
+    throw new AppError(
+      'VALIDATION',
+      `This project is invoiced in ${args.invoiceCurrency}, but a BILL rate for some ` +
+        `approved time is in ${[...unlikeCurrencies].sort().join(', ')}. An agreed ` +
+        `charge-out rate is what the client owes, so CrewQuo will not convert it. ` +
+        `Agree the rate in ${args.invoiceCurrency}, or invoice this work separately.`,
+      { currencies: [...unlikeCurrencies].sort() }
+    );
   }
   if (missingRateIds.length > 0) {
     throw new AppError('VALIDATION', 'Some approved time cannot be billed because a BILL rate is missing', {
@@ -186,7 +208,10 @@ export async function createProjectInvoice(
       issuerCompanyId,
       counterpartyCompanyId: project.clientCompanyId,
       projectId: project.id,
-      currency: company.currency,
+      // The *project's* unit, not `company.currency`. The company column is live
+      // and an owner may change it; an invoice, its project summary and the
+      // client portal must never disagree about what unit a figure is in.
+      currency: project.reportingCurrency,
       dueAt,
       taxCents: input.taxCents,
     }, runner);
@@ -195,6 +220,7 @@ export async function createProjectInvoice(
         projectId: project.id,
         ownerCompanyId: issuerCompanyId,
         clientCompanyId: project.clientCompanyId,
+        invoiceCurrency: project.reportingCurrency,
         runner,
       });
       await insertDerivedItems(invoiceId, items, runner);
@@ -224,6 +250,7 @@ export async function addInvoiceItem(invoice: InvoiceView, input: CreateInvoiceI
         projectId: invoice.projectId,
         ownerCompanyId: invoice.issuerCompanyId,
         clientCompanyId: invoice.counterpartyCompanyId,
+        invoiceCurrency: invoice.currency,
         only: input,
         runner,
       });
@@ -245,6 +272,7 @@ export async function importApprovedInvoiceItems(invoice: InvoiceView) {
       projectId: invoice.projectId,
       ownerCompanyId: invoice.issuerCompanyId,
       clientCompanyId: invoice.counterpartyCompanyId,
+      invoiceCurrency: invoice.currency,
       runner,
     });
     await insertDerivedItems(invoice.id, items, runner);

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { rateLabelSchema, rateModeSchema, shiftTypeSchema, workStatusSchema } from './enums';
+import { fxSnapshotSchema } from './money';
 
 /**
  * Work capture: time logs, expenses, submissions (CREWQUO_V2_PLAN.md §3.4, §7).
@@ -20,6 +21,20 @@ export const resolvedRateSnapshotSchema = z.object({
   hoursRegular: z.number(),
   hoursOt: z.number(),
   costCents: z.number().int(),
+  /**
+   * The unit `costCents` is in (§3.3 decision #5). Optional because every log
+   * frozen before the money boundary has none, and those inherit the project's
+   * reporting currency — which is what they were already implicitly assumed to be.
+   */
+  currency: z.string().regex(/^[A-Z]{3}$/).optional(),
+  /**
+   * The exchange rate used to report this cost, frozen here at submit for the
+   * same reason `costCents` is: what a provider is owed must not move because
+   * somebody recorded a new rate next month. Absent when no conversion was
+   * needed, and absent when none was available — in which case the summary
+   * withholds the figure and names the gap rather than guessing.
+   */
+  fx: fxSnapshotSchema.optional(),
 });
 export type ResolvedRateSnapshot = z.infer<typeof resolvedRateSnapshotSchema>;
 

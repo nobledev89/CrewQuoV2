@@ -72,6 +72,11 @@ export const AUDIT_ACTIONS = [
   'company.trial_comped',
   'company.override_applied',
   'company.override_removed',
+  // Money boundary (§3.3 decision #5) — a rate is an input to money owed, so who
+  // recorded it is evidence, not telemetry.
+  'fx_rate.recorded',
+  'fx_rate.deleted',
+  'project.reporting_currency_set',
 ] as const;
 export const auditActionSchema = z.enum(AUDIT_ACTIONS);
 export type AuditAction = z.infer<typeof auditActionSchema>;
@@ -93,6 +98,7 @@ export const AUDIT_ENTITY_TYPES = [
   'RATE_CARD',
   'SUBSCRIPTION',
   'ENTITLEMENT_OVERRIDE',
+  'FX_RATE',
 ] as const;
 export const auditEntityTypeSchema = z.enum(AUDIT_ENTITY_TYPES);
 export type AuditEntityType = z.infer<typeof auditEntityTypeSchema>;

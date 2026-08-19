@@ -832,4 +832,71 @@ test.describe('Web core workflows', () => {
     ).toBeVisible();
     await staff.close();
   });
+
+  /*
+   * Money boundary (§3.3 decision #5, docs/operating-model/money-boundary.md).
+   *
+   * The API script proves the arithmetic and every refusal. What only a browser
+   * can prove is that the repair path is *reachable*: a figure withheld for a
+   * missing rate is useless as a design if the person who can record that rate
+   * cannot find the screen. These walk that path.
+   */
+  test('an exchange rate is recorded with the source its figures will cite', async () => {
+    await contractor.goto('/settings');
+
+    const fx = contractor.getByRole('region').filter({ hasText: 'Exchange rates' });
+    await expect(
+      contractor.getByRole('heading', { name: 'Exchange rates' })
+    ).toBeVisible();
+    // The empty state has to say who needs this, because most companies never do.
+    await expect(contractor.getByText('No exchange rates recorded')).toBeVisible();
+
+    // `Field` wraps its control, so the accessible name is the caption plus the
+    // hint. Every label here is matched loosely for that reason — see the §40
+    // label note in PROGRESS.md.
+    await contractor.getByLabel(/^From \(ISO 4217\)/).fill('GBP');
+    await expect(contractor.getByLabel(/^To \(ISO 4217\)/)).toHaveValue('USD');
+    await contractor.getByLabel(/^Rate/).fill('1.2700');
+    await contractor.getByLabel(/^As of/).fill(FUTURE_DATE);
+    await contractor.getByLabel(/^Source/).fill('ECB reference rate');
+    await contractor.getByRole('button', { name: 'Record rate' }).click();
+
+    const row = contractor.getByRole('row', { name: /GBP to USD/ });
+    await expect(row).toBeVisible();
+    await expect(row).toContainText('1.2700000000');
+    // Provenance is on the screen, not just in the database: this is the whole
+    // reason Source is a required field rather than an optional note.
+    await expect(row).toContainText('ECB reference rate');
+    await expect(row).toContainText('not yet used');
+  });
+
+  test('a rate nothing cites can be deleted from the screen', async () => {
+    await contractor.goto('/settings');
+    const row = contractor.getByRole('row', { name: /GBP to USD/ });
+    await expect(row).toBeVisible();
+
+    // Nothing cites it, so Delete is live. There is deliberately no Edit control
+    // anywhere on this row: a correction is a new rate at a later date, so a
+    // figure that already cited the old one never moves.
+    await expect(row.getByRole('button', { name: 'Edit' })).toHaveCount(0);
+    await row.getByRole('button', { name: 'Delete' }).click();
+    await expect(contractor.getByText('No exchange rates recorded')).toBeVisible();
+  });
+
+  test('a project names the currency it reports in, and says when that is fixed', async () => {
+    await contractor.goto('/projects');
+    await contractor.getByRole('link', { name: new RegExp(`Atrium refit ${RUN}`) }).click();
+    await expect(contractor).toHaveURL(/\/projects\/[0-9a-f-]{36}/);
+    await contractor.getByRole('button', { name: 'Settings' }).click();
+
+    const reporting = contractor.getByLabel(/^Reporting currency/);
+    await expect(reporting).toHaveValue('USD');
+
+    // This project already carries approved work, so its unit is pinned. The
+    // refusal has to explain itself rather than just fail.
+    await reporting.fill('EUR');
+    await contractor.getByRole('button', { name: 'Save changes' }).click();
+    await expect(contractor.getByText(/already reports money/)).toBeVisible();
+    await expect(contractor.getByText(/approved time log/)).toBeVisible();
+  });
 });

@@ -25,6 +25,7 @@ interface PortalProjectRow {
   engagement_id: string | null;
   name: string;
   status: ProjectStatus;
+  reporting_currency: string;
   starts_on: string | null;
   ends_on: string | null;
   notes: string | null;
@@ -50,7 +51,7 @@ function toPortalProjectView(r: PortalProjectRow): PortalProjectView {
 
 const PORTAL_PROJECT_SELECT = `
   select p.id, p.owner_company_id, oc.name as owner_company_name, p.engagement_id,
-         p.name, p.status,
+         p.name, p.status, p.reporting_currency,
          to_char(p.starts_on, 'YYYY-MM-DD') as starts_on,
          to_char(p.ends_on, 'YYYY-MM-DD') as ends_on,
          p.notes, p.created_at, p.updated_at
@@ -73,14 +74,23 @@ export async function listPortalProjects(
 export async function getPortalProject(
   clientCompanyId: string,
   id: string
-): Promise<(PortalProjectView & { ownerCompanyId: string }) | null> {
+): Promise<
+  (PortalProjectView & { ownerCompanyId: string; reportingCurrency: string }) | null
+> {
   const row = await queryOne<PortalProjectRow>(
     `${PORTAL_PROJECT_SELECT}
       where p.client_company_id = $1 and p.client_visible and p.id = $2`,
     [clientCompanyId, id]
   );
   if (!row) return null;
-  return { ...toPortalProjectView(row), ownerCompanyId: row.owner_company_id };
+  return {
+    ...toPortalProjectView(row),
+    ownerCompanyId: row.owner_company_id,
+    // Internal extensions, not part of `PortalProjectView`: the client is told
+    // which unit the figures are in via `PortalProjectDetail.currency`, and never
+    // learns anything more about the owner's money boundary than that.
+    reportingCurrency: row.reporting_currency,
+  };
 }
 
 interface ApprovedTimeRow {
@@ -124,6 +134,14 @@ export async function getPortalLineItems(project: {
   id: string;
   ownerCompanyId: string;
   clientCompanyId: string;
+  /**
+   * The unit this page reports in — the project's reporting currency (§3.3
+   * decision #5). A BILL card that declares a different unit makes the total
+   * incomplete rather than converted: converting here would put the owner's own
+   * exchange rate in front of their client, which the money-boundary packet §7
+   * keeps on the owner's side of the portal boundary.
+   */
+  reportingCurrency: string;
 }): Promise<PortalLineItems> {
   const timeRows = await query<ApprovedTimeRow>(
     `select t.id, t.role_id, r.name as role_name, t.shift_type,
@@ -157,7 +175,7 @@ export async function getPortalLineItems(project: {
   for (const row of timeRows) {
     const hoursRegular = Number(row.hours_regular);
     const hoursOt = Number(row.hours_ot);
-    const amountCents = await resolveBillCentsForLog({
+    const bill = await resolveBillCentsForLog({
       ownerCompanyId: project.ownerCompanyId,
       clientCompanyId: project.clientCompanyId,
       roleId: row.role_id,
@@ -167,8 +185,11 @@ export async function getPortalLineItems(project: {
       hoursOt,
       labelRules,
     });
-    if (amountCents === null) pricingComplete = false;
-    else timeTotalCents += amountCents;
+    const priced =
+      bill !== null && (bill.currency ?? project.reportingCurrency) === project.reportingCurrency;
+    const amountCents = priced ? bill.amountCents : null;
+    if (!priced) pricingComplete = false;
+    else timeTotalCents += bill.amountCents;
 
     lineItems.push({
       id: row.id,

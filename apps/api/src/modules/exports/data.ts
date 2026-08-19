@@ -1,5 +1,4 @@
 import {
-  DEFAULT_CURRENCY,
   type ProjectView,
   type ResolvedRateSnapshot,
   type ShiftType,
@@ -52,7 +51,9 @@ export async function buildProjectExportModel(args: {
     id: project.id,
     ownerCompanyId: project.ownerCompanyId,
     clientCompanyId: project.clientCompanyId,
-    currency: owner?.currency ?? DEFAULT_CURRENCY,
+    // The project's own unit — the export, the summary endpoint and the portal
+    // must never disagree about which currency a figure is in.
+    currency: project.reportingCurrency,
   });
 
   const timeRows = await query<ApprovedTimeDetailRow>(

@@ -13,5 +13,6 @@ export * from './audit';
 export * from './portal';
 export * from './invoices';
 export * from './commercial';
+export * from './money';
 export * from './workspace';
 export * from './company-creation';

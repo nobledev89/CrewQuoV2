@@ -6,6 +6,7 @@ import { Badge, Button, ErrorText, Field, Input, Notice, PageHeader, Row, Sectio
 import { Shell } from '@/components/Shell';
 import { api, ApiError } from '@/api/client';
 import { useAuth, useSessionCtx } from '@/auth/AuthProvider';
+import { FxRates } from './FxRates';
 
 /**
  * Company settings — the web surface for `PATCH /v1/companies/:id`.
@@ -101,7 +102,7 @@ function Settings() {
         </Notice>
       ) : null}
 
-      <Section title="Company" description="Rate cards inherit this currency — it is not stored per card.">
+      <Section title="Company" description="Rate cards inherit this currency unless they declare their own.">
         {loading ? (
           <p className="cq-muted">Loading…</p>
         ) : (
@@ -134,11 +135,13 @@ function Settings() {
 
               {currencyChanging ? (
                 <Notice>
-                  Changing the currency to <strong>{currency.toUpperCase()}</strong> re-labels every
-                  figure this company shows — rate cards, project costs, margins and exports. Amounts
-                  themselves are not converted: there is no exchange rate anywhere in CrewQuo, so a
-                  rate of {company?.currency} 50.00 becomes {currency.toUpperCase()} 50.00. The change
-                  is recorded in the audit trail.
+                  Changing the currency to <strong>{currency.toUpperCase()}</strong> re-labels the
+                  figures that inherit it — rate cards without a currency of their own, and any
+                  project created from now on. Amounts are not converted, so a rate of{' '}
+                  {company?.currency} 50.00 becomes {currency.toUpperCase()} 50.00.{' '}
+                  <strong>Projects that already exist keep reporting in the currency they were
+                  created with</strong>, so nothing already costed is restated. The change is
+                  recorded in the audit trail.
                 </Notice>
               ) : null}
 
@@ -153,6 +156,8 @@ function Settings() {
           </form>
         )}
       </Section>
+
+      <FxRates canEdit={canEdit} companyCurrency={company?.currency ?? null} />
     </Stack>
   );
 }

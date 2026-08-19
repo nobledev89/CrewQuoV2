@@ -24,7 +24,20 @@ import type { Queryable } from '../../db';
  * Returns null when no BILL card covers the line. Callers must surface that as
  * an incomplete total rather than folding it in as zero: a missing card means
  * "not priced yet", and silently billing 0 would understate the invoice.
+ *
+ * The result carries its **currency** as well as its amount (§3.3 decision #5).
+ * A card may declare its own unit since 0009, and a bare number would let a
+ * caller add it to a total denominated in something else — the unlike-unit
+ * addition §41 forbids. `currency` is null when the card inherits the company
+ * default, which is the case for every card written before the money boundary.
  */
+
+export interface BillLinePrice {
+  amountCents: number;
+  /** Null means "inherit the owner company's currency" (§3.3, 0009). */
+  currency: string | null;
+}
+
 export async function resolveBillCentsForLog(args: {
   ownerCompanyId: string;
   clientCompanyId: string;
@@ -35,7 +48,7 @@ export async function resolveBillCentsForLog(args: {
   hoursOt: number;
   labelRules: readonly TimeframeDefinition[];
   runner?: Queryable;
-}): Promise<number | null> {
+}): Promise<BillLinePrice | null> {
   const label = resolveRateLabel(args.shiftType, args.workDate, args.labelRules);
   const candidates = await listResolveCandidates({
     companyId: args.ownerCompanyId,
@@ -47,9 +60,12 @@ export async function resolveBillCentsForLog(args: {
   }, args.runner);
   const card = pickEffectiveCard(candidates, args.workDate, args.clientCompanyId);
   if (!card) return null;
-  return calculateCost({
-    card,
-    quantity: args.hoursRegular,
-    otHours: args.hoursOt,
-  });
+  return {
+    amountCents: calculateCost({
+      card,
+      quantity: args.hoursRegular,
+      otHours: args.hoursOt,
+    }),
+    currency: card.currency,
+  };
 }
