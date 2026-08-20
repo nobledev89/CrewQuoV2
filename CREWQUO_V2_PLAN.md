@@ -3,6 +3,7 @@
 > **Product decision:** CrewQuo v2 is one new, independent application. Its scope includes the commercial core, field operations, project evidence, asset and material tracking, sustainability, reporting, scheduling, compliance, the client experience, web and mobile. Together they define v2.
 > **Implementation status:** Phases 0–5 are built and verified, and Phase 6 has delivered the invoice and commercial-agreement foundations; the remaining Phase 6 work is tracked in `PROGRESS.md`. Existing code is implementation progress, not a product or UX constraint. Keep correct, tested domain behavior; replace or reshape APIs, navigation, screens and workflows when the unified product requires it.
 > **Relationship to v1:** v2 has no runtime connection to v1. v1 (Next.js + Firebase) may stay live while v2 is built, but it supplies neither the information architecture nor the acceptance criteria. There is no shared database, shared auth, dual-write, synchronization, parity requirement, or production-data migration in scope.
+> **Sequencing decision (owner, 2026-08-20): no further mobile implementation until the web application is complete and production-ready.** Mobile remains in v2's scope and keeps its specification (§8, §32) — what changed is *when* it is built, not whether. Every mobile build item is deferred behind the gate in §1 "Definition of web production-ready", including the Phase 7.7 field proof that used to interrupt Phase 7. **`apps/mobile` is frozen where it stands**: the ~1,000-line Expo prototype from Phases 1 and 3 stays in the repo and stays in CI so it cannot rot, and nothing is added to it. This reverses the field-validated half of decision #21; see #21 and #22 for what that costs and what protects it.
 
 ---
 
@@ -21,6 +22,7 @@ Rules that hold across the whole build:
 5. **The calculation principles in §41 are non-negotiable.** They outrank convenience, UI polish and schedule. Read them before writing a single carbon-related line.
 6. **When a genuine product decision is unspecified, stop and ask the user** rather than guessing. The open items are listed in §17 and §45; everything else is decided.
 7. **Design the application as one coherent product.** The screen inventory, purpose, data and actions are specified (§8/§9, §20, §32), while §40 sets the experience constraints. Existing web and mobile screens are references only; do not reproduce their navigation or layout by default.
+8. **🛑 Do not write mobile code (owner decision, 2026-08-20).** Everything until the §1 web production-ready gate is met is web, API, shared domain or documentation. `apps/mobile` is **frozen**: it stays in the repo and in `turbo run type-check` so it cannot rot, and nothing is added to it. If a task's output would be a file under `apps/mobile/`, it is out of scope — say so and stop, rather than doing it because §8 and §32 specify it in detail. Those sections are the specification Phase 13 will be built to, not a queue to start on. The one exception is a change needed to keep the frozen app compiling against a shared-package change, which is maintenance, not implementation.
 
 Conventions used in the DDL: every table has `id uuid primary key default gen_random_uuid()`, `created_at timestamptz not null default now()`, and `updated_at timestamptz not null default now()` unless stated otherwise. Enumerated values are `text` columns with `CHECK` constraints (easier to migrate than native enums); allowed values are listed inline. Money is stored as integer minor units (`*_cents`) unless noted. **Physical quantities are `numeric`, never integer minor units** — mass in kilograms, distance in kilometres, energy in kWh, emissions in kgCO₂e (§25.3, §41). All foreign keys are `not null` unless marked `nullable`.
 
@@ -50,6 +52,18 @@ The product is new. It is not a reskin of v1, a screen-for-screen replacement, o
 ### Definition of v2 complete
 
 The unified build is complete only when Phases 0–13 are complete: a company can onboard and subscribe; plan, staff and commercially control a project; capture time, cost, evidence, diary, assets and material outcomes; calculate traceable sustainability results; manage variations, scheduling and compliance; produce reproducible client reports and sign-off; and run the appropriate workflows through the finished web and mobile experiences. Completing the old core loop or the web shell alone is not “v2 complete.”
+
+### Definition of web production-ready — the gate mobile waits behind
+
+The 2026-08-20 sequencing decision needs a gate that can be *met* rather than argued about, so it is written as a list. **No mobile implementation work starts until every line below is true**, and reaching it is not the same thing as reaching "v2 complete" above — mobile is still owed.
+
+1. **Phases 6 through 12 are complete and verified**, each to the standard §42 already sets: every state (empty, loading, error, limit-reached, permission-denied), not only a happy path.
+2. **A paying customer can complete the whole commercial cycle unassisted** — subscribe, be charged, renew, fail a payment, cancel and be refunded — which currently blocks on the undecided merchant of record (§17).
+3. **The production-readiness items still open in Phase 6 are closed:** locale-safe date and number formatting, the WCAG 2.2 AA accessibility gate (§40, decision #29), and the public marketing and legal surfaces.
+4. **The launch-operations checklist in §42 is discharged** — backups with a *rehearsed* restore, monitoring and alerting, and the runbook.
+5. **A real company has run a real project through it end to end**, not a fixture: onboarding, rates, a subcontractor, evidence, a sustainability figure and a client-facing report.
+
+Web-only capture is the accepted consequence until then: everything the field would have done on a phone is done in a desktop or tablet browser, which is what Phase 7's desktop upload, batch metadata editing and diary editor already provide. **A tablet browser on site is the interim answer**, and it is a real one — not a promise that the phone experience is unnecessary.
 
 ---
 
@@ -700,10 +714,12 @@ Driver messages never reach the client; the envelope carries a fixed message per
 
 ---
 
-## 8. Mobile app (Expo — field workspace)
+## 8. Mobile app (Expo — field workspace) — **DEFERRED, specification retained**
 
+> **Not being built yet (owner decision, 2026-08-20).** No mobile implementation happens until the web application clears the gate in §1 "Definition of web production-ready". This section stays in full because it is the *specification* mobile will be built to, and deleting it would mean re-deciding the field product from scratch later, on a worse day, without the reasoning. `apps/mobile` is frozen at its Phase 1/3 prototype and nothing is added to it.
+>
 > Mobile is a first-class surface of the unified v2 product. Its target is the supervisor and crew member working on site, often one-handed and under time pressure. The screens currently in `apps/mobile` are an implementation prototype, not the target information architecture.
-> Web-led sequencing may be used to stabilize shared domain behavior, but mobile is not a port or a reduced web app. Phase 13 designs and validates the complete field experience against the jobs in this section and §32.
+> Mobile is not a port or a reduced web app. Phase 13 designs and validates the complete field experience against the jobs in this section and §32.
 
 `expo-router`, file-based, bottom-tab layout, **one primary action per screen**. Dependencies: `@tanstack/react-query`, `react-hook-form` + `zod`, `expo-secure-store`, `expo-notifications`, `@sentry/react-native`, `expo-updates` (OTA). Data layer: react-query against `packages/api-client`; optimistic updates on submit/approve.
 
@@ -718,7 +734,9 @@ Driver messages never reach the client; the envelope carries a fixed message per
 - `(app)/company/providers` → my subcontractors → `/providers` → add provider (gated).
 - `(app)/settings` → profile, plan/usage, sign out → `/me`, `/entitlements`.
 
-Notifications: push on submit / approve / reject, backed by the durable notification/Action Centre foundation. Resilient offline draft capture is proved in Phase 7.7 and completed across the named field workflows in Phase 13.
+Notifications: push on submit / approve / reject, backed by the durable notification/Action Centre foundation. Resilient offline draft capture is designed in Phase 7 (decision #22) and both proved and completed in Phase 13.
+
+> **What the freeze already costs, named so nobody rediscovers it as a bug.** The push *channel* is built and shipping — Expo adapter, durable delivery, per-user preferences and quiet hours (§42, Phase 6) — and with mobile frozen it has no client to deliver to. Push is therefore dead weight until Phase 13, not broken; in-product and email delivery carry every notification in the meantime, which is what the notifications packet already requires. Nothing should be removed on the strength of looking unused.
 
 ---
 
@@ -780,7 +798,7 @@ The groups are containers, not a promise to show empty pages. Project-local capa
 
 - **Render:** `render.yaml` (repo root — Render reads it nowhere else) declares the API web service + Postgres + Redis (Phase 2+). Auto-deploy from `main`.
 - **Vercel:** web app; preview deploy per PR.
-- **EAS:** mobile dev-client + store builds + OTA channels (`preview`, `production`).
+- **EAS:** mobile dev-client + store builds + OTA channels (`preview`, `production`) — **not set up during web launch preparation.** This lands in 13.9, behind the §1 production-ready gate. The EAS project itself already exists from Phase 3's push work and needs nothing done to it; web launch does not depend on a store listing.
 - **Environments:** `local` (docker-compose Postgres in `infra/`) → `staging` → `production`.
 - **Migrations:** `infra/migrations/run.ts` — a forward-only, numbered plain-SQL runner (`NNNN_name.sql`), applied in order, tracked in a `schema_migrations` table. `pnpm db:migrate` / `pnpm db:seed`.
 - **Secrets (env):** `DATABASE_URL`, `REDIS_URL`, `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `GOOGLE_CLIENT_ID`, `RESEND_API_KEY`, `R2_ACCOUNT_ID`/`R2_ACCESS_KEY_ID`/`R2_SECRET_ACCESS_KEY`/`R2_BUCKET`, `MOR_API_KEY`/`MOR_WEBHOOK_SECRET`, `SENTRY_DSN`, `APP_BASE_URL`, `API_BASE_URL`. Client-side: `EXPO_PUBLIC_API_URL`, `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_GOOGLE_CLIENT_ID`. Never commit secrets.
@@ -818,7 +836,8 @@ v2 is a **new Firebase-free product** with its own database, auth, information a
 
 - **`packages/shared` (rate engine):** exhaustive Vitest unit tests — pin every branch before any UI depends on it.
 - **API:** integration tests against a throwaway Postgres (Vitest + testcontainers, or a scratch Render DB). Authorization tests cover every v2 role, capability, company edge and client-visibility boundary. v1 rules may reveal cases worth testing, but parity is not the assertion.
-- **Mobile/web:** component tests for core flows + E2E happy-paths (Playwright web, Maestro mobile) for login → log time → approve.
+- **Web:** component tests for core flows + Playwright E2E happy-paths. This is the only client gate until the §1 production-ready gate is met.
+- **Mobile:** Maestro E2E on login → log time → approve, in 13.10. **The frozen `apps/mobile` is held to type-check only** — it stays in `turbo run type-check` so a shared-package change cannot silently break it, and it gets no new tests while nothing new is being written for it.
 - **CI gate:** lint + type-check + unit + API integration on every PR; block merge on failure.
 
 ---
@@ -869,8 +888,10 @@ The unified model makes these choices: (a) clients, contractors and subcontracto
 18. **Storage is not an outcome.** An asset in storage stays `PENDING` and is excluded from reuse/recycling/diversion numerators *and* denominators until a final destination is recorded (§25.4).
 19. **Every generated report stores a reproducible snapshot** of its numbers, factor-set versions and source record ids, plus the rendered file. Re-rendering reads the snapshot; it never recalculates (§29.4).
 20. **Waste-hierarchy and destination semantics are configurable data, not code** — the `destination_types` table carries the tier and the counts-as flags, so an org can see and adjust its own assumptions (§25.4, §39).
-21. **Web-led, field-validated delivery order.** Shared domain capabilities are built through the web workspace, but Phase 7 ends with a thin mobile field pilot for photo capture, diary entry, background retry and offline drafts. The complete mobile workspace still lands in Phase 13. This is sequencing, not product hierarchy: mobile is first-class, receives its own interaction design, and is accepted against field jobs rather than against web screens. Existing prototype screens may be replaced.
-22. **Offline capture is in scope.** The sync contract is designed before Phase 7 storage/evidence APIs harden: client-generated ids, idempotent mutations, version/conflict semantics, tombstones, device/capture/upload timestamps and resumable retry. Phase 7.7 proves the queue in the field; Phase 13 completes it for diary, evidence and assets.
+21. **Web-first delivery order; mobile waits for a production-ready web app** (owner decision, 2026-08-20, replacing the earlier "web-led, field-validated" order). Every shared domain capability is built through the web workspace, and **no mobile implementation begins until the §1 web production-ready gate is met.** The thin Phase 7 field pilot is withdrawn from Phase 7 and folded into Phase 13. This is still sequencing rather than product hierarchy — mobile keeps its own interaction design and is accepted against field jobs, not against web screens — but the sequence is now strict rather than interleaved.
+    - **What the withdrawn pilot was protecting, and what now protects it instead.** Phase 7.7 existed because capture assumptions are wrong until tested where the work happens, and because a wrong offline contract is expensive *after* the evidence APIs harden. The contract half of that is preserved: decision #22 still requires it designed in Phase 7, against the same named concerns, and it is a schema and API question that a browser can exercise. **The field half is genuinely deferred and genuinely a risk** — the first real test of one-handed capture on a bad connection now happens in Phase 13, when there is more built on top of it to change. Accepted knowingly rather than argued away.
+    - Existing prototype screens may still be replaced when Phase 13 runs; freezing them is not a commitment to them.
+22. **Offline capture is in scope, and its contract is still designed in Phase 7** — unchanged by the 2026-08-20 sequencing decision, and deliberately so. Client-generated ids, idempotent mutations, version/conflict semantics, tombstones, device/capture/upload timestamps and resumable retry are all decided *before* the Phase 7 storage/evidence APIs harden, because retrofitting them into shipped endpoints is the expense the ordering exists to avoid. What moved is only the proving: **Phase 13 both proves the queue in the field and completes it** for diary, evidence and assets. A contract designed and never exercised on a real connection is a contract with unknown parts, and Phase 13 must budget for finding them rather than assume the design held.
 23. **Cross-company PAY rates are proposed, not self-authorised.** A provider manager drafts a PAY schedule for its direct engagement; the hiring/main company approves or rejects it. Submission freezes the proposal; approval creates immutable effective-dated rate-card versions. Every later change is a successor proposal. BILL rates remain private to their owner. The main company retains a direct-entry path for externally negotiated schedules, with the same version and audit history.
 24. **Durable asynchronous work has one foundation.** MoR webhooks, email/push, file derivatives and mobile retry use a transactional outbox, signed/deduplicated webhook inbox, durable jobs, exponential retry, dead-letter state and operator replay. In-process timers are not a production delivery guarantee.
 25. **Decision evidence is transactional.** Financial/legal transitions—rate approval, invoice issue, report generation and sign-off—store actor, decision, immutable payload/hash and timestamps in the same transaction as the state change. `recordAudit` may remain a best-effort read projection; it is never the only evidence that the decision occurred.
@@ -903,7 +924,7 @@ The unified model makes these choices: (a) clients, contractors and subcontracto
 
 **The web workspace is built (Phase 5, 2026-08-17):** two route groups behind one auth provider, and every workflow reachable — auth and profile, plan and usage, engagements, providers and clients, members (invite, re-role, suspend, remove), projects with server-computed margin, work entry and bulk approval at scale, the client portal, the audit viewer, and the super-admin console over both plans and individual companies. `apps/mobile` remains a prototype proving parts of the core loop; Phase 13 designs the field product.
 
-**Phase 6 is in progress:** invoices, commercial agreements/rate proposals, the three-view workspace, guarded company creation, the durable-delivery substrate and the money boundary are built. MoR handlers, older-domain outbox/idempotency adoption, notifications, public/legal surfaces and launch operations remain. The 2026-08-18 planning pass also added transactional decision evidence, project-scoped capabilities, privacy/retention defaults and an early Phase 7.7 mobile field pilot. Phase 13 still completes the purpose-built mobile workspace.
+**Phase 6 is in progress:** invoices, commercial agreements/rate proposals, the three-view workspace, guarded company creation, the durable-delivery substrate and the money boundary are built. MoR handlers, older-domain outbox/idempotency adoption, notifications, public/legal surfaces and launch operations remain. The 2026-08-18 planning pass also added transactional decision evidence, project-scoped capabilities and privacy/retention defaults. **Its early Phase 7.7 mobile field pilot was withdrawn on 2026-08-20** by the owner decision at the top of this document: no mobile implementation until web is production-ready, and Phase 13 is the only mobile phase.
 
 **Verification.** The current Phase 6 build has 367 unit tests, focused type-aware linting, all five packages type-checking (including the 3,300+ line API verification script), a clean production build, 508 live-Postgres checks and 29 browser tests. Coverage includes the earlier core loop plus commercial agreements, the complete company-creation packet, unconditional audit recording, strongly consistent entitlements, atomic company/outbox creation, audited dead-letter replay and the money boundary's conversion, freezing, withholding and pinning rules. Re-run every gate at the end of each slice.
 
@@ -946,7 +967,7 @@ What they share: the client increasingly wants proof — photographic evidence o
 - **Not a certified carbon accounting platform.** CrewQuo calculates and discloses; it does not verify. §27.5 and §41 govern what may and may not be claimed.
 - **No bundled emission factor dataset** until redistribution terms are confirmed (§45).
 - **No item-level tracking requirement.** Bulk lines are the default; item-level is opt-in per line (§25.2).
-- **Offline capture is in scope**, but CrewQuo is not a general offline replica of the whole back office. Phase 7.7 proves offline drafts/retry for field capture; Phase 13 completes only the named mobile workflows (§32, §42).
+- **Offline capture is in scope**, but CrewQuo is not a general offline replica of the whole back office. Phase 7 settles the draft/retry *contract* (decision #22); Phase 13 both proves it on a device and completes it for the named mobile workflows (§32, §42).
 - **Not a replacement for a client's own ESG reporting system.** CrewQuo produces a project/client report and the underlying data; integration/export to third-party ESG platforms is later.
 
 ### 19.5 Operating model & planning gates
@@ -2004,7 +2025,7 @@ create index on schedule_assignments (project_id, starts_at);
 
 ## 32. Supervisor mobile experience
 
-> **Proved as a thin field slice in Phase 7.7, completed in Phase 13** (decision #21). This is a purpose-designed field experience, not a copy of the web workspace.
+> **Deferred with the rest of mobile (owner decision, 2026-08-20); delivered in Phase 13, which is gated on web being production-ready (§1).** The thin Phase 7.7 slice that would have proved part of this early is withdrawn. Specification retained: this is a purpose-designed field experience, not a copy of the web workspace, and that is a harder thing to re-derive later than to keep written down now.
 
 A separate, simplified project screen for supervisors — **not** the desktop admin UI shrunk down. New expo-router group `apps/mobile/app/(app)/site/`.
 
@@ -2025,7 +2046,7 @@ TODAY
 - **Add Photo** is reachable in one tap from the site screen and defaults to camera capture.
 - **Complete Day** closes the diary (§23) and prompts for anything obviously missing: no photos today, assets with no destination, unsubmitted time.
 - Everything posts to the **same endpoints** the web app uses. No mobile-only write path, no divergent validation.
-- Offline capture is in scope: Phase 7.7 validates drafts, retry and conflict recovery in low-connectivity conditions; Phase 13 extends that contract across the complete field workflow.
+- Offline capture is in scope: Phase 7 settles the draft, retry and conflict contract against the web client, and Phase 13 is where it first meets low connectivity on a real device — then extends across the complete field workflow.
 
 ---
 
@@ -2305,11 +2326,13 @@ When a product decision and one of these principles conflict, the principle wins
 
 This is one v2 roadmap. Each phase is independently demoable and verified end to end before the next begins. The sequence manages implementation risk; every phase below belongs to the new application.
 
-**Current position.** Phase 4's domain and **export engine** are complete (2026-08-17); §29 builds on `apps/api/src/modules/exports/model.ts`, the single place a figure is formatted. **Phase 5 and its measured Phase 5.5 information-architecture/density close-out are complete** (2026-08-18). **Phase 6 is in progress**: project invoicing, commercial agreements/rate proposals, the three-view workspace, guarded company creation, the durable-delivery substrate and the money boundary are built; older-domain outbox adoption, notifications, legal/public surfaces and launch operations remain, and the payment system is deferred to the end of the phase with its provider undecided (2026-08-19). The 2026-08-18 planning pass also adds the operating-model foundations in §19.5 and a Phase 7.7 field-validation checkpoint before the later domains expand.
+**Current position.** Phase 4's domain and **export engine** are complete (2026-08-17); §29 builds on `apps/api/src/modules/exports/model.ts`, the single place a figure is formatted. **Phase 5 and its measured Phase 5.5 information-architecture/density close-out are complete** (2026-08-18). **Phase 6 is in progress**: project invoicing, commercial agreements/rate proposals, the three-view workspace, guarded company creation, the durable-delivery substrate and the money boundary are built; older-domain outbox adoption, notifications, legal/public surfaces and launch operations remain, and the payment system is deferred to the end of the phase with its provider undecided (2026-08-19). The 2026-08-18 planning pass also adds the operating-model foundations in §19.5. **Its Phase 7.7 field-validation checkpoint was withdrawn on 2026-08-20**: mobile implementation now waits for the §1 web production-ready gate, so Phases 7–12 run without a phone in them and Phase 13 absorbs the validation.
 
-### Web-led sequencing (decision #21)
+### Web-first sequencing (decision #21, revised 2026-08-20)
 
-> Phases 5–12 establish the complete web workspace and shared domain. Phase 7.7 deliberately interrupts that sequence with a **thin mobile field proof**—photo, diary, background retry and offline drafts—because capture assumptions must be tested where the work happens. Phase 13 delivers the complete mobile field workspace.
+> Phases 5–12 establish the complete web workspace and shared domain, and **they run uninterrupted.** The Phase 7.7 mobile field proof that used to sit between Phases 7 and 8 is withdrawn and folded into Phase 13; nothing in Phases 5–12 requires a phone.
+>
+> **Phase 13 does not start until the §1 web production-ready gate is met** — a longer list than "Phase 12 is done", because it includes a working payment path, the accessibility and locale gates, discharged launch operations and one real company running one real project. Phase 13 is the first mobile work of any kind, and it now carries the field validation the withdrawn proof would have done earlier.
 >
 > This does not make mobile a port. Existing mobile code may be reused or replaced, and the field experience is designed for field jobs, device capabilities, intermittent connectivity and one-handed use.
 >
@@ -2357,9 +2380,9 @@ Create the new product experience described in §9 and §20. The existing API ca
 - **7.4 Project documents** (§24).
 - **7.5 Site diary** (§23) with attendance, Close Day and post-close revisions.
 - **7.6 Web UI:** the project section shell (§20) with these five sections — evidence gallery/timeline/filters with drag-and-drop batch upload, document manager, diary editor with Close Day. Desktop upload and batch metadata editing carry this slice.
-- **7.7 Thin mobile field validation:** establish the mobile shell/project context, direct photo capture, a basic diary entry, background upload retry and the offline draft queue contract (client ids, idempotency, expected versions, conflicts and tombstones). Run the acceptance script on a real site/low-connectivity simulation before Phase 8. This is a proof slice, not the complete Phase 13 product.
+- **7.7 Offline draft queue — the contract, not the phone** (revised 2026-08-20). The mobile half of the old 7.7 is withdrawn to Phase 13 by the sequencing decision. **The contract stays here, because decision #22's reason for putting it here has not changed:** client ids, idempotency, expected versions, conflict semantics, tombstones and device/capture/upload timestamps must be settled before these evidence APIs harden, not retrofitted into shipped endpoints afterwards. Specify it, implement it server-side, and exercise it from the browser — two tabs racing one record, a replayed mutation, a stale expected-version, a tombstone against a row somebody else edited. **What cannot be proved here, and is now owed by Phase 13:** a real camera, a real bad connection and a real one-handed user.
 - **Privacy/lifecycle defaults:** evidence private by default with per-project default + batch publish; GPS/EXIF location off unless explicitly enabled with purpose/notice/retention; checksum/MIME/malware controls; artifact-class R2 lifecycle + legal hold; report/sign-off evidence retained with its snapshot.
-- *Milestone: a full day's evidence—photos, documents and a closed diary entry—captured on desktop and through the thin phone flow, survives offline/retry, and is organised, attributed and selectively published.*
+- *Milestone: a full day's evidence—photos, documents and a closed diary entry—captured on desktop or a tablet browser, surviving a replayed write and a conflicting one, and organised, attributed and selectively published. The phone flow left this milestone on 2026-08-20.*
 
 ### Phase 8 — Assets & materials
 - `asset_types` (seeded, no invented weights), `project_assets` with bulk lines and weight provenance (§25.2, §25.3).
@@ -2402,17 +2425,22 @@ Create the new product experience described in §9 and §20. The existing API ca
 
 ### Phase 13 — Complete mobile field experience
 
-Build and validate the complete purpose-designed mobile workspace against the field jobs in §8 and §32. Phase 7.7 has already proved the shell, evidence/diary capture and offline contract; this phase expands and productionises them. The information architecture and interactions remain mobile decisions—not copies of web screens.
+> **Gated, and it is now the only mobile phase there is** (owner decision, 2026-08-20). Phase 13 does not start until every line of §1 "Definition of web production-ready" is true. Until then no mobile code is written, and `apps/mobile` stays frozen at its Phase 1/3 prototype — in the repo, in CI, untouched.
+>
+> **This phase absorbed the withdrawn Phase 7.7.** The earlier plan let 13.1, 13.3 and 13.8 lean on a proof that had already happened; they cannot now, so this phase carries its own first contact with a real device. Phase 13 is therefore larger and riskier than the version that assumed a pilot, and any estimate should say so rather than inherit the old shape.
 
-- **13.1 Complete the mobile product shell:** production navigation, authentication, company/project context, design system, accessibility and resilient API state, building on the Phase 7.7 proof.
+Build and validate the complete purpose-designed mobile workspace against the field jobs in §8 and §32. The information architecture and interactions remain mobile decisions—not copies of web screens.
+
+- **13.0 Field validation, before the product is built on top of it** — the withdrawn 7.7, run as this phase's opening step rather than as its assumption: the shell, project context, one direct photo capture, one diary entry, background upload retry, and the Phase 7 draft-queue contract exercised on a real site with a real bad connection. Whatever it disproves is cheapest to change here, before 13.2–13.7 are written against it.
+- **13.1 Complete the mobile product shell:** production navigation, authentication, company/project context, design system, accessibility and resilient API state. **Includes the 401 refresh-and-retry the web client got on 2026-08-20** — mobile refreshes on launch and never again and its client has no retry path, so a supervisor who leaves the app open on site meets exactly the failure web no longer has.
 - **13.2 Supervisor site experience** (§32) — the `(app)/site/` group and its 11 actions. The flagship field screen.
-- **13.3 Complete evidence capture** — multi-shot, batch metadata, project/date/location pre-fill and production background upload/recovery (§22.3), building on Phase 7.7.
+- **13.3 Complete evidence capture** — multi-shot, batch metadata, project/date/location pre-fill and production background upload/recovery (§22.3).
 - **13.4 Site diary** on mobile — write, attendance confirm, Close Day with its missing-data prompts (§23).
 - **13.5 Assets & waste** — Assets Removed and Waste/Reuse flows, destination assignment on site (§25).
 - **13.6 Read-and-confirm surfaces** — schedule (not drag, §31), project sections that make sense on a phone (§20), timeline, compliance flags.
 - **13.7 Sign-off capture** — signature on glass, the one interaction that is genuinely better on a tablet than a desktop (§34).
-- **13.8 Complete offline capture** — extend the Phase 7.7 draft queue and conflict UX across diary, evidence and assets; prove recovery after app/process/device interruption.
-- **13.9 EAS store submission** — dev-client, production builds, OTA channels and store listings for the complete field app.
+- **13.8 Complete offline capture** — implement the Phase 7 draft queue and its conflict UX across diary, evidence and assets on the device; prove recovery after app, process and device interruption.
+- **13.9 EAS store submission** — dev-client, production builds, OTA channels and store listings for the complete field app. **Push gets its first real client here**; the server-side channel has been shipping without one since Phase 6.
 - **13.10 Maestro E2E** on the supervisor day: start shift → photo → diary → assets → complete day.
 - *Milestone: a supervisor runs an entire site day from a phone through a coherent field product that shares data and rules with the web workspace.*
 
@@ -2482,7 +2510,7 @@ Exact localized prices and the merchant-of-record choice plus its seller/subscri
 
 - **Enabling emissions:** the organization selects a supported methodology; CrewQuo applies and discloses that methodology instead of silently forcing one universal deduction rule.
 - **Displacement:** defaults to `UNKNOWN`, never 100%. A claim requires an explicit, attributable assumption.
-- **Offline:** in scope. Design the sync contract before Phase 7 APIs harden, validate it in Phase 7.7 and complete it across field workflows in Phase 13.
+- **Offline:** in scope. Design the sync contract before Phase 7 APIs harden — still Phase 7, unchanged by the 2026-08-20 sequencing decision — then validate it on a device and complete it across field workflows in Phase 13.
 - **Evidence visibility:** private by default, with a per-project default and deliberate batch publication to clients.
 - **GPS/EXIF location:** off by default; enable only with a stated purpose, notice, access rule and retention period.
 - **Evidence retention:** lifecycle by artifact class and plan, with legal hold; evidence referenced by an issued report or sign-off remains addressable with that immutable snapshot.
