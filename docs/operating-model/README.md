@@ -18,6 +18,7 @@ heading is an unasked question, which is the failure mode §19.5 exists to preve
 | Company ownership & creation — the first-company allowance, additional-company approval, duplicate routing, trial eligibility | [company-creation.md](./company-creation.md) | Phase 6 |
 | Durable delivery — transactional events/jobs, inbound webhooks, retry, dead letters and replay | [durable-delivery.md](./durable-delivery.md) | Phase 6 |
 | Money identity — one currency per company, the project label snapshot, its pin and the tax-compliance gate | [money-boundary.md](./money-boundary.md) | Phase 6 |
+| Observability & data lifecycle — request/tenant/job correlation, the scheduler, error tracking, what a customer may export, what deletion does to a cross-tenant record, and the recovery promise | [observability-data-lifecycle.md](./observability-data-lifecycle.md) | 6 |
 | Notifications & the Action Centre — the durable per-recipient projection, channels, quiet hours, delivery evidence | [notifications.md](./notifications.md) | Phase 6 |
 | Time & time zones — company/project IANA zones, instant-vs-date, DST, date-bound rules | [time.md](./time.md) | Phase 6 |
 
@@ -46,6 +47,33 @@ It also earned its timing the way `money-boundary.md` did. Surveying `app.ts` to
 answer §10 is what found the wide-open CORS and the absent login rate limit — neither
 of which is in the §42 bullet the packet was written for, and the second of which is
 the most severe hole in the product.
+
+`observability-data-lifecycle.md` is the clearest case yet for writing the packet
+before the code, and it did not have to look far. It was written because
+`access.md` §13.3 **refused** platform support access — no impersonation, no
+per-tenant operator read — on the strength of one following sentence: *"a customer
+problem is diagnosed from audit rows and logs."* Surveying whether that sentence was
+true is the whole of its §0, and it is not: an unhandled error is logged as a bare
+stack trace with no request, no tenant and no user, and there is no correlation id
+anywhere in the API. So the support model the access packet committed to does not
+exist yet.
+
+Answering §9's "what does the operator see when this fails" is what found the more
+serious thing. Three deferred jobs exist and are deliberately one-shot, on the
+correct reasoning that an external scheduler restarts a dead job where a
+`setInterval` dies with its process — and **nothing schedules them**, in
+`render.yaml` or anywhere else. Deployed, the outbox never drains, so no
+notification is ever delivered, and the audit retention customers are sold is
+enforced by nothing. That is the same fault `workers.cli.ts` was written to fix one
+layer down; the caller got built and the thing that calls the caller did not. It is
+step 1 of the build order and needs no decision from anybody, which is why the
+packet says so rather than waiting to be adopted.
+
+Its §13 is open. Four questions, and the load-bearing one is what deletion does to
+an evidence row that belongs to two tenants at once: a subcontractor's time log is
+also the hiring company's proof of an invoiced hour, so hard deletion is a
+data-integrity attack anybody can run by asking politely, and deleting nothing
+makes the promise a lie.
 
 `money-boundary.md` is the same rule applied twice over: the money boundary
 reopened **rates** and **invoices** together, so it was written before the

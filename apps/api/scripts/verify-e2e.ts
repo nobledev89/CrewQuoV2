@@ -4737,8 +4737,23 @@ async function main(): Promise<void> {
   // 4 ── Neither refusal may say which one it was. "Unknown key id" would tell an
   // attacker when a guess had named a real key — the same oracle rule §12.3
   // applies to the sign-in surface, applied here to the ring.
+  //
+  // Compared without the correlation id, which is per-request and differs on every
+  // call by design. This assertion originally compared whole bodies and caught the
+  // change the moment request correlation shipped, which is the check working: the
+  // question it has to answer is whether the *reason* leaked, and a reference that
+  // is a fresh uuid every time carries no reason. Narrowed to the two fields that
+  // could — the code and the sentence — rather than relaxed.
+  const refusalShape = (body: any) => stable({
+    code: body?.error?.code,
+    message: body?.error?.message,
+  });
   eq('...and the two refusals are indistinguishable, so the ring is not an oracle',
-    stable(unknownKid.json), stable(forgedUnderRealKid.json));
+    refusalShape(unknownKid.json), refusalShape(forgedUnderRealKid.json));
+  check('...with a reference each, which differs by request and says nothing',
+    typeof unknownKid.json?.error?.requestId === 'string' &&
+      unknownKid.json?.error?.requestId !== forgedUnderRealKid.json?.error?.requestId,
+    { a: unknownKid.json?.error?.requestId, b: forgedUnderRealKid.json?.error?.requestId });
 
   // 5 ── The rotation itself: a token signed by a *retired* key, presented to a
   // server now signing with a different one. This is the assertion the packet
@@ -4768,6 +4783,59 @@ async function main(): Promise<void> {
       ? resetHeader.header.kid
       : null,
     deriveKid(env.JWT_REFRESH_SECRET));
+
+  // ══ Request correlation (observability-data-lifecycle.md §12.1-2, §14 step 2) ══
+  //
+  // The support model access.md §13.3 left available: an operator gets from "it
+  // says something went wrong" to one request, without reading any of that
+  // customer's records.
+  section('request correlation');
+
+  const missing = await call('GET', '/v1/does-not-exist');
+  const missingHeader = missing.headers.get('x-request-id');
+  eq('an unmatched route is still a 404', missing.status, 404);
+  check('...and carries a reference in the header', Boolean(missingHeader), missingHeader);
+  eq('...and the same one in the envelope, so either source works',
+    missing.json?.error?.requestId, missingHeader);
+
+  const secondMiss = await call('GET', '/v1/does-not-exist');
+  check('every request gets its own reference',
+    secondMiss.headers.get('x-request-id') !== missingHeader,
+    { first: missingHeader, second: secondMiss.headers.get('x-request-id') });
+
+  // A reference that exists only for crashes is missing exactly when somebody is
+  // on the phone: the errors people ask about are the refusal they did not expect
+  // and the validation they cannot read.
+  const unauthorised = await call('GET', '/v1/me');
+  eq('an unauthenticated read is refused', unauthorised.status, 401);
+  check('...and a refusal carries a reference too, not just a crash',
+    typeof unauthorised.json?.error?.requestId === 'string',
+    unauthorised.json);
+
+  const corrUser = await register('correlate');
+  const invalid = await call('POST', '/v1/projects', {
+    token: corrUser.token,
+    companyId: corrUser.companyId ?? undefined,
+    body: { name: '' },
+  });
+  check('a validation failure carries a reference',
+    typeof invalid.json?.error?.requestId === 'string',
+    invalid.json);
+
+  const ok = await call('GET', '/v1/me', { token: corrUser.token });
+  eq('a successful request is correlated as well', ok.status, 200);
+  check('...so a slow success can be traced without an error to hang it on',
+    Boolean(ok.headers.get('x-request-id')));
+
+  // The caller does not get to choose what their traffic is filed under: reusing
+  // one id would make a support search useless, and reusing somebody else's would
+  // attach this activity to another tenant's investigation.
+  const forged = await fetch(`${BASE}/v1/does-not-exist`, {
+    headers: { 'X-Request-Id': 'forged-by-the-caller' },
+  });
+  check('an inbound reference is ignored rather than trusted',
+    forged.headers.get('x-request-id') !== 'forged-by-the-caller',
+    forged.headers.get('x-request-id'));
 
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);

@@ -3,6 +3,7 @@ import express, { type Express } from 'express';
 import { healthResponseSchema } from '@crewquo/shared';
 import { pingDb } from './db';
 import { env } from './env';
+import { requestContext } from './http/middleware/requestContext';
 import { errorHandler, notFoundHandler } from './http/errorHandler';
 import { requireAuth, requireSuperAdmin } from './http/middleware/auth';
 import { authRouter } from './modules/auth/routes';
@@ -140,6 +141,16 @@ export function buildApp(): Express {
 
   app.disable('x-powered-by');
   app.use(securityHeaders());
+
+  /*
+   * Correlation, mounted before everything that can fail.
+   *
+   * Ahead of CORS and the body parser on purpose: a request rejected by either is
+   * a request somebody may ask about, and a 413 from the body limit with no
+   * reference is the support conversation this exists to prevent. The only thing
+   * above it is the security headers, which cannot fail.
+   */
+  app.use(requestContext);
 
   /*
    * **An allowlist, replacing `cors()` with no options.**
