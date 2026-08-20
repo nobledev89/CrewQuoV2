@@ -526,11 +526,15 @@ A promise of total erasure the product then cannot keep is worse than a narrower
 promise kept exactly, and the place that distinction gets lost is a confirmation
 dialog that says "this cannot be undone" and nothing else.
 
-### 2. Is a company-wide data export a paid capability, and what format?
+### 2. Is a company-wide data export a paid capability, and what format? → **free, ungated, JSON+CSV**
 
-**Still open** — the only one of the five not put to the owner, because it changes
-nothing until §14 step 5 and the recommendation has no dependency on the other
-four. Recorded here so it is asked rather than assumed when that step arrives.
+**Answered 2026-08-20: export is free.** The owner went further than the
+recommendation below rather than choosing between its options — not "free for a
+person, any paid plan for a company" but **free for everyone, including the free
+`crew` plan**. So there is no entitlement key to register and no plan check to
+write, which also makes this the cheapest version to build and the one with the
+least to get wrong. The format half was not contradicted, so the recommendation
+stands: a machine-readable bundle, not a document.
 
 - **Recommended: personal export always free and unconditional; company export
   available on every paid plan, and a machine-readable bundle (JSON plus CSV per

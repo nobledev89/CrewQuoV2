@@ -488,7 +488,7 @@ These artifacts are now required planning inputs before each new domain hardens.
 
 ### Deferred to the end of Phase 6 — the payment system (owner decision, 2026-08-19)
 
-**Gumroad is no longer the plan, and no replacement has been chosen.** Billing is
+**Paddle is the merchant of record (owner decision, 2026-08-20), and all payments are USD only.** Billing is
 therefore moved to the *last* thing Phase 6 does, rather than the middle. This is
 a sequencing decision, not a descoping one: the product still needs a way to take
 money before launch.
@@ -501,10 +501,10 @@ from the Platform console, and `checkoutEnabled` already ships **off** with
 the merchant integration will use is built and proven (0012). What a provider
 decides is the *adapter* and the price table, not the shape of the system.
 
-- [ ] **Choose the merchant of record.** The 2026-08-17 Gumroad decision is withdrawn. Whatever replaces it must clear the same bar §17 set: PH payout, and a real seller account proving purchase, renewal, failed payment, cancellation, refund and replay-safe reconciliation before the integration is accepted
+- [x] **Choose the merchant of record → Paddle** (owner, 2026-08-20). The acceptance bar §17 set is unchanged and still gates the integration: PH payout, and a real seller account proving purchase, renewal, failed payment, cancellation, refund and replay-safe reconciliation. Paddle being a merchant of record rather than a gateway is the point — it owns VAT/sales-tax determination and remittance, so §30's tax gate stays defined-and-not-built
 - [ ] Checkout, signed/deduplicated webhooks through the existing `webhook_inbox`, trial→paid transition and entitlement snapshots
-- [ ] Super-admin price editor + subscription management (also blocked on the real per-currency pricing numbers, still open below)
-- [ ] Public pricing page — it cannot be written before the prices and the checkout exist
+- [ ] Super-admin price editor + subscription management. **No longer blocked on pricing currency** — all payments are USD only (owner, 2026-08-20), so this edits one USD price per plan per interval. The actual amounts are still yours to set, but they are data entered through this screen rather than a decision the screen waits on
+- [ ] Public pricing page — it cannot be written before the prices and the checkout exist. One currency now, so no currency switcher and no "prices shown in your region" machinery
 
 **Non-negotiable throughout:** the ten calculation principles (§41), `record_revisions` + `recordAudit` on every new mutation (§36), entitlement keys registered (§43), tests written with the code (§44), and the Phase 0–4 end-to-end scripts re-run green at the end of every phase.
 
@@ -622,8 +622,21 @@ Complete and productionize the field workspace against supervisor and crew jobs.
 
 ### Still open
 
-- [ ] **Real per-currency pricing numbers** (USD anchors exist; confirm the actual amounts) — Phase 6
-- [ ] **Merchant of record: which one.** Gumroad was withdrawn on 2026-08-19 with no replacement chosen. Whichever is picked must complete seller KYC/payout setup and prove purchase, renewal, failed payment, cancellation, refund and replay-safe reconciliation with a real test membership — end of Phase 6
+- [ ] **Feature packaging for the new modules** — the §43 tier table is a proposal, not a decision; needed before Phase 7 writes its first production entitlement gate
+- [ ] **Emission factor dataset redistribution terms** — Phase 9; the importer and org-owned factors ship regardless
+
+### ✅ Answered 2026-08-20 — merchant of record, pricing currency, and export
+
+- [x] **Merchant of record → Paddle.** Replaces the Gumroad decision withdrawn on 2026-08-19. The §17 acceptance bar is unchanged and is what "done" means for the integration, not "the SDK is wired up": a real seller account completing KYC and payout setup, and a real test membership proving **purchase, renewal, failed payment, cancellation, refund and replay-safe reconciliation** before it is accepted. Two things about Paddle specifically that shape the build rather than decorate it:
+  - **Paddle is a merchant of record, not a gateway, so it owns sales-tax/VAT determination and remittance** — which is the reason to use one and also the reason CrewQuo must not compute or store tax itself. §30's tax gate stays "defined, deliberately not built".
+  - **Webhooks go through the existing `webhook_inbox`** (0012), signature-verified and deduplicated, and the entitlement snapshot is written in the same transaction as the subscription state change (§36, decision #25). Paddle retries, so replay-safety is not optional — the inbox already assumes this and it is the reason it exists.
+- [x] **All payments are in USD only.** Every subscription price is a USD price; CrewQuo sells in one currency and localises none.
+  - **This makes `plan_prices.currency` a constant**, and its `unique (plan_id, currency, interval)` key one row per interval. Left in place for now rather than migrated away, and that is a judgement worth stating: the column is the *provider's* price list, not a company's ledger, so it is not the drifting duplicate that migration `0017` removed from rate cards, proposals and invoices. If Paddle localised pricing is ever turned on, this is the column that holds it; if it never is, the column should be dropped rather than left as a shape with one possible value (§0 rule 3). **Decide that when the price editor is built, not before.**
+  - **It also removes a question that would otherwise have needed an answer**: with no exchange rate stored anywhere in the product (owner decision 2026-08-19), a non-USD subscription price could never have been *derived* — it would have had to be set independently per currency, priced by hand and re-priced by hand forever.
+  - **A company's currency label and the price it is charged are now deliberately different things.** A company may set its own currency to anything (`companies.currency`, user-changeable) and will still be billed in USD. That is ordinary SaaS and it is written down here so nobody later "fixes" the mismatch by converting one into the other — there is nothing to convert with.
+- [x] **Company data export is free.** Answers observability-data-lifecycle.md §13.2, and answers it more simply than its own recommendation: not "free for a person, any paid plan for a company" but **free, ungated, for everyone including the free `crew` plan**. So there is no entitlement key and no plan check to write — which is also the cheapest version to build and the one with nothing to get wrong.
+  - **Format follows the recommendation, since the decision did not contradict it: a machine-readable bundle** — JSON plus CSV per table. **Not PDF**, which is the format that looks like the answer and cannot be re-imported, re-checked or diffed by the auditor who asked for it. The existing per-project PDF/XLSX exports already serve "give my client a document" and are not this.
+  - Still deliberately not built: a scheduled recurring export. Nobody has asked.
 
 ### Product-foundation decisions adopted 2026-08-18
 
