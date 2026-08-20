@@ -3,18 +3,35 @@
 #
 # The web console is NOT here: apps/web deploys to Vercel.
 #
-# Plans are set to `free` so this imports without a card. Free tiers have real
-# limits — the web service sleeps after inactivity (first request then takes
-# ~30s), and Render's free Postgres is time-limited and DELETED when it expires.
-# Before this holds anything you care about, raise `plan` to `starter` on the
-# service and `basic-256mb` on the database.
+# PLANS ARE PAID, DELIBERATELY (owner decision 2026-08-20, recorded in
+# docs/operating-model/observability-data-lifecycle.md §13.4).
+#
+# They used to be `free` so this imported without a card, and that was the right
+# default for a blueprint nobody had deployed. It stopped being right the moment
+# the free Postgres tier became the thing holding real data: it is time-limited
+# and DELETED when it expires, which is not a weak backup policy but data loss
+# with a date on it. The free web service also sleeps after inactivity, so the
+# first request after a quiet period takes ~30s.
+#
+# Applying this blueprint therefore provisions PAID resources. That is the
+# decision, not an accident.
+#
+# TWO THINGS THIS FILE CANNOT DO FOR YOU, both from the same decision:
+#   1. Turn on point-in-time recovery and set backup retention. That is a
+#      dashboard setting on the database, and the plan above is only what makes
+#      it available.
+#   2. Rehearse a restore. A backup nobody has ever restored is a belief rather
+#      than a capability, which is why the decision asks for one rehearsal before
+#      launch and one per quarter — and why the RPO/RTO numbers should not be
+#      published to a customer until one has been done.
 #
 # Everything here can equally be done by hand in the dashboard: create a Postgres,
 # create a web service, copy the commands and env vars below. The blueprint just
 # does it in one step and wires DATABASE_URL for you.
 databases:
   - name: crewquo-db
-    plan: free
+    # Paid, so that backups and point-in-time recovery are available at all.
+    plan: basic-256mb
     region: oregon
     postgresMajorVersion: "16"
 
@@ -23,7 +40,10 @@ services:
     name: crewquo-api
     runtime: node
     region: oregon
-    plan: free
+    # Paid, so the API does not sleep. A sleeping API is not only a slow first
+    # request: /healthz is what the platform's own monitoring reads, and a
+    # service that has to wake up to answer it reports unhealthy while it does.
+    plan: starter
     # --prod=false is load-bearing. NODE_ENV=production below applies at build
     # time too, and pnpm then skips devDependencies — which is where tsx lives.
     # startCommand runs the API through tsx, so a prod-only install would leave
@@ -56,4 +76,40 @@ services:
       # verify-email links. sync: false makes Render prompt for it rather than
       # silently defaulting to http://localhost:3000.
       - key: APP_BASE_URL
+        sync: false
+
+      # THE PROXY HOP COUNT, AND WHY IT IS NOT LEFT AT ITS DEFAULT.
+      #
+      # Render terminates TLS at its own proxy, so every request reaches the app
+      # from that proxy's address. `env.ts` defaults TRUST_PROXY_HOPS to 0 on
+      # purpose — trusting a forwarding header nobody set lets a caller forge
+      # their own source and walk out of the rate limiter entirely — but 0 is the
+      # wrong value *here*, and wrong in the more dangerous direction: with it,
+      # the source-keyed sign-in budget sees the entire internet as one caller.
+      # Thirty failed sign-ins from anywhere would then lock out every user on the
+      # platform at once.
+      #
+      # That is precisely the failure docs/operating-model/access.md §10 says the
+      # limiter must never become: an availability weapon. One hop, because
+      # Render's proxy is one hop.
+      - key: TRUST_PROXY_HOPS
+        value: 1
+
+      # Salt for the rate limiter's source-address hashes. Generated once and
+      # then never changed: every stored hash is only meaningful against the salt
+      # that produced it, so moving it silently resets every budget. It has its
+      # own value rather than borrowing JWT_REFRESH_SECRET so that rotating a
+      # signing secret does not take the sign-in counters with it.
+      - key: AUTH_SOURCE_PEPPER
+        generateValue: true
+
+      # Email delivery. sync: false so Render prompts rather than defaulting:
+      # without both of these the notification worker records every email as
+      # SKIPPED with that reason, which is honest but is not a working product.
+      # NOTIFICATION_FROM_EMAIL must be on a domain verified at resend.com/domains
+      # — Resend's shared onboarding@resend.dev sender reaches only the address
+      # that owns the account, and every other recipient comes back 403.
+      - key: RESEND_API_KEY
+        sync: false
+      - key: NOTIFICATION_FROM_EMAIL
         sync: false

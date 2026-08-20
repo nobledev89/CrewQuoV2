@@ -25,9 +25,19 @@
 #      here is an EXTERNAL connection string with TLS — not the internal one the
 #      API uses. Render's internal hostname does not resolve from here.
 #
-# REQUIRED SECRET: DATABASE_URL (repository secret). Without it every run fails
-# loudly, which is the correct failure — a scheduler that cannot reach the
-# database must not look like a scheduler with nothing to do.
+# WHAT THIS NEEDS, AND WHAT IT DELIBERATELY DOES NOT. One required secret:
+# DATABASE_URL. Without it every run fails loudly, which is the correct failure -
+# a scheduler that cannot reach the database must not look like a scheduler with
+# nothing to do.
+#
+# It does NOT take the JWT signing secrets, and that is the point of
+# CREWQUO_PROCESS=job below. These jobs mint and verify no token; they only ever
+# needed those values because env.ts validated them at import for every process
+# alike. Copying production signing keys in here to satisfy a validator would put
+# them somewhere any collaborator able to push a workflow file could read them
+# back - a real exposure bought for nothing. A job that ever does need to sign
+# fails loudly on the line that tries, rather than minting tokens no verifier
+# accepts.
 name: Scheduled jobs
 
 on:
@@ -74,6 +84,21 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # A missing secret otherwise surfaces as a zod field dump from env.ts,
+      # several hundred lines into an install log, on a run nobody is watching.
+      # This says the one thing that is actionable.
+      - name: Check the scheduler is configured
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error title=Scheduler not configured::DATABASE_URL is not set."
+            echo "Set it as a repository secret: Settings -> Secrets and variables -> Actions."
+            echo "Use Render's EXTERNAL connection string - the internal hostname does not"
+            echo "resolve from a GitHub runner. See README, 'The scheduler'."
+            exit 1
+          fi
+
       # Deliberately NOT `pnpm db:migrate`. A scheduled job that migrates would
       # let a schema change ship on a cron rather than on a deploy, which is a
       # change nobody is watching.
@@ -83,8 +108,8 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           NODE_ENV: production
-          JWT_ACCESS_SECRET: ${{ secrets.JWT_ACCESS_SECRET }}
-          JWT_REFRESH_SECRET: ${{ secrets.JWT_REFRESH_SECRET }}
+          # Holds no signing key, and refuses to sign rather than improvising one.
+          CREWQUO_PROCESS: job
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           NOTIFICATION_FROM_EMAIL: ${{ secrets.NOTIFICATION_FROM_EMAIL }}
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
@@ -98,8 +123,7 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           NODE_ENV: production
-          JWT_ACCESS_SECRET: ${{ secrets.JWT_ACCESS_SECRET }}
-          JWT_REFRESH_SECRET: ${{ secrets.JWT_REFRESH_SECRET }}
+          CREWQUO_PROCESS: job
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
 
       - name: Prune sign-in counters, old sessions and job runs
@@ -108,6 +132,5 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           NODE_ENV: production
-          JWT_ACCESS_SECRET: ${{ secrets.JWT_ACCESS_SECRET }}
-          JWT_REFRESH_SECRET: ${{ secrets.JWT_REFRESH_SECRET }}
+          CREWQUO_PROCESS: job
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}

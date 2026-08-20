@@ -109,7 +109,9 @@ Then add the environment variables the blueprint would have set:
 | `JWT_ACCESS_SECRET` | 32+ random chars — `openssl rand -base64 32` |
 | `JWT_REFRESH_SECRET` | a *different* 32+ random string |
 | `AUTH_SOURCE_PEPPER` | a third 32+ random string — set it once, then never change it |
+| `TRUST_PROXY_HOPS` | **`1` on Render.** Left at the default `0`, every request looks like it came from Render's proxy, so one source-keyed sign-in budget is shared by the entire internet and thirty failures from anywhere lock out every user |
 | `APP_BASE_URL` | the Vercel URL below |
+| `RESEND_API_KEY`, `NOTIFICATION_FROM_EMAIL` | without both, every email records as `SKIPPED` rather than sending |
 
 Both secrets are mandatory in production: `apps/api/src/env.ts` only falls back to
 insecure defaults outside production, so the service refuses to boot without them.
@@ -127,16 +129,25 @@ restarted by a scheduler rather than silently stopping with one process:
 
 [`.github/workflows/scheduled-jobs.yml`](.github/workflows/scheduled-jobs.yml)
 runs them ([the host decision and its costs](docs/operating-model/observability-data-lifecycle.md)).
-It needs these **repository secrets**, and every one of them is required — a run
-that cannot reach the database fails loudly rather than looking like a scheduler
-with nothing to do:
+It needs these **repository secrets** (Settings → Secrets and variables →
+Actions). Only the first is required; a run without it fails loudly and says so,
+rather than looking like a scheduler with nothing to do:
 
-| Secret | Notes |
-| --- | --- |
-| `DATABASE_URL` | the **External** connection string, not the internal one — the runner is outside Render's network |
-| `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET` | `env.ts` validates them at import even for a job that signs nothing |
-| `APP_BASE_URL` | notification deep links |
-| `RESEND_API_KEY`, `NOTIFICATION_FROM_EMAIL` | omit and emails record as `SKIPPED` with that reason rather than sending |
+| Secret | Required | Notes |
+| --- | --- | --- |
+| `DATABASE_URL` | **yes** | the **External** connection string, not the internal one — the runner is outside Render's network |
+| `APP_BASE_URL` | recommended | notification deep links; defaults to `http://localhost:3000` |
+| `RESEND_API_KEY` | recommended | omit and emails record as `SKIPPED` with that reason rather than sending |
+| `NOTIFICATION_FROM_EMAIL` | recommended | must be on a domain verified at resend.com/domains |
+
+**The signing secrets are deliberately not on that list.** The workflow sets
+`CREWQUO_PROCESS=job`, and a job process holds no signing key: these jobs mint and
+verify no token, and the only reason they ever needed `JWT_ACCESS_SECRET` was that
+`env.ts` validated it at import for every process alike. Copying production
+signing keys into Actions to satisfy a validator would put them where any
+collaborator able to push a workflow file could read them back — a real exposure
+bought for nothing. If a job ever does need to sign, it throws on the line that
+tries rather than minting tokens no verifier accepts.
 
 **Two things about this host, worth knowing before you rely on it.** GitHub's
 `schedule` is best-effort and skews under load, so "every 5 minutes" means

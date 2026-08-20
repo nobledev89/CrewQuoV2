@@ -123,7 +123,18 @@ export function jobHealth(input: {
       };
     }
 
-    const secondsSinceSuccess = Math.floor((nowMs - last.getTime()) / 1000);
+    /*
+     * Clamped at zero, because the two clocks involved are not the same clock.
+     * `finished_at` is written by Postgres and `now` is the application's, and a
+     * few hundred milliseconds of skew between them is normal — enough that a
+     * pass which finished a moment ago floors to -1. Negative is not a smaller
+     * number here, it is a nonsense one: it would render as "-1m ago" on the
+     * operator console and, worse, any future comparison written as
+     * `seconds > deadline` would quietly treat it as the freshest possible
+     * success. A job cannot have succeeded in the future; when the arithmetic
+     * says otherwise the honest reading is "just now".
+     */
+    const secondsSinceSuccess = Math.max(0, Math.floor((nowMs - last.getTime()) / 1000));
     return {
       job,
       lastSuccessAt: last.toISOString(),

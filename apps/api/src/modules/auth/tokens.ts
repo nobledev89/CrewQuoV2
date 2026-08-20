@@ -6,7 +6,7 @@ import {
   verificationKeysFor,
   type SigningKeyring,
 } from './signingKeys';
-import { env } from '../../env';
+import { env, NO_SIGNING_KEY } from '../../env';
 import { AppError } from '../../http/errors';
 
 /**
@@ -42,19 +42,52 @@ const JWT_ALGORITHM = 'HS256' as const;
  * link have different lifetimes and very different consequences, and a single
  * ring would let a leak of one secret mint both.
  */
-const accessKeyring = buildSigningKeyring(
-  env.JWT_ACCESS_SECRET,
-  parseRetiredSecrets(env.JWT_ACCESS_SECRET_RETIRED)
-);
+/**
+ * Built on first use rather than at import, so that a process which never signs
+ * or verifies anything never needs a key.
+ *
+ * That is not a micro-optimisation: the scheduled workers import this module
+ * transitively and mint nothing, and building at import meant the production
+ * signing keys had to exist in the scheduler's environment purely to satisfy a
+ * module-level constant. Lazy here, required at boot for the API in `env.ts` —
+ * so the API still fails fast on a missing key and the job never asks.
+ */
+function keyringFor(kind: 'access' | 'purpose'): SigningKeyring {
+  const secret = kind === 'access' ? env.JWT_ACCESS_SECRET : env.JWT_REFRESH_SECRET;
 
-const purposeKeyring = buildSigningKeyring(
-  env.JWT_REFRESH_SECRET,
-  parseRetiredSecrets(env.JWT_REFRESH_SECRET_RETIRED)
-);
+  if (secret === NO_SIGNING_KEY) {
+    throw new Error(
+      `This process was started as CREWQUO_PROCESS=job and holds no ${kind} signing key. ` +
+        'Scheduled jobs mint and verify no tokens; if one now needs to, give it the key ' +
+        'deliberately rather than removing this check — a job signing under a placeholder ' +
+        'produces tokens no verifier accepts, and that failure surfaces on a user screen.'
+    );
+  }
+
+  return buildSigningKeyring(
+    secret,
+    parseRetiredSecrets(
+      kind === 'access' ? env.JWT_ACCESS_SECRET_RETIRED : env.JWT_REFRESH_SECRET_RETIRED
+    )
+  );
+}
+
+let accessKeyringCache: SigningKeyring | undefined;
+let purposeKeyringCache: SigningKeyring | undefined;
+
+function accessKeyring(): SigningKeyring {
+  accessKeyringCache ??= keyringFor('access');
+  return accessKeyringCache;
+}
+
+function purposeKeyring(): SigningKeyring {
+  purposeKeyringCache ??= keyringFor('purpose');
+  return purposeKeyringCache;
+}
 
 /** The kid new access tokens are signed under. Exposed for verification scripts. */
 export function currentAccessKid(): string {
-  return accessKeyring.current.kid;
+  return accessKeyring().current.kid;
 }
 
 /**
@@ -140,19 +173,20 @@ export function signAccessToken(input: {
     ...(input.companyId ? { companyId: input.companyId } : {}),
     ...(input.sessionId ? { sid: input.sessionId } : {}),
   };
-  return jwt.sign(payload, accessKeyring.current.secret, {
+  const ring = accessKeyring();
+  return jwt.sign(payload, ring.current.secret, {
     algorithm: JWT_ALGORITHM,
     expiresIn: env.ACCESS_TOKEN_TTL_SECONDS,
     // `keyid` is jsonwebtoken's name for the `kid` header. Only ever the current
     // key: a ring that signed with more than one would have no way to retire any
     // of them.
-    keyid: accessKeyring.current.kid,
+    keyid: ring.current.kid,
   });
 }
 
 export function verifyAccessToken(token: string): AccessTokenClaims {
   try {
-    const decoded = verifyWithKeyring(token, accessKeyring);
+    const decoded = verifyWithKeyring(token, accessKeyring());
     if (typeof decoded.sub !== 'string') {
       throw new AppError('UNAUTHENTICATED', 'Invalid access token');
     }
@@ -194,16 +228,17 @@ type PurposeToken = 'password_reset' | 'email_verify' | 'mfa_challenge';
 
 /** Signed, single-purpose, expiring token for reset/verify links. */
 export function signPurposeToken(userId: string, purpose: PurposeToken, ttlSeconds: number): string {
-  return jwt.sign({ sub: userId, purpose }, purposeKeyring.current.secret, {
+  const ring = purposeKeyring();
+  return jwt.sign({ sub: userId, purpose }, ring.current.secret, {
     algorithm: JWT_ALGORITHM,
     expiresIn: ttlSeconds,
-    keyid: purposeKeyring.current.kid,
+    keyid: ring.current.kid,
   });
 }
 
 export function verifyPurposeToken(token: string, purpose: PurposeToken): string {
   try {
-    const decoded = verifyWithKeyring(token, purposeKeyring);
+    const decoded = verifyWithKeyring(token, purposeKeyring());
     if (decoded.purpose !== purpose || typeof decoded.sub !== 'string') {
       throw new AppError('VALIDATION', 'Invalid token');
     }

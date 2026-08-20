@@ -91,6 +91,17 @@ describe('jobHealth', () => {
     );
   });
 
+  it('reads a success timestamped in the future as "just now", not as negative', () => {
+    // Postgres writes finished_at and the application supplies `now`; a few
+    // hundred milliseconds of skew between the two is normal, and floors to -1
+    // for a pass that just finished. Negative would render as "-1m ago" and
+    // would read to any `seconds > deadline` comparison as the freshest possible
+    // success.
+    const health = healthFor({ workers: new Date(NOW.getTime() + 2_000) });
+    expect(health.workers?.secondsSinceSuccess).toBe(0);
+    expect(health.workers?.overdue).toBe(false);
+  });
+
   it('carries the last success as an instant a console can render', () => {
     const at = ago(120);
     expect(healthFor({ workers: at }).workers?.lastSuccessAt).toBe(at.toISOString());

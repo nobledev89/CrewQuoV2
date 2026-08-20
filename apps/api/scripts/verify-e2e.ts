@@ -4886,8 +4886,14 @@ async function main(): Promise<void> {
     jobsHealth.length, 3);
   check('a job that has just succeeded is not overdue', workersHealth?.overdue === false,
     workersHealth);
-  check('...and a failed pass does not count as a success',
-    (workersHealth?.secondsSinceSuccess ?? 0) >= 0, workersHealth);
+  // The FAILED row was written after the SUCCEEDED one, so this proves health is
+  // read from the last *success* rather than the last *run*. The original version
+  // of this check asserted `>= 0`, which was true of almost anything — and then
+  // failed anyway on clock skew, which is how the clamp in `jobs.ts` got written.
+  check('...and health is read from the last success, not the last run',
+    workersHealth?.lastSuccessAt !== null &&
+      (workersHealth?.secondsSinceSuccess ?? 99999) < 300,
+    workersHealth);
 
   // A job that has never run at all is overdue rather than unknown — the state a
   // deployment is in on the day the schedule was never wired up, which is exactly

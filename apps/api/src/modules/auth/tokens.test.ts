@@ -180,6 +180,31 @@ describe('signing-secret rotation', () => {
     expect(() => rotated.verifyAccessToken(forged)).toThrow(ACCESS_REFUSAL);
   });
 
+  it('refuses to sign at all in a process started as a job', async () => {
+    // The scheduled workers mint no token and therefore hold no key, so the
+    // production signing secrets never have to exist in the scheduler's
+    // environment — where anybody able to push a workflow could read them back.
+    const job = await loadTokensWith({ CREWQUO_PROCESS: 'job' });
+
+    // Loud, on the line that tried, in the process that tried. The alternative —
+    // a plausible placeholder key — would mint tokens no verifier holds, and that
+    // failure surfaces later and elsewhere as "invalid or expired token" on
+    // somebody's screen.
+    expect(() => job.signAccessToken({ userId: 'u-8' })).toThrow(/holds no access signing key/);
+    expect(() => job.signPurposeToken('u-8', 'password_reset', 60)).toThrow(
+      /holds no purpose signing key/
+    );
+    expect(() => job.currentAccessKid()).toThrow(/CREWQUO_PROCESS=job/);
+  });
+
+  it('signs normally in the default process role', async () => {
+    // The default is `api`, and the safe direction: a server mislabelled as a job
+    // fails the first time it signs, whereas a job mislabelled as a server merely
+    // asks for keys it never uses.
+    const api = await loadTokensWith({ JWT_ACCESS_SECRET: OLD });
+    expect(api.currentAccessKid()).toBe(deriveKid(OLD));
+  });
+
   it('carries password-reset links across a rotation of the refresh secret', async () => {
     // Refresh tokens are opaque and unaffected, but this secret also signs the
     // single-purpose tokens — and a reset link is good for an hour, so it

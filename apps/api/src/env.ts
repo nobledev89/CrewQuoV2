@@ -13,12 +13,45 @@ const isProd = process.env.NODE_ENV === 'production';
 // satisfiable without a populated .env — CI has none.
 const isTest = process.env.NODE_ENV === 'test';
 
+/**
+ * What this process is for, which decides whether it needs signing keys at all.
+ *
+ * `job` is the scheduled one-shot workers — the outbox drain and the two
+ * retention passes. **They mint no token of any kind**, and the only reason they
+ * ever needed `JWT_ACCESS_SECRET` is that this file validates it at import for
+ * every process alike. That incidental coupling had a real cost: it meant the
+ * production signing keys had to be copied into the scheduler's environment,
+ * where anybody able to push a workflow file could read them back out. A secret
+ * that does not need to be somewhere should not be there.
+ *
+ * Read from the raw environment rather than from the parsed schema because the
+ * schema's own shape depends on it.
+ */
+const processRole = process.env.CREWQUO_PROCESS === 'job' ? 'job' : 'api';
+
+/**
+ * What a job process gets instead of a signing key.
+ *
+ * A sentinel rather than a plausible-looking default, and rather than making the
+ * field optional. Optional would ripple `string | undefined` through every call
+ * site for a case none of them can encounter; a plausible default is worse than
+ * either, because a job that *did* start signing would mint tokens under a key no
+ * verifier holds — and those fail later, somewhere else, as "invalid or expired
+ * token" on a user's screen. This value is checked where keys are built, so the
+ * failure lands on the line that tried to use it, in the process that tried.
+ */
+export const NO_SIGNING_KEY = 'crewquo:no-signing-key-in-this-process';
+
 // In dev/test we fall back to fixed non-secret values so the API boots without a
-// fully populated .env. In production these MUST be provided or the app exits.
+// fully populated .env. In production these MUST be provided or the app exits —
+// unless this process is a job, which signs nothing and is handed a sentinel that
+// throws if anything ever tries.
 const secret = (key: string) =>
-  isProd
-    ? z.string().min(16, `${key} must be set (>=16 chars) in production`)
-    : z.string().min(1).default(`dev-insecure-${key.toLowerCase()}`);
+  processRole === 'job'
+    ? z.string().min(1).default(NO_SIGNING_KEY)
+    : isProd
+      ? z.string().min(16, `${key} must be set (>=16 chars) in production`)
+      : z.string().min(1).default(`dev-insecure-${key.toLowerCase()}`);
 
 const EnvSchema = z.object({
   // Nothing under `vitest run` opens a connection — the suites are pure units —
@@ -30,6 +63,16 @@ const EnvSchema = z.object({
     : z.string().url(),
   PORT: z.coerce.number().int().positive().default(4000),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+
+  /**
+   * `api` (default) serves requests; `job` is a scheduled one-shot worker.
+   *
+   * The only thing it changes is whether signing keys are required — see the
+   * `secret` helper above. Defaulting to `api` is the safe direction: a server
+   * mislabelled as a job would fail loudly the first time it signed anything,
+   * whereas a job mislabelled as a server merely asks for keys it will not use.
+   */
+  CREWQUO_PROCESS: z.enum(['api', 'job']).default('api'),
 
   // Auth (§5). Access token 15 min, refresh 30 days.
   JWT_ACCESS_SECRET: secret('JWT_ACCESS_SECRET'),
