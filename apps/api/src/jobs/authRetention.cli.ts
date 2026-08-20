@@ -1,5 +1,6 @@
 import { pool } from '../db';
 import { pruneAuthState } from './authRetention';
+import { pruneJobRuns, recordJobRun } from './jobRuns';
 
 /**
  * One-shot entry point for an external scheduler:
@@ -10,8 +11,17 @@ import { pruneAuthState } from './authRetention';
  * process falls over, and does nothing at all if the API scales to zero.
  */
 try {
-  const { attempts, sessions } = await pruneAuthState();
-  console.log(`[auth-retention] done (${attempts} attempts, ${sessions} sessions)`);
+  await recordJobRun('auth-retention', async () => {
+    const { attempts, sessions } = await pruneAuthState();
+    console.log(`[auth-retention] done (${attempts} attempts, ${sessions} sessions)`);
+    // Also prunes `job_runs` itself, on the same 30-day operational clock (§7).
+    // Deliberately not its own job: a table that records whether jobs run,
+    // pruned by a job that can stop, would be one more thing to notice had
+    // stopped.
+    const runs = await pruneJobRuns();
+    if (runs > 0) console.log(`[auth-retention] pruned ${runs} job run(s)`);
+    return { succeeded: attempts + sessions + runs };
+  });
 } catch (err) {
   console.error('[auth-retention] failed:', err);
   process.exitCode = 1;

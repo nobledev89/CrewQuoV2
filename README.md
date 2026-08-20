@@ -114,6 +114,45 @@ Then add the environment variables the blueprint would have set:
 Both secrets are mandatory in production: `apps/api/src/env.ts` only falls back to
 insecure defaults outside production, so the service refuses to boot without them.
 
+### The scheduler (required — nothing works without it)
+
+Three jobs are one-shot and run from outside the API, so that a dead job is
+restarted by a scheduler rather than silently stopping with one process:
+
+| Command | Cadence | What stops without it |
+| --- | --- | --- |
+| `pnpm --filter @crewquo/api work` | every 5 min | **every notification, on every channel** — the outbox never drains |
+| `pnpm --filter @crewquo/api purge-audit` | daily | audit retention, which is a sold entitlement |
+| `pnpm --filter @crewquo/api purge-auth` | daily | sign-in counters, old session rows, job-run history |
+
+[`.github/workflows/scheduled-jobs.yml`](.github/workflows/scheduled-jobs.yml)
+runs them ([the host decision and its costs](docs/operating-model/observability-data-lifecycle.md)).
+It needs these **repository secrets**, and every one of them is required — a run
+that cannot reach the database fails loudly rather than looking like a scheduler
+with nothing to do:
+
+| Secret | Notes |
+| --- | --- |
+| `DATABASE_URL` | the **External** connection string, not the internal one — the runner is outside Render's network |
+| `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET` | `env.ts` validates them at import even for a job that signs nothing |
+| `APP_BASE_URL` | notification deep links |
+| `RESEND_API_KEY`, `NOTIFICATION_FROM_EMAIL` | omit and emails record as `SKIPPED` with that reason rather than sending |
+
+**Two things about this host, worth knowing before you rely on it.** GitHub's
+`schedule` is best-effort and skews under load, so "every 5 minutes" means
+"usually" — the overdue deadlines are four intervals wide for that reason. And a
+`schedule` trigger is **disabled automatically after 60 days without repository
+activity**, which is a silent stop; `workflow_dispatch` is on the workflow partly
+so a manual run can reset that clock.
+
+**Watch the alarm, not the cron.** `GET /v1/admin/operations` carries a
+**Scheduled jobs** row computed from the last successful pass of each job, and it
+reads *overdue* — not *unknown* — when a job has never succeeded, which is the
+state a deployment is in when the schedule was never wired up. A queue depth is
+only meaningful next to evidence that something is draining it: three pending
+outbox events look like a quiet week whether the drain ran a minute ago or has not
+run since the workflow was disabled.
+
 ### Rotating a signing secret
 
 Access tokens and single-purpose links carry a `kid` header naming the key that

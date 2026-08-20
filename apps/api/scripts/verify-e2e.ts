@@ -35,6 +35,7 @@ import {
 } from '@crewquo/shared';
 import { deriveKid, parseRetiredSecrets } from '../src/modules/auth/signingKeys';
 import { currentAccessKid, signPurposeToken } from '../src/modules/auth/tokens';
+import { readJobHealth, recordJobRun } from '../src/jobs/jobRuns';
 import { runOutboxBatch } from '../src/modules/delivery/worker';
 import { recoverStaleOutboxClaims } from '../src/modules/delivery/repo';
 import { runNotificationDeliveryBatch } from '../src/modules/notifications/deliveryWorker';
@@ -4836,6 +4837,78 @@ async function main(): Promise<void> {
   check('an inbound reference is ignored rather than trusted',
     forged.headers.get('x-request-id') !== 'forged-by-the-caller',
     forged.headers.get('x-request-id'));
+
+  // ══ The scheduler, and the alarm for its own absence (§12.5, §14 step 1) ═══
+  //
+  // The most serious finding in the packet: three one-shot jobs, correct
+  // reasoning for being one-shot, and nothing scheduling them — so deployed, the
+  // outbox never drained and no notification was ever delivered.
+  section('scheduled jobs');
+
+  // The workers pass ran during `drainWorkers()` above, many times. Each one-shot
+  // invocation writes a row; the in-process drain this script uses does not,
+  // which is the same asymmetry as `--loop` and is why this asserts against a
+  // real CLI invocation rather than against the drains.
+  await recordJobRun('workers', async () => ({ claimed: 0, succeeded: 0, failed: 0 }));
+
+  const lastRun = await db.query<{ job: string; outcome: string; run_id: string }>(
+    `select job, outcome, run_id from job_runs
+      where job = 'workers' order by started_at desc limit 1`
+  );
+  eq('a pass records that it ran', lastRun.rows[0]?.job, 'workers');
+  eq('...and how it ended', lastRun.rows[0]?.outcome, 'SUCCEEDED');
+  check('...under an id that correlates it with its own log lines',
+    typeof lastRun.rows[0]?.run_id === 'string', lastRun.rows[0]);
+
+  // A pass that throws is recorded as FAILED rather than leaving nothing behind,
+  // because "no row" and "a row that failed" are what the alarm has to tell apart.
+  let threw = false;
+  try {
+    await recordJobRun('workers', async () => {
+      throw new Error('verify-e2e deliberate failure');
+    });
+  } catch {
+    threw = true;
+  }
+  check('a failing pass rethrows, so the runner exits non-zero', threw);
+  const failed = await db.query<{ outcome: string; error: string | null }>(
+    `select outcome, error from job_runs where job = 'workers' order by started_at desc limit 1`
+  );
+  eq('...and is recorded as failed rather than as silence', failed.rows[0]?.outcome, 'FAILED');
+  check('...with the reason an operator reads',
+    (failed.rows[0]?.error ?? '').includes('deliberate failure'), failed.rows[0]?.error);
+
+  // The alarm itself. Health is computed from the last SUCCEEDED row, so the
+  // FAILED row just written must not clear it.
+  const jobsHealth = await readJobHealth();
+  const workersHealth = jobsHealth.find((h) => h.job === 'workers');
+  eq('every scheduled job is reported, so a missing one cannot read as healthy',
+    jobsHealth.length, 3);
+  check('a job that has just succeeded is not overdue', workersHealth?.overdue === false,
+    workersHealth);
+  check('...and a failed pass does not count as a success',
+    (workersHealth?.secondsSinceSuccess ?? 0) >= 0, workersHealth);
+
+  // A job that has never run at all is overdue rather than unknown — the state a
+  // deployment is in on the day the schedule was never wired up, which is exactly
+  // when a silent alarm is worthless.
+  const neverRan = jobsHealth.find((h) => h.lastSuccessAt === null);
+  if (neverRan) {
+    check('a job that has never succeeded reads as overdue, not as unknown',
+      neverRan.overdue === true, neverRan);
+  }
+
+  // And the operator sees it on the screen they already watch, beside the queue
+  // depths it explains: a pending outbox reads as a quiet week whether the drain
+  // ran a minute ago or has not run since the schedule was disabled.
+  const opsView = await call('GET', '/v1/admin/operations', { token: mfaStaff.token });
+  const jobService = (opsView.json?.services ?? []).find(
+    (svc: { name: string }) => svc.name === 'Scheduled jobs'
+  );
+  check('the operator console carries the scheduler beside the queues it explains',
+    Boolean(jobService), opsView.json?.services?.map((s: { name: string }) => s.name));
+  check('...naming what is lost rather than naming a table',
+    !String(jobService?.detail ?? '').includes('job_runs'), jobService);
 
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);

@@ -10,6 +10,7 @@ import type {
   AdminUserSummary,
 } from '@crewquo/shared';
 import { query, queryOne, withTransaction, type Queryable } from '../../db';
+import { readJobHealth } from '../../jobs/jobRuns';
 import { env } from '../../env';
 import { AppError } from '../../http/errors';
 import { notificationDeliveryHealth } from '../notifications/deliveryWorker';
@@ -320,7 +321,7 @@ export async function getAdminReporting(days: number): Promise<AdminReporting> {
 }
 
 export async function getAdminOperations(): Promise<AdminOperations> {
-  const [invites, overrides, recentAudit, delivery, deadLetters, notifications] =
+  const [invites, overrides, recentAudit, delivery, deadLetters, notifications, jobs] =
     await Promise.all([
     query<{ id: string; kind: string; email: string; company_name: string; expires_at: Date }>(
       `select i.id, i.kind, i.email, c.name as company_name, i.expires_at
@@ -359,7 +360,21 @@ export async function getAdminOperations(): Promise<AdminOperations> {
     // operator watching this screen could see a perfectly healthy outbox while
     // every email in the system was failing.
     notificationDeliveryHealth(),
+    /*
+     * Whether the scheduler is still alive
+     * (`observability-data-lifecycle.md` §14 step 1).
+     *
+     * On this screen rather than on a page of its own, because the failure it
+     * reports is the reason two of the rows above can look healthy while nothing
+     * happens: an outbox with three pending events reads as a quiet week whether
+     * the drain ran a minute ago or has not run since the schedule was disabled.
+     * A queue depth is only meaningful next to evidence that something is
+     * draining it.
+     */
+    readJobHealth(),
   ]);
+
+  const overdueJobs = jobs.filter((job) => job.overdue);
   return {
     delivery: delivery!,
     notifications,
@@ -386,6 +401,23 @@ export async function getAdminOperations(): Promise<AdminOperations> {
         name: 'Durable delivery',
         status: (delivery!.deadOutbox + delivery!.deadWebhooks) > 0 ? 'ATTENTION' : 'HEALTHY',
         detail: `${delivery!.pendingOutbox} outbox and ${delivery!.receivedWebhooks} webhook events ready; ${delivery!.deadOutbox + delivery!.deadWebhooks} dead-lettered.`,
+      },
+      {
+        // Named for what an operator loses rather than for the mechanism: a row
+        // saying "job_runs stale" describes a table, and a row saying
+        // notifications are not being delivered describes the incident.
+        name: 'Scheduled jobs',
+        status: overdueJobs.length > 0 ? 'ATTENTION' : 'HEALTHY',
+        detail:
+          overdueJobs.length > 0
+            ? `Overdue: ${overdueJobs.map((job) => `${job.job} (${job.describes})`).join('; ')}.`
+            : jobs
+                .map((job) =>
+                  job.secondsSinceSuccess === null
+                    ? `${job.job}: never`
+                    : `${job.job}: ${Math.floor(job.secondsSinceSuccess / 60)}m ago`
+                )
+                .join(', ') + '.',
       },
       {
         name: 'Notification delivery',

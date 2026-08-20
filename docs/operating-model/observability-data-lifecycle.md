@@ -5,8 +5,8 @@ for how long — request/tenant/job correlation, error tracking, health and
 readiness, the scheduler that runs the deferred work, and the other half of the
 same question: what a customer may take out, what happens when they ask to be
 gone, and what the platform promises about losing data it has already accepted.
-**Phase:** 6 · **Status:** draft — §13 has four questions for the owner; §14 step 2
-is shipped, because it needed none of them
+**Phase:** 6 · **Status:** **adopted** — §13's questions were put to the owner on
+2026-08-20 and every recommendation was taken; §14 steps 1 and 2 are shipped
 · **Last updated:** 2026-08-20
 **Plan refs:** §10 (deployment), §19.5 (this packet's shape), §41.7 / §962
 (data classification + retention), §787 and §91 (the observability line —
@@ -480,17 +480,26 @@ Personas: **Ola** (operator), **Priya** (on call), **Dana** (owner), **Sam**
 
 ---
 
-## 13. Decisions — open, for the owner
+## 13. Decisions — answered 2026-08-20
 
-Four, each with options costed and a recommendation, in the pattern the access
-packet used. Two of them change what gets built rather than how.
+Four, each put to the owner with options costed and a recommendation, in the
+pattern the access packet used. **All four recommendations were taken.** Recorded
+with their rejected alternatives, because a decision whose options are lost reads
+a year later like something nobody considered.
 
-### 1. What does deletion actually do to a cross-tenant evidence row?
+Two of them changed what gets built rather than how, and one — the scheduler host
+— was not in this list when the packet was drafted. It was added because §14 step 1
+turned out to need a *deployment* answer even though it needed no *design* one, and
+a build order whose first item is blocked on an unasked question is a build order
+that stalls at step 1.
 
-Sam's time log is his employer's payroll record and the hiring company's proof of
-an invoiced hour. The options:
+### 1. What does deletion actually do to a cross-tenant evidence row? → **(a)**
 
-- **(a) Anonymise the person, preserve the record.** Personal fields are
+**Answered: anonymise the person, preserve the record.** Sam's time log is his
+employer's payroll record and the hiring company's proof of an invoiced hour. The
+options as put:
+
+- **(a) Anonymise the person, preserve the record. → Taken.** Personal fields are
   overwritten, the account cannot sign in, and every evidence row survives
   attributed to a withdrawn person. Money never moves. **Recommended.** It is the
   only option that keeps both promises: the person stops being identifiable, and
@@ -506,12 +515,22 @@ an invoiced hour. The options:
   indefensible for a person: it makes "you may not leave" the answer to somebody
   who logged one hour eighteen months ago.
 
-The same question for a *company* has a different shape and needs its own half of
-the answer: a company with live engagements plausibly must settle or hand over
-before it may go. Recommendation: **(a) for a person, (a) plus a live-engagement
-precondition for a company.**
+The same question for a *company* has a different shape and got its own half of
+the answer: **(a) for a person, (a) plus a live-engagement precondition for a
+company** — a company with live engagements must settle or hand over before it may
+go. Both taken.
+
+**What this commits the product to saying, and it must be said before the button
+rather than after it:** *the hours you logged remain, without your name on them.*
+A promise of total erasure the product then cannot keep is worse than a narrower
+promise kept exactly, and the place that distinction gets lost is a confirmation
+dialog that says "this cannot be undone" and nothing else.
 
 ### 2. Is a company-wide data export a paid capability, and what format?
+
+**Still open** — the only one of the five not put to the owner, because it changes
+nothing until §14 step 5 and the recommendation has no dependency on the other
+four. Recorded here so it is asked rather than assumed when that step arrives.
 
 - **Recommended: personal export always free and unconditional; company export
   available on every paid plan, and a machine-readable bundle (JSON plus CSV per
@@ -526,10 +545,12 @@ precondition for a company.**
   and are not this.
 - Rejected *for now*: a scheduled recurring export. No one has asked.
 
-### 3. Sentry, or structured logs only?
+### 3. Sentry, or structured logs only? → **Sentry, scrubber first**
 
-- **Recommended: adopt Sentry for the API and web, with a strict allowlist
-  scrubber and no request bodies, and treat it as a disclosed subprocessor.** The
+**Answered: adopt it.**
+
+- **Taken: Sentry for the API and web, with a strict allowlist scrubber and no
+  request bodies, and treated as a disclosed subprocessor.** The
   plan already named it twice; the reason to confirm rather than assume is that
   §10 makes it a data-protection decision. What it buys that logs do not is
   grouping and release attribution — Priya's "how many, since when" is one screen
@@ -539,23 +560,62 @@ precondition for a company.**
   unwelcome; it is a defensible answer, not a wrong one.
 - Mobile deferred to Phase 13 either way.
 
-### 4. What RPO/RTO does CrewQuo promise, and at what cost?
+**The ordering is part of the decision, not an implementation note.** The scrubber
+ships before the library, because the failure mode of adopting an error tracker is
+not "we did not adopt it" — it is one release sending request bodies to a third
+party before anybody notices, and that is unsendable back.
+
+### 4. What RPO/RTO does CrewQuo promise, and at what cost? → **paid tier + PITR**
+
+**Answered: a paid Postgres tier with point-in-time recovery, an RPO measured in
+minutes and an RTO stated in hours, plus one rehearsed restore before launch and
+one per quarter after.**
 
 Today: no promise, and a free database the host deletes when it expires. The
-options are tiers, not designs, and the number must be chosen before it is
-published:
+options were tiers, not designs, and the number had to be chosen before it could
+be published:
 
-- **Recommended: a paid Postgres tier with point-in-time recovery, an RPO
-  measured in minutes and an RTO stated in hours, plus one rehearsed restore
-  before launch and one per quarter after.** The rehearsal is the part that
-  cannot be bought.
+- **Taken: paid tier with PITR, RPO in minutes, RTO in hours, rehearsed.** The
+  rehearsal is the part that cannot be bought.
 - Cheaper: daily snapshots, RPO 24 hours. Honest only if published — "you may
   lose a day's timesheets" is a thing a construction customer must be told before
   they enter a month of them.
 - The number is the owner's to set because it is a cost, and the only wrong answer
   is publishing one nobody has tested.
 
+**The free tier is a separate problem from the promise, and it is the more urgent
+half.** "We have not decided our RPO yet" is a gap; a database the host deletes on
+a timer is data loss with a date on it. Raising the tier is not waiting for the
+rehearsal.
+
 ---
+
+### 5. What runs the scheduled jobs? → **GitHub Actions cron**
+
+**Answered: GitHub Actions `schedule`.** Not in the original four — added because
+step 1 needed a deployment answer even without a design one.
+
+- **Taken: a scheduled workflow in the repository that already runs CI.** Free, no
+  new host, no new account, and the credential story is one repository secret. Its
+  costs are real and are recorded in §9 rather than discovered later: GitHub's
+  scheduled events are **best-effort and skew under load**, so a five-minute cron
+  is "usually five minutes"; a `schedule` trigger is **disabled automatically
+  after 60 days without repository activity**, which is a silent stop, and the
+  dead man's switch is what makes that survivable rather than terminal; and the
+  runner reaches the production database from outside its network, so it needs an
+  external connection string and TLS.
+- Rejected: **Render cron jobs.** Better timing, native retry, same network as the
+  database, and a per-job cost. The right answer once there is revenue; not worth
+  paying for before there is.
+- Rejected on the packet's own reasoning: **a long-running worker with an interval
+  loop.** It fails silently the moment the process dies and does nothing at all if
+  the service scales to zero, which is the whole argument for the jobs being
+  one-shot in the first place.
+
+**This decision is why step 1 ships the switch and the scheduler together.** Every
+option above can stop quietly — the chosen one has a documented way of doing so on
+day 61 — so a scheduler without an alarm for its own absence would move the
+failure rather than fix it.
 
 ## 14. Build order
 
@@ -563,12 +623,22 @@ Ordered by severity from §0 and §9, not by convenience. **Step 1 is not a feat
 and should ship before the decisions are answered** — everything else in Phase 6
 is already relying on it.
 
-1. **The scheduler, and the alarm that fires when it stops.** Whatever the host
+1. ~~**The scheduler, and the alarm that fires when it stops.** Whatever the host
    offers, running `work`, `purge-audit` and `purge-auth` on an interval, plus a
    `job_runs` record and the dead man's switch from §9 — a job that has not
    reported success inside its window raises, visibly, in the operator queue.
    Without this the outbox does not drain, notifications do not send and a sold
-   retention entitlement is enforced by nothing. Needs no decision from §13.
+   retention entitlement is enforced by nothing.~~ **Shipped 2026-08-20** — `0020`
+   plus `.github/workflows/scheduled-jobs.yml` and a **Scheduled jobs** row on the
+   operator console. Three things this document did not say, all worth having said:
+   a `RUNNING` row that never closed is a *third* state and means "the process
+   stopped existing", which is not the same fact as a failure; **a job that has
+   never succeeded must read as overdue rather than unknown**, because the day the
+   schedule is wired up wrong is the day there is no evidence at all and "no
+   evidence" read as "no problem" is silence exactly when it matters; and the
+   `--loop` arm deliberately writes no row, since a developer's laptop claiming
+   the schedule is alive would be a heartbeat for a scheduler that does not exist
+   in production.
 2. ~~**Request correlation.** A request id per request, echoed in the error
    envelope so a customer can quote it, attached to every log line and carried
    into every outbox row the request writes. Then `errorHandler` logs the request

@@ -1,0 +1,113 @@
+# The thing that calls the caller.
+#
+# Operating-model packet: docs/operating-model/observability-data-lifecycle.md
+# §13.5 (why GitHub Actions) and §14 step 1.
+#
+# THE GAP THIS CLOSES. `work`, `purge-audit` and `purge-auth` are deliberately
+# one-shot — an external scheduler restarts a dead job, whereas a setInterval
+# inside the API stops the moment that process falls over and does nothing at all
+# if the service scales to zero. That reasoning was right and nothing acted on it:
+# render.yaml declared a web service and a database and no cron of any kind. So in
+# production the outbox never drained, meaning NO notification was ever delivered
+# by any channel, and the audit retention customers are sold as an entitlement was
+# enforced by nothing.
+#
+# WHAT THIS HOST COSTS, stated here rather than discovered on the day it matters:
+#
+#   1. `schedule` is best-effort. GitHub queues scheduled runs and drops them
+#      under load, so "every 5 minutes" means "usually". The overdue deadlines in
+#      packages/shared/src/jobs.ts are four intervals wide for this reason.
+#   2. **A schedule is disabled automatically after 60 days without repository
+#      activity.** This is the documented, silent way this host stops, and it is
+#      the single strongest argument for the dead man's switch shipping in the
+#      same slice rather than after it.
+#   3. The runner reaches the database from outside its network, so DATABASE_URL
+#      here is an EXTERNAL connection string with TLS — not the internal one the
+#      API uses. Render's internal hostname does not resolve from here.
+#
+# REQUIRED SECRET: DATABASE_URL (repository secret). Without it every run fails
+# loudly, which is the correct failure — a scheduler that cannot reach the
+# database must not look like a scheduler with nothing to do.
+name: Scheduled jobs
+
+on:
+  schedule:
+    # Every 5 minutes: drain the outbox and send notification deliveries.
+    - cron: '*/5 * * * *'
+    # Daily at 03:17 UTC: retention. Not on the hour, because every cron on the
+    # platform fires on the hour and the queue is longest there.
+    - cron: '17 3 * * *'
+  # Manual runs matter more than usual here: they are also how somebody resets
+  # the 60-day inactivity clock, and how an operator clears an overdue alarm
+  # without waiting for the next window.
+  workflow_dispatch:
+    inputs:
+      job:
+        description: Which pass to run
+        required: true
+        default: workers
+        type: choice
+        options: [workers, retention]
+
+# One pass at a time. Overlapping runs would double-claim outbox leases — the
+# lease makes that safe rather than corrupting, but it wastes a runner and makes
+# the job_runs history read as though passes are failing.
+concurrency:
+  group: scheduled-jobs-${{ github.event.schedule || inputs.job }}
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    # A pass that has not finished in ten minutes is stuck, and a stuck runner
+    # holds the concurrency group against every later pass.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Deliberately NOT `pnpm db:migrate`. A scheduled job that migrates would
+      # let a schema change ship on a cron rather than on a deploy, which is a
+      # change nobody is watching.
+      - name: Drain the outbox and send deliveries
+        if: github.event.schedule == '*/5 * * * *' || inputs.job == 'workers'
+        run: pnpm --filter @crewquo/api work
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NODE_ENV: production
+          JWT_ACCESS_SECRET: ${{ secrets.JWT_ACCESS_SECRET }}
+          JWT_REFRESH_SECRET: ${{ secrets.JWT_REFRESH_SECRET }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          NOTIFICATION_FROM_EMAIL: ${{ secrets.NOTIFICATION_FROM_EMAIL }}
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
+
+      # Both retention passes in one step, in this order, because auth-retention
+      # also prunes job_runs and there is no reason to hold a second runner for
+      # a delete that takes milliseconds.
+      - name: Purge expired audit rows
+        if: github.event.schedule == '17 3 * * *' || inputs.job == 'retention'
+        run: pnpm --filter @crewquo/api purge-audit
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NODE_ENV: production
+          JWT_ACCESS_SECRET: ${{ secrets.JWT_ACCESS_SECRET }}
+          JWT_REFRESH_SECRET: ${{ secrets.JWT_REFRESH_SECRET }}
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
+
+      - name: Prune sign-in counters, old sessions and job runs
+        if: github.event.schedule == '17 3 * * *' || inputs.job == 'retention'
+        run: pnpm --filter @crewquo/api purge-auth
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NODE_ENV: production
+          JWT_ACCESS_SECRET: ${{ secrets.JWT_ACCESS_SECRET }}
+          JWT_REFRESH_SECRET: ${{ secrets.JWT_REFRESH_SECRET }}
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}

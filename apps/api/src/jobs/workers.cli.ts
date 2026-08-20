@@ -3,6 +3,7 @@ import { recoverStaleOutboxClaims } from '../modules/delivery/repo';
 import { runOutboxBatch } from '../modules/delivery/worker';
 import { runNotificationDeliveryBatch } from '../modules/notifications/deliveryWorker';
 import { NOTIFICATION_HANDLERS } from '../modules/notifications/handlers';
+import { recordJobRun } from './jobRuns';
 
 /**
  * The process that actually drains the durable substrate.
@@ -44,7 +45,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   });
 }
 
-async function pass(): Promise<void> {
+async function pass(): Promise<{ claimed: number; succeeded: number; failed: number }> {
   const recovered = await recoverStaleOutboxClaims();
   if (recovered > 0) console.log(`[workers] recovered ${recovered} stale outbox lease(s)`);
 
@@ -62,6 +63,14 @@ async function pass(): Promise<void> {
         `skipped=${deliveries.skipped} failed=${deliveries.failed}`
     );
   }
+
+  // Both halves in one set of counts, because they are scheduled as one unit and
+  // a split would let one report success for the pair.
+  return {
+    claimed: outbox.claimed + deliveries.claimed,
+    succeeded: outbox.delivered + deliveries.sent,
+    failed: outbox.failed + deliveries.failed,
+  };
 }
 
 try {
@@ -77,7 +86,15 @@ try {
     }
     console.log('[workers] stopped');
   } else {
-    await pass();
+    /*
+     * Only the one-shot arm records a run, and the asymmetry is deliberate.
+     * `--loop` is the local-development shape (`workers.cli.ts` header), where a
+     * developer's laptop writing "the schedule is alive" into a shared database
+     * would be a heartbeat for a scheduler that does not exist in production. The
+     * one-shot arm is what the scheduler invokes, so it is what gets to say the
+     * scheduler ran.
+     */
+    await recordJobRun('workers', pass);
     console.log('[workers] done');
   }
 } catch (err) {
