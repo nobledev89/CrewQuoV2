@@ -28,11 +28,11 @@ import {
 } from '@crewquo/ui';
 import { Shell } from '@/components/Shell';
 import { api, ApiError } from '@/api/client';
-import { useAuth, useSessionCtx } from '@/auth/AuthProvider';
+import { useAuth, useCompanyTimeZone, useSessionCtx } from '@/auth/AuthProvider';
 import { useAsyncData } from '@/lib/useAsyncData';
 import { useAsyncList } from '@/lib/useAsyncList';
 import { WorkStatusBadge } from '@/components/Status';
-import { formatCents, formatDate, inputToCents, titleCase, todayIso, totalHours } from '@/lib/format';
+import { formatCents, formatDate, inputToCents, titleCase, totalHours } from '@/lib/format';
 
 /**
  * Log work — the provider side of an engagement, on the web.
@@ -298,10 +298,15 @@ function NewTimeLog({
   onCreated: () => void;
 }) {
   const ctx = useSessionCtx();
+  const companyZone = useCompanyTimeZone();
   const [projectId, setProjectId] = useState(context.assignments[0]?.projectId ?? '');
   const [roleId, setRoleId] = useState('');
   const [shiftType, setShiftType] = useState<ShiftType>('WEEKDAY_DAY');
-  const [workDate, setWorkDate] = useState(todayIso());
+  // The company's today, not the browser's — and the project's own the moment one is
+  // known (the effect below). A crew member in one zone logging work for a project in
+  // another was being handed their own date to start from, which is the same class of
+  // mistake as the server's old UTC `todayIso()` and just as invisible.
+  const [workDate, setWorkDate] = useState(() => todayInZone(companyZone, new Date()));
   // Whether the person has picked a date themselves. Until they have, the field
   // tracks the project's own today; after they have, nothing moves it — switching
   // project must not silently rewrite a date somebody deliberately set.

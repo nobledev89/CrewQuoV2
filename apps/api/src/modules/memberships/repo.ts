@@ -35,7 +35,8 @@ export function listMembershipSummaries(
   runner?: Queryable
 ): Promise<MembershipSummary[]> {
   return query<MembershipSummary>(
-    `select c.id as "companyId", c.name as "companyName", c.currency as currency, m.role as role
+    `select c.id as "companyId", c.name as "companyName", c.currency as currency,
+            coalesce(c.time_zone, 'UTC') as "timeZone", m.role as role
        from memberships m
        join companies c on c.id = m.company_id
       where m.user_id = $1 and m.status = 'ACTIVE'

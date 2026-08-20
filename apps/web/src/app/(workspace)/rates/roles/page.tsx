@@ -1,11 +1,12 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import type { RoleCatalogView } from '@crewquo/shared';
+import { dateInZone, type RoleCatalogView } from '@crewquo/shared';
 import { Button, Drawer, EmptyState, ErrorText, Field, Input, PageHeader, SearchInput, Section, SortableTh, Stack, Table } from '@crewquo/ui';
 import { Shell } from '@/components/Shell';
 import { api, ApiError } from '@/api/client';
-import { useSessionCtx } from '@/auth/AuthProvider';
+import { useCompanyTimeZone, useSessionCtx } from '@/auth/AuthProvider';
+import { formatDate } from '@/lib/format';
 import { useAsyncList } from '@/lib/useAsyncList';
 import { useSort } from '@/lib/useSort';
 import { useUrlQuery } from '@/lib/useUrlQuery';
@@ -28,6 +29,12 @@ const SORTS = {
 
 function Roles() {
   const ctx = useSessionCtx();
+  // `created_at` is an instant and this column shows a day, so it needs a zone named
+  // — the company's, because "which day did we add this role" is the company's
+  // question. This screen used to build its own `Intl.DateTimeFormat` inline, which
+  // both skipped that decision and gave one table a different date format from every
+  // other one in the console.
+  const companyZone = useCompanyTimeZone();
   const { items, loading, error, reload } = useAsyncList<RoleCatalogView>(
     ctx ? () => api.listRoles(ctx.accessToken, ctx.companyId).then((response) => response.data) : null,
     [ctx?.companyId]
@@ -109,7 +116,7 @@ function Roles() {
                 <tr key={role.id}>
                   <td className="cq-table__primary">{role.name}</td>
                   <td className="cq-muted cq-numeric">
-                    {new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(role.createdAt))}
+                    {formatDate(dateInZone(new Date(role.createdAt), companyZone))}
                   </td>
                   <td className="cq-table__actions">
                     <Button variant="danger" size="sm" onClick={() => void remove(role)} aria-label={`Delete ${role.name}`}>Delete</Button>

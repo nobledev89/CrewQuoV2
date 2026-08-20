@@ -40,6 +40,9 @@ const SECOND_CO = `Northlight Plant Hire ${RUN}`;
 const ROLE = 'Rigger';
 // Its own company and role, so the recovery test cannot be affected by — or affect —
 // the state the core loop above is asserting.
+// A company whose calendar is deliberately far from the test browser's.
+const ZONE_CO = `Manila Works ${RUN}`;
+const ZONE_SUB = `Manila Rigging ${RUN}`;
 const STALE_CO = `Overnight Tab Ltd ${RUN}`;
 const STALE_ROLE = 'Night watch';
 
@@ -1168,6 +1171,131 @@ test.describe('Web core workflows', () => {
     await section.getByRole('button', { name: 'Remove two-step sign-in' }).click();
     await expect(section.getByText('Off', { exact: true })).toBeVisible();
     await page.close();
+  });
+
+  test('the back-dating warning follows the company calendar, not the browser clock', async ({
+    browser,
+  }) => {
+    /*
+     * The bug: `isRetroactive` decides whether an agreed rate needs an OWNER and a
+     * written reason (3.3.1), and the API judges it against the **hiring company's**
+     * today. The screen judged it against the **browser's** today, because the web
+     * client had its own zone-naive `todayIso()` and no payload field carried the
+     * company's. For a reviewer one continent from the company those disagree for as
+     * many hours as the offset, and the visible symptom is the worst kind: the form
+     * shows no warning, asks for no reason, and the submit is then refused with a 403
+     * nothing predicted.
+     *
+     * `timezoneId` rather than a mocked clock, because the clock was never what was
+     * wrong - the zone was, and freezing time would have hidden the thing under test.
+     *
+     * **The viewer's zone is chosen at runtime, and that is the whole difference
+     * between this test and a decoration.** The first version pinned the browser to
+     * America/Los_Angeles, which is 15 hours behind Manila - and passed with the bug
+     * deliberately put back, because at the moment it ran both zones happened to be
+     * on the same calendar day. Two fixed zones only disagree for part of the day, so
+     * a fixed pair makes a test that catches the bug on some runs and not others,
+     * which reads as a flake and is actually a clock.
+     *
+     * So: take the two extremes of the world's offsets (UTC+14 and UTC-12) and use
+     * whichever is currently on a *different* day from the company. At least one
+     * always is. UTC-12 differs from UTC+8 for twenty hours out of every twenty-four,
+     * and in the four-hour window where it agrees, UTC+14 has already rolled over.
+     * The guard below asserts the chosen zone really does differ, so if that
+     * reasoning is ever wrong the test says so instead of quietly passing.
+     */
+    const dayIn = (zone: string) =>
+      new Intl.DateTimeFormat('en-CA', {
+        timeZone: zone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(new Date());
+
+    const COMPANY_ZONE = 'Asia/Manila';
+    const viewerZone = ['Etc/GMT+12', 'Pacific/Kiritimati'].find(
+      (z) => dayIn(z) !== dayIn(COMPANY_ZONE)
+    );
+    expect(
+      viewerZone,
+      'neither UTC-12 nor UTC+14 is on a different day from the company - the premise of this test is broken'
+    ).toBeTruthy();
+
+    const email = await provisionCompany({
+      handle: 'zone-view',
+      name: 'Zoe Zone',
+      companyName: ZONE_CO,
+      planId: 'pro',
+    });
+
+    const context = await browser.newContext({ timezoneId: viewerZone });
+    const page = await context.newPage();
+    await signIn(page, email);
+
+    // The company keeps its books in Manila.
+    await page.goto('/settings');
+    // A free-text zone field, not a select, and anchored: the same `/^Time zone/`
+    // the existing zone test uses, because `Field` renders a wrapping label and a
+    // loose match picks up the hint text beside it.
+    const zone = page.getByLabel(/^Time zone/);
+    await zone.fill(COMPANY_ZONE);
+    await page.getByRole('button', { name: 'Save changes' }).click();
+    await page.reload();
+    // Asserted after a reload: what matters is that the company really is in Manila
+    // before the agreement payload is read, not that a badge appeared.
+    await expect(zone).toHaveValue(COMPANY_ZONE);
+
+    // A subcontractor, to have an agreement edge to propose on.
+    await page.goto('/network/providers');
+    await page.getByRole('button', { name: 'Add subcontractor' }).click();
+    await page.getByLabel('Company name').fill(ZONE_SUB);
+    await page.getByLabel('Contact email').fill(emailFor('zone-sub'));
+    await page.getByRole('button', { name: 'Add and invite' }).click();
+    await expect(page.getByRole('cell', { name: ZONE_SUB })).toBeVisible();
+
+    await page.goto('/commercial');
+    await page.getByRole('row', { name: new RegExp(ZONE_SUB) }).getByRole('button', { name: 'Open' }).click();
+    await expect(page.getByRole('heading', { name: ZONE_SUB })).toBeVisible();
+
+    /*
+     * The form opens defaulted to a date, and that date is the company's today
+     * because the payload said so. Reading it back off the field is the assertion:
+     * before the fix this was the browser's today, which in Los Angeles is Manila's
+     * yesterday for most of the day - and a proposal starting "yesterday" is exactly
+     * what the safeguard exists to catch.
+     */
+    /*
+     * The *hiring* side, so the drawer is direct entry rather than a proposal:
+     * §3.3.1 has the provider propose and the hirer approve, and the hirer's own
+     * path is "Record agreed rates". Same `ScheduleDrawer` either way, and the
+     * back-dating rule is the same rule — which is the point, since the hiring
+     * company's calendar is the one being judged against in both modes.
+     */
+    await page.getByRole('button', { name: 'Record agreed rates' }).click();
+    const panel = page.getByRole('dialog', { name: 'Record agreed rates' });
+    await expect(panel).toBeVisible();
+    const effectiveFrom = panel.getByLabel('Effective from');
+    const companyToday = dayIn(COMPANY_ZONE);
+    const defaulted = await effectiveFrom.inputValue();
+    // Recomputed here rather than reused from the zone choice above, and stated as
+    // its own assertion: the two zones must still disagree at the moment that
+    // matters, or the comparison below proves nothing.
+    expect(dayIn(viewerZone as string)).not.toBe(companyToday);
+    expect(defaulted).toBe(companyToday);
+
+    // And the rule agrees with the date it was handed: the company's own today is not
+    // back-dated, so no reason is demanded. Fails when the screen falls back to the
+    // browser, because the browser is on another day by construction.
+    await expect(panel.getByLabel('Reason for back-dating')).toHaveCount(0);
+
+    // The other direction, so a warning that has simply been switched off cannot
+    // pass: the day before the company's today is genuinely retroactive.
+    const dayBefore = new Date(`${companyToday}T00:00:00Z`);
+    dayBefore.setUTCDate(dayBefore.getUTCDate() - 1);
+    await effectiveFrom.fill(dayBefore.toISOString().slice(0, 10));
+    await expect(panel.getByLabel('Reason for back-dating')).toBeVisible();
+
+    await context.close();
   });
 
   test('a tab whose access token has been refused recovers, and gives up exactly once', async ({

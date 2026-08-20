@@ -72,6 +72,23 @@ export const membershipSummarySchema = z.object({
   companyId: z.string().uuid(),
   companyName: z.string(),
   currency: z.string(),
+  /**
+   * The company's IANA zone, because **the browser's day is not the company's day**
+   * and at least one screen was deciding a rule on the wrong one.
+   *
+   * `isRetroactive` keys the §3.3.1 back-dating safeguard off "today", and the API
+   * resolves that against the *hiring company's* zone (`time.md` — the packet exists
+   * because a UTC "today" had this exact bug server-side). The commercial screen was
+   * computing the same predicate from the viewer's browser zone to decide whether to
+   * warn, so a London reviewer and a Manila company disagreed for eight hours of
+   * every day — the screen showing no warning and no reason field, and the server
+   * then refusing the submit with a 403 the screen never predicted.
+   *
+   * Cached here beside `currency` for the same reason `currency` is: it is a
+   * company-level label every screen needs and nothing should refetch per render.
+   * A screen that changes it must call `refreshMemberships()`.
+   */
+  timeZone: z.string(),
   role: membershipRoleSchema,
 });
 export type MembershipSummary = z.infer<typeof membershipSummarySchema>;

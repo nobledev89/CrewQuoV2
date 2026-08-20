@@ -429,6 +429,30 @@ export const commercialAgreementSchema = z.object({
   clientCompanyId: z.string().uuid(),
   clientCompanyName: z.string(),
   currency: z.string(),
+  /**
+   * Today, as the **hiring company** reckons it — the date `isRetroactive` will be
+   * judged against when this screen submits.
+   *
+   * Sent rather than derived, because the screen was deriving it and getting a
+   * different answer. `todayIso()` in the web client used the *viewer's browser*
+   * zone; the API uses the hiring company's (see `todayIso` in the commercial
+   * service, and `time.md` for why that packet exists at all). For a London reviewer
+   * and a Manila company those disagree for eight hours of every day, and the
+   * disagreement is not cosmetic: the screen showed no back-dating warning and asked
+   * for no reason, and the server then refused the submit with a 403 nothing had
+   * predicted.
+   *
+   * **The provider side cannot compute this at all**, which is the deeper reason it
+   * belongs on the payload. A provider drafting a PAY schedule is judged by the
+   * hiring company's calendar and does not know the hiring company's zone — and
+   * should not be told it. A date is the narrower disclosure and the only part the
+   * rule actually needs.
+   *
+   * A date, so a screen left open across midnight in the hiring zone goes stale by
+   * one day. That is a warning being a day out versus a systematic eight-hour
+   * disagreement, and the server remains the enforcer either way.
+   */
+  hiringToday: z.string(),
   terms: z.object({
     paymentTermsDays: z.number().int().nullable(),
     purchaseOrderReference: z.string().nullable(),

@@ -39,7 +39,7 @@ import { api, ApiError } from '@/api/client';
 import { useAuth, useSessionCtx } from '@/auth/AuthProvider';
 import { useAsyncData } from '@/lib/useAsyncData';
 import { useAsyncList } from '@/lib/useAsyncList';
-import { centsToInput, formatCents, formatDate, formatDateTime, inputToCents, titleCase, todayIso } from '@/lib/format';
+import { centsToInput, formatCents, formatDate, formatDateTime, inputToCents, titleCase } from '@/lib/format';
 
 /**
  * Commercial agreements (§3.3.1) — one screen for both sides of a PAY negotiation.
@@ -523,6 +523,7 @@ function AgreementDetail({
                 key={p.id}
                 proposal={p}
                 currency={a.currency}
+                hiringToday={a.hiringToday}
                 isManager={isManager}
                 isOwner={isOwner}
                 busy={busy}
@@ -568,6 +569,7 @@ function AgreementDetail({
 function ProposalCard({
   proposal,
   currency,
+  hiringToday,
   isManager,
   isOwner,
   busy,
@@ -575,6 +577,8 @@ function ProposalCard({
 }: {
   proposal: RateProposalView;
   currency: string;
+  /** The hiring company's today, from the payload — see below. */
+  hiringToday: string;
   isManager: boolean;
   isOwner: boolean;
   busy: boolean;
@@ -583,7 +587,17 @@ function ProposalCard({
   const ctx = useSessionCtx();
   const isHiring = proposal.side === 'client';
   const isProviding = proposal.side === 'provider';
-  const retro = isRetroactive(proposal.effectiveFrom, todayIso());
+  /*
+   * The same predicate the server applies, against the same date the server uses.
+   *
+   * This read the viewer's browser date until 2026-08-20, while the API judged it in
+   * the *hiring company's* zone — so a London reviewer and a Manila company
+   * disagreed for eight hours of every day, and the visible symptom was a form that
+   * showed no back-dating warning, asked for no reason, and was then refused with a
+   * 403. The predicate stays shared (one implementation, unit tested); only the date
+   * comes off the wire.
+   */
+  const retro = isRetroactive(proposal.effectiveFrom, hiringToday);
 
   if (!ctx) return null;
   const t = ctx.accessToken;
@@ -1035,16 +1049,22 @@ function ScheduleDrawer({
     return [...seen].map(([id, name]) => ({ id, name }));
   }, [mode, roles.items, agreement.liveRates, agreement.proposals]);
 
+  // Resets the drawer each time it opens. `hiringToday` is in the deps because the
+  // linter is right that it is read here — but it is a stable string for the life of
+  // one loaded agreement, so naming it cannot re-run this effect under somebody's
+  // half-typed date. A refetch that genuinely crossed midnight in the hiring zone
+  // *should* re-seed a drawer that is opening.
   useEffect(() => {
     if (!open) return;
-    setEffectiveFrom(todayIso());
+    setEffectiveFrom(agreement.hiringToday);
     setNote('');
     setRetroReason('');
     setLines([BLANK_LINE]);
     setError(null);
-  }, [open, agreement.engagementId]);
+  }, [open, agreement.engagementId, agreement.hiringToday]);
 
-  const retro = effectiveFrom !== '' && isRetroactive(effectiveFrom, todayIso());
+  // Same as `ProposalCard`: the hiring company's day, not this browser's.
+  const retro = effectiveFrom !== '' && isRetroactive(effectiveFrom, agreement.hiringToday);
 
   function updateLine(index: number, patch: Partial<DraftLine>) {
     setLines((current) =>

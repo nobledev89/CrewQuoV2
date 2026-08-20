@@ -10,6 +10,8 @@ export interface WorkspaceFactsRow {
   companyId: string;
   companyName: string;
   currency: string;
+  /** Null in the column means UTC; coalesced in the query so callers get a zone. */
+  timeZone: string;
   role: MembershipRole;
   hasProviderRelationship: boolean;
   hasAssignedWork: boolean;
@@ -20,6 +22,7 @@ export interface WorkspaceFactsRow {
 export function listWorkspaceFacts(userId: string): Promise<WorkspaceFactsRow[]> {
   return query<WorkspaceFactsRow>(
     `select c.id as "companyId", c.name as "companyName", c.currency,
+            coalesce(c.time_zone, 'UTC') as "timeZone",
             m.role,
             exists (
               select 1 from engagements e

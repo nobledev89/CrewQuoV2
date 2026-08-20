@@ -347,6 +347,26 @@ export function useAuth(): AuthState {
   return ctx;
 }
 
+/**
+ * The active company's IANA zone — **the zone a business rule is judged in**, not the
+ * browser's.
+ *
+ * A screen deciding anything date-bound wants this, never `new Date()` on its own.
+ * The API resolves "today" against a company zone (`time.md`), and a screen that
+ * uses the viewer's instead disagrees with the server for however many hours the
+ * offset is — which is not a formatting nit, it is a form that shows no warning and
+ * then gets refused. Falls back to UTC rather than to the browser, because a wrong
+ * *stated* zone is findable and a silent local one is not.
+ *
+ * Where the rule is judged in *another* company's zone — a provider proposing a PAY
+ * schedule to its hirer — this is the wrong zone and the payload carries the answer
+ * instead. See `CommercialAgreement.hiringToday`.
+ */
+export function useCompanyTimeZone(): string {
+  const { activeMembership } = useAuth();
+  return activeMembership?.timeZone ?? 'UTC';
+}
+
 /** Convenience: the tokens+company a screen needs, or null when signed out. */
 export function useSessionCtx(): { accessToken: string; companyId: string } | null {
   const { session, companyId } = useAuth();

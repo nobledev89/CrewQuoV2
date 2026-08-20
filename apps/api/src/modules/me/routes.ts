@@ -93,6 +93,7 @@ meRouter.get(
           companyId: row.companyId,
           companyName: row.companyName,
           currency: row.currency,
+          timeZone: row.timeZone,
           role: row.role,
           views: resolveWorkspaceViews({
             // Effective feature overrides count: an explicitly enabled operational

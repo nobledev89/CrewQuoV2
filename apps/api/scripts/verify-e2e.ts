@@ -3801,6 +3801,75 @@ async function main(): Promise<void> {
   // accounts that all have exactly one factor — and login answered an unknown
   // address in milliseconds while taking most of a second for a known one, which
   // is an account-existence oracle with a hundredfold signal.
+  // ── The client's copy of "whose day is it" (2026-08-20) ────────────────────
+  //
+  // The zone was authoritative on the server and absent from every payload a screen
+  // reads, so the commercial screen computed the back-dating predicate from the
+  // *browser's* date while the API computed it from the hiring company's. Same
+  // function, different "today", and for a reviewer one continent away they disagree
+  // for as many hours as the offset. These assertions are the wire half of that fix;
+  // the browser suite asserts the screen half with a deliberately mismatched viewer.
+  section('Time zones — the client is told whose day it is');
+
+  const zoneClientOwner = await register('zone-client', `Zone Client Ltd ${RUN}`);
+  const zoneClientCo = zoneClientOwner.companyId as string;
+  await call('PATCH', `/v1/companies/${zoneClientCo}`, {
+    token: zoneClientOwner.token,
+    companyId: zoneClientCo,
+    body: { timeZone: 'Asia/Manila' },
+  });
+
+  const memberships = await call('GET', '/v1/me/memberships', { token: zoneClientOwner.token });
+  const zoneMembership = (memberships.json?.memberships ?? []).find(
+    (m: any) => m.companyId === zoneClientCo
+  );
+  eq('the switcher payload carries the company zone', zoneMembership?.timeZone, 'Asia/Manila');
+
+  const workspaces = await call('GET', '/v1/me/workspaces', { token: zoneClientOwner.token });
+  const zoneWorkspace = (workspaces.json?.workspaces ?? []).find(
+    (w: any) => w.companyId === zoneClientCo
+  );
+  // Two producers of the same shape, so both are asserted. The type-checker caught
+  // this one when the field was added; nothing would have caught it drifting later.
+  eq('...and so does the workspace payload', zoneWorkspace?.timeZone, 'Asia/Manila');
+
+  // A company that has never set a zone reads as UTC rather than as null, because a
+  // screen cannot format a date in `null` and would quietly fall back to the browser
+  // — which is the whole failure being closed here.
+  const noZoneOwner = await register('zone-default', `Zone Default Ltd ${RUN}`);
+  const noZoneMemberships = await call('GET', '/v1/me/memberships', { token: noZoneOwner.token });
+  eq('an unset zone reads as UTC, not null',
+    (noZoneMemberships.json?.memberships ?? [])[0]?.timeZone, 'UTC');
+
+  /*
+   * And the agreement payload states the date the rule will actually be judged
+   * against. The provider side is the reason this is a field rather than something
+   * the screen derives: a provider proposing a PAY schedule is judged by the hiring
+   * company's calendar, does not know the hiring company's zone, and should not be
+   * told it. A date is the narrower disclosure and the only part the rule needs.
+   */
+  const zoneProvider = await register('zone-provider', `Zone Provider Ltd ${RUN}`);
+  await subscribe(zoneClientCo, 'pro');
+  const zoneEngagement = await call('POST', '/v1/providers', {
+    token: zoneClientOwner.token,
+    companyId: zoneClientCo,
+    body: { name: `Zone Provider Ltd ${RUN}`, email: zoneProvider.email },
+  });
+  eq('a zone-test engagement is created', zoneEngagement.status, 201);
+  const zoneEdge = zoneEngagement.json?.provider?.engagementId as string;
+  const agreement = await call('GET', `/v1/commercial-agreements/${zoneEdge}`, {
+    token: zoneClientOwner.token,
+    companyId: zoneClientCo,
+  });
+  const manilaToday = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Manila',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+  eq('the agreement states the hiring company own today, not the server UTC date',
+    agreement.json?.agreement?.hiringToday, manilaToday);
+
   section('Access hardening — the front door');
 
   await clearAuthAttempts();

@@ -1,10 +1,12 @@
 import { Router } from 'express';
 import {
+  DEFAULT_TIME_ZONE,
   approveRateProposalSchema,
   createRateProposalSchema,
   directRateScheduleSchema,
   rateProposalTransitionRefusal,
   rejectRateProposalSchema,
+  todayInZone,
   updateRateProposalSchema,
   type CommercialAgreement,
   type RateProposalVerb,
@@ -414,6 +416,11 @@ commercialAgreementsRouter.get(
       clientCompanyId: facts.clientCompanyId,
       clientCompanyName: hiring.name,
       currency: hiring.currency,
+      // The same basis `createRateProposal`/`editRateProposal` use to decide whether
+      // a schedule is back-dated, handed to the screen so it can warn about the same
+      // thing the server will refuse. Read from the same row, so the two cannot
+      // drift into disagreeing about whose day it is.
+      hiringToday: todayInZone(hiring.time_zone ?? DEFAULT_TIME_ZONE, new Date()),
       terms: {
         paymentTermsDays: terms.paymentTermsDays,
         purchaseOrderReference: terms.purchaseOrderReference,
