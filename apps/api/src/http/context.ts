@@ -12,6 +12,12 @@ export interface Ctx {
   companyId: string | null; // active company (null when the caller sent no X-Company-Id)
   role: MembershipRole | null; // role in the active company
   isSuperAdmin: boolean;
+  /**
+   * The session this request's access token was minted in, when it carries one
+   * (`access.md` §3). Null for a token issued before the claim existed — those stay
+   * valid for their remaining minutes rather than signing everybody out on deploy.
+   */
+  sessionId: string | null;
 }
 
 declare global {

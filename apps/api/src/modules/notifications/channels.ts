@@ -116,6 +116,37 @@ function renderDigestHtml(items: readonly OutgoingMessage[]): string {
   ].join('');
 }
 
+/**
+ * Domains that can never receive mail, anywhere, by standard.
+ *
+ * RFC 2606 and RFC 6761 reserve these precisely so they cannot resolve, and both
+ * test suites in this repo use them on purpose — `verify.crewquo.test` and
+ * `parity.crewquo.test` — because a fixture must never be able to email a real
+ * person by accident.
+ *
+ * **The hazard runs the other way once a live API key is configured.** A suite run
+ * produces dozens of notifications to addresses that provably do not exist, the
+ * worker dutifully posts every one to the provider, and the result is a pile of
+ * hard bounces on the account's own sending reputation — which is the currency that
+ * decides whether the *real* password-reset email reaches somebody's inbox. Testing
+ * the email system must not be the thing that stops the email system working.
+ */
+const RESERVED_TLDS = ['test', 'invalid', 'example', 'localhost'];
+const RESERVED_DOMAINS = ['example.com', 'example.net', 'example.org'];
+
+/**
+ * **Each reserved label is matched both bare and as a suffix**, which is not
+ * pedantry: the first version of this checked `.localhost` only, so `root@localhost`
+ * — no subdomain, the single most likely address to appear in a local config —
+ * walked straight past the guard and was posted to the provider. The unit test
+ * caught it, and only because the environment changed underneath it.
+ */
+function isUnroutable(address: string): boolean {
+  const domain = address.slice(address.lastIndexOf('@') + 1).toLowerCase();
+  if (RESERVED_DOMAINS.includes(domain)) return true;
+  return RESERVED_TLDS.some((label) => domain === label || domain.endsWith(`.${label}`));
+}
+
 export async function sendEmail(
   message: OutgoingMessage,
   html?: string
@@ -123,6 +154,27 @@ export async function sendEmail(
   if (!message.recipientEmail) {
     // Permanent by nature: no retry produces an address.
     return { status: 'failed', error: 'Recipient has no email address', retryable: false };
+  }
+  /*
+   * Checked before the provider configuration, and `skipped` rather than
+   * `failed`, both deliberately.
+   *
+   * Before, because "this address cannot receive mail anywhere" is true whether or
+   * not a key is present, and it is the more useful of the two reasons to find in
+   * the delivery history. Skipped, because nothing went wrong: the three outcomes
+   * exist so that a deliberate non-send is never recorded as a success, and a
+   * `failed` row here would spend eight retries and a dead letter on an address
+   * that is reserved by standard specifically so it can never work.
+   *
+   * Unconditional rather than gated on NODE_ENV, because a reserved domain is
+   * unroutable in production too — an address like this reaching a live system is a
+   * fixture that escaped, and the honest thing is to record that, not to post it.
+   */
+  if (isUnroutable(message.recipientEmail)) {
+    return {
+      status: 'skipped',
+      reason: 'Reserved test domain — cannot receive mail (RFC 2606/6761)',
+    };
   }
   if (!env.RESEND_API_KEY || !env.NOTIFICATION_FROM_EMAIL) {
     // The same shape the verify/reset links already use in dev — but recorded,

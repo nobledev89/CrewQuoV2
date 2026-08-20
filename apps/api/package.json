@@ -9,6 +9,7 @@
     "start": "tsx src/index.ts",
     "grant-super-admin": "tsx src/modules/admin/grantSuperAdmin.cli.ts",
     "purge-audit": "tsx src/jobs/auditPurge.cli.ts",
+    "purge-auth": "tsx src/jobs/authRetention.cli.ts",
     "work": "tsx src/jobs/workers.cli.ts",
     "verify:e2e": "tsx scripts/verify-e2e.ts",
     "type-check": "tsc --noEmit",

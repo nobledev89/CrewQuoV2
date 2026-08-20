@@ -34,6 +34,55 @@ const EnvSchema = z.object({
   // Auth (§5). Access token 15 min, refresh 30 days.
   JWT_ACCESS_SECRET: secret('JWT_ACCESS_SECRET'),
   JWT_REFRESH_SECRET: secret('JWT_REFRESH_SECRET'),
+
+  /**
+   * Previously-current signing secrets, comma-separated, still accepted for
+   * verification but never used to sign
+   * (`docs/operating-model/access.md` §10, §14 step 4).
+   *
+   * This is what makes rotating a secret a non-event instead of a mass logout.
+   * The procedure is publish → promote → retire: append the new secret here and
+   * deploy, move it to `JWT_ACCESS_SECRET` and deploy again, then remove the old
+   * value once `ACCESS_TOKEN_TTL_SECONDS` has passed and nothing it signed is
+   * still alive. Empty is the steady state — a key list that never empties is a
+   * rotation that never finished, and every entry is a secret that can still mint
+   * a session if it leaks.
+   */
+  JWT_ACCESS_SECRET_RETIRED: z.string().default(''),
+
+  /**
+   * The same, for the refresh secret — which signs no refresh token.
+   *
+   * Refresh tokens are opaque and their SHA-256 is the record, so rotating this
+   * value cannot invalidate one. What it does sign is the single-purpose tokens:
+   * password-reset links, email-verification links and the MFA challenge. Those
+   * outlive a deploy — a reset link is good for an hour — so rotating without an
+   * overlap window silently breaks every link already sitting in somebody's inbox,
+   * and the person holding one is told their link is invalid at the exact moment
+   * they cannot sign in to ask why.
+   */
+  JWT_REFRESH_SECRET_RETIRED: z.string().default(''),
+
+  /**
+   * Salt for the rate limiter's source-address hashes
+   * (`docs/operating-model/access.md` §7, §10).
+   *
+   * Its own variable because it is **not** a signing key and must not rotate with
+   * one. The limiter stores `sha256(pepper + address)` so it can recognise a
+   * caller without recording where anybody signs in from; if the pepper moves,
+   * every stored hash stops matching the caller it belongs to and every budget
+   * silently resets. Before the ring existed that was harmless — the value never
+   * changed. Now that rotating a signing secret is a thing operators are asked to
+   * do, a rotation would hand every attacker mid-lockout a fresh set of guesses,
+   * which is precisely the kind of quiet coupling that makes the safe procedure
+   * unsafe.
+   *
+   * **Optional, falling back to the refresh secret**, so existing deployments keep
+   * the hashes they already have and no rotation is forced by this change. Set it
+   * — to any long random string, once, and then never again — before rotating
+   * `JWT_REFRESH_SECRET`, or that rotation takes the counters with it.
+   */
+  AUTH_SOURCE_PEPPER: z.string().optional(),
   ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(15 * 60),
   REFRESH_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(30 * 24 * 60 * 60),
 

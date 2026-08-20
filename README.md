@@ -47,9 +47,16 @@ pnpm --filter @crewquo/api dev
 | `pnpm db:seed` | Run the seed script |
 | `pnpm --filter @crewquo/web dev` | Run the web console (http://localhost:3000) |
 | `pnpm --filter @crewquo/api purge-audit` | Delete audit rows past their retention window |
+| `pnpm --filter @crewquo/api purge-auth` | Prune rate-limit counters and long-expired sessions |
+| `pnpm --filter @crewquo/api work` | Drain the outbox and the notification queue (`-- --loop` locally) |
 
-Run the audit-retention purge from an external daily scheduler with
-`pnpm --filter @crewquo/api purge-audit`; it is intentionally not process-local.
+Run the two purges from an external daily scheduler
+(`pnpm --filter @crewquo/api purge-audit`, `pnpm --filter @crewquo/api purge-auth`);
+both are one-shot on purpose rather than process-local, so a dead job is restarted by
+the scheduler instead of silently stopping when one API instance falls over. Neither
+touches `platform_audit_logs`, which is insert-only and outside every purge — so no
+retention setting can erase the record that somebody was locked out or that a session
+was revoked.
 
 ## Layout
 
@@ -101,10 +108,36 @@ Then add the environment variables the blueprint would have set:
 | `DATABASE_URL` | the Postgres **Internal Database URL** |
 | `JWT_ACCESS_SECRET` | 32+ random chars — `openssl rand -base64 32` |
 | `JWT_REFRESH_SECRET` | a *different* 32+ random string |
+| `AUTH_SOURCE_PEPPER` | a third 32+ random string — set it once, then never change it |
 | `APP_BASE_URL` | the Vercel URL below |
 
 Both secrets are mandatory in production: `apps/api/src/env.ts` only falls back to
 insecure defaults outside production, so the service refuses to boot without them.
+
+### Rotating a signing secret
+
+Access tokens and single-purpose links carry a `kid` header naming the key that
+signed them, and are verified against a small ring rather than one secret
+([access.md](docs/operating-model/access.md) §14 step 4). So a rotation is three
+deploys with nobody signed out, instead of an event that logs the whole platform
+out at once:
+
+1. `JWT_ACCESS_SECRET_RETIRED=<the new secret>` — deploy. Both keys now verify;
+   nothing is signed with the new one yet.
+2. Move that value into `JWT_ACCESS_SECRET`, and put the **old** one in
+   `JWT_ACCESS_SECRET_RETIRED` — deploy. New tokens carry the new `kid`; every
+   token already in someone's browser still verifies.
+3. Wait `ACCESS_TOKEN_TTL_SECONDS` (15 minutes by default), then clear
+   `JWT_ACCESS_SECRET_RETIRED` — deploy. The old key is gone.
+
+`JWT_REFRESH_SECRET_RETIRED` is the same for the refresh secret, which signs no
+refresh token (those are opaque) but does sign password-reset links — so step 3
+waits out the link TTL rather than the access-token one.
+
+**`AUTH_SOURCE_PEPPER` must be set before rotating `JWT_REFRESH_SECRET`.** The rate
+limiter salts its source-address hashes, and until the pepper has its own value it
+borrows that secret — so rotating without it silently resets every rate-limit
+budget mid-flight.
 
 Migrations run in the start command rather than a `preDeployCommand`, which needs a
 paid instance. They are forward-only and tracked, so re-running on each boot is a

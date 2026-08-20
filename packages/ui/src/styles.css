@@ -318,3 +318,8 @@ a.cq-object-list__item:hover { background: var(--cq-surface-subtle); text-decora
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
 }
+
+/* Recovery codes: shown once, usually printed or copied. Monospace and a grid so a
+   run of similar-looking characters is read correctly off a screen or off paper. */
+.cq-recovery-codes { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; list-style: none; margin: 0; padding: 0; }
+.cq-recovery-codes code { display: block; padding: 8px 10px; border: 1px solid var(--cq-border); border-radius: 6px; background: var(--cq-surface-subtle); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; letter-spacing: 0.04em; text-align: center; }

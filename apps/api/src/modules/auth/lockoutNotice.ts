@@ -1,6 +1,7 @@
+import { lockoutWindowBucket } from '@crewquo/shared';
 import { env } from '../../env';
 import { recordPlatformAudit } from '../admin/platform.repo';
-import { sendEmail } from '../notifications/channels';
+import { dispatchNotification } from '../notifications/dispatch';
 import { findUserByEmail } from '../users/repo';
 
 /**
@@ -12,21 +13,19 @@ import { findUserByEmail } from '../users/repo';
  * gate. That matters more than it looks: an email per failed attempt turns the
  * sign-in form into a mail bomb aimed at whatever address an attacker types, which
  * is a worse hole than the one being closed.
+ *
+ * **The in-product row landed with 0018, which is what changed here.** The first
+ * version of this file sent an email inline and said why the inbox half was
+ * missing: `notifications.company_id` was `not null`, so the inbox could only hold
+ * something belonging to a company, and a lockout belongs to a *person*. That
+ * comment expected the column to be widened by the MFA slice; session lineage got
+ * there first, because a detected token reuse and an operator revocation are the
+ * same shape and needed it too. So this now goes through the ordinary notification
+ * path — one durable row, and email with the retries and delivery evidence every
+ * other notification gets, instead of a `void sendEmail(...)` whose failure left
+ * no trace.
  */
 
-/**
- * **In-product delivery is missing here, and that is a schema fact rather than an
- * oversight.** `notifications.company_id` is `not null`, so the inbox can only hold
- * something that belongs to a company — and a lockout belongs to a *person*. Their
- * account may span several companies or none at all.
- *
- * Picking one of their companies to hang it on would put a security alert in a
- * tenant's audit-visible inbox and imply the event happened there, which is false
- * and leaks between tenants. So this slice sends the email and records the
- * platform-side evidence, and the account-scoped inbox arrives with the MFA slice,
- * where the rest of this domain's notification kinds land together and the column
- * can be widened once for all of them rather than bent here for one.
- */
 export async function notifyLockout(email: string): Promise<void> {
   const user = await findUserByEmail(email);
 
@@ -51,18 +50,24 @@ export async function notifyLockout(email: string): Promise<void> {
     console.log(`[auth] lockout notice for ${email}`);
   }
 
-  const outcome = await sendEmail({
-    recipientEmail: user.email,
-    recipientName: user.name,
+  await dispatchNotification({
+    kind: 'auth.lockout',
+    // Account-scoped: this happened to a person, not inside a tenant.
+    companyId: null,
+    recipientUserIds: [user.id],
     title: 'Too many sign-in attempts on your CrewQuo account',
     body:
       'Someone made repeated failed sign-in attempts on your account, so we have ' +
       'paused sign-in for a short time. If that was you, nothing is wrong — try ' +
       'again shortly. If it was not, change your password: whoever it was does not ' +
       'have it yet.',
-    actionUrl: '/reset-password',
+    actionUrl: '/security',
+    subjectType: 'USER',
+    subjectId: user.id,
+    topic: 'auth.lockout',
+    // One notification per lockout window. There is no lockout *row* to key on —
+    // the budget is a count over `auth_attempts`, not an entity — so the window
+    // bucket is the identity. See `lockoutWindowBucket`.
+    aggregateId: `${user.id}:${lockoutWindowBucket(Date.now())}`,
   });
-  if (outcome.status === 'failed') {
-    console.error(`[auth] lockout notice to ${user.email} failed: ${outcome.error}`);
-  }
 }

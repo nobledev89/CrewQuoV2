@@ -1,7 +1,15 @@
+import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Client } from 'pg';
 import { expect, type Browser, type Page } from '@playwright/test';
+import {
+  base32Decode,
+  base32Encode,
+  totpCounter,
+  totpCounterBytes,
+  totpTruncate,
+} from '@crewquo/shared';
 
 /**
  * Fixtures for the parity E2E. Everything here exists to *set up* a scenario; the
@@ -80,14 +88,68 @@ export async function makeSuperAdmin(email: string): Promise<void> {
   const db = new Client({ connectionString: databaseUrl() });
   await db.connect();
   try {
-    const { rowCount } = await db.query(
-      `update users set is_super_admin = true where email = $1`,
+    const { rows } = await db.query<{ id: string }>(
+      `update users set is_super_admin = true where email = $1 returning id`,
       [email]
     );
-    if (rowCount === 0) throw new Error(`No user ${email} to promote`);
+    const user = rows[0];
+    if (!user) throw new Error(`No user ${email} to promote`);
+
+    /*
+     * **And give them the factor the console requires** (§13.1).
+     *
+     * Platform staff must hold a confirmed second factor before `/v1/admin/*`
+     * answers them, so a fixture that only flips the column produces staff who
+     * cannot reach the console they exist to test. Written straight to the table
+     * with a fixed secret, for the same reason `is_super_admin` is: this is a
+     * fixture establishing a state, not a test of the enrolment flow — that has its
+     * own coverage in `verify-e2e` and on the security screen.
+     *
+     * The secret is shared with `staffTotpCode` below so the sign-in helper can
+     * answer the challenge exactly as a person with a phone would.
+     */
+    await db.query(
+      `insert into auth_factors (user_id, kind, secret, status, confirmed_at)
+       values ($1, 'TOTP', $2, 'ACTIVE', now())
+       on conflict (user_id, kind) do update
+         set secret = excluded.secret, status = 'ACTIVE', confirmed_at = now(),
+             last_counter = null, updated_at = now()`,
+      [user.id, STAFF_TOTP_SECRET]
+    );
   } finally {
     await db.end();
   }
+}
+
+/**
+ * The fixed TOTP secret every staff fixture holds.
+ *
+ * A constant rather than a random value so the sign-in helper can derive codes
+ * without passing state around; it exists only in this repo's own test database.
+ */
+const STAFF_TOTP_SECRET = base32Encode(
+  new Uint8Array([...'crewquo-parity-fixture'].map((c) => c.charCodeAt(0)))
+);
+
+/**
+ * The code an authenticator app holding `secret` would be showing right now.
+ *
+ * `offsetSteps` reaches the next window, which a test needs whenever the previous
+ * step already consumed this one — a factor accepts each counter once.
+ */
+export function totpCodeForSecret(secret: string, offsetSteps = 0): string {
+  const counter = totpCounter(Date.now()) + offsetSteps;
+  const digest = new Uint8Array(
+    createHmac('sha1', Buffer.from(base32Decode(secret)))
+      .update(totpCounterBytes(counter))
+      .digest()
+  );
+  return totpTruncate(digest, 6);
+}
+
+/** The code a staff fixture's authenticator app would be showing right now. */
+function staffTotpCode(offsetSteps = 0): string {
+  return totpCodeForSecret(STAFF_TOTP_SECRET, offsetSteps);
 }
 
 /** Register a user with no company at all — the state platform staff are in. */
@@ -182,6 +244,52 @@ export async function signIn(page: Page, email: string): Promise<void> {
   await page.getByLabel('Email address').fill(email);
   await page.getByLabel('Password').fill(PASSWORD);
   await page.getByRole('button', { name: 'Sign in' }).click();
+
+  /*
+   * A staff account holds a second factor, so the password is only the first step.
+   * Detected rather than declared: the caller should not have to know whether the
+   * address it was handed is staff, and the check is one locator either way.
+   *
+   * The code is computed at this moment rather than reused, because a step-3 factor
+   * consumes the counter it accepts — the fixture may already have spent this
+   * window's code on a previous sign-in in the same test.
+   */
+  const codeField = page.getByLabel('Six-digit code');
+  /*
+   * Race the two possible outcomes rather than waiting for one of them.
+   *
+   * A bare `isVisible()` answers before the challenge screen paints, so a staff
+   * account's second step is silently skipped. A bare `waitFor` on the code field
+   * fixes that and introduces a worse bug: every *ordinary* sign-in then pays the
+   * whole timeout, which across a suite of them is a minute of dead time and enough
+   * to push a later test past its own limit. Whichever appears first wins.
+   */
+  const outcome = await Promise.race([
+    codeField.waitFor({ state: 'visible', timeout: 15_000 }).then(
+      () => 'challenge' as const,
+      () => 'timeout' as const
+    ),
+    page.waitForURL(/\/(app|admin|profile)/, { timeout: 15_000 }).then(
+      () => 'signed-in' as const,
+      () => 'timeout' as const
+    ),
+  ]);
+
+  if (outcome === 'challenge') {
+    await codeField.fill(staffTotpCode());
+    await page.getByRole('button', { name: 'Sign in' }).click();
+    // A factor consumes the counter it accepts, so a fixture signing in twice inside
+    // one 30-second window meets its own spent code. The refusal names the remedy and
+    // the next window's code is it — which the drift window accepts.
+    const spent = await page
+      .getByText('already been used')
+      .waitFor({ state: 'visible', timeout: 2_000 })
+      .then(() => true, () => false);
+    if (spent) {
+      await codeField.fill(staffTotpCode(1));
+      await page.getByRole('button', { name: 'Sign in' }).click();
+    }
+  }
   // `/profile` is a legitimate landing too: an unentitled free company gets the
   // Account setup view (§9.2), whose home *is* the profile. The real barrier is
   // the shell assertion below, not the URL — this pattern only exists to wait for

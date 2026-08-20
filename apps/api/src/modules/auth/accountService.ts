@@ -2,7 +2,7 @@ import { env } from '../../env';
 import { sendEmail } from '../notifications/channels';
 import { findUserByEmail, markEmailVerified, updatePasswordHash } from '../users/repo';
 import { hashPassword } from './passwords';
-import { revokeAllRefreshTokens } from './refreshTokens';
+import { revokeAllSessions } from './sessions.repo';
 import { signPurposeToken, verifyPurposeToken } from './tokens';
 
 const RESET_TTL_SECONDS = 60 * 60; // 1 hour
@@ -55,8 +55,17 @@ export async function resetPassword(token: string, newPassword: string): Promise
   const userId = verifyPurposeToken(token, 'password_reset');
   const passwordHash = await hashPassword(newPassword);
   await updatePasswordHash(userId, passwordHash);
-  // Invalidate existing sessions after a password change.
-  await revokeAllRefreshTokens(userId);
+  /*
+   * Every session ends, on every device, and the cause is recorded as the reset
+   * rather than left blank.
+   *
+   * That distinction is what the device list needs afterwards: a person who resets
+   * their password *because* they suspect somebody else has it opens this screen
+   * next, and "ended by the password reset" is the row that tells them the thing
+   * they hoped for actually happened. A revocation with no cause reads like
+   * something unexplained, which is precisely the wrong feeling on that screen.
+   */
+  await revokeAllSessions(userId, { cause: 'PASSWORD_RESET' });
 }
 
 export async function verifyEmail(token: string): Promise<void> {

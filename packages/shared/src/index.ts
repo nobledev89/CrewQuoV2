@@ -19,3 +19,4 @@ export * from './time';
 export * from './workspace';
 export * from './company-creation';
 export * from './access';
+export * from './totp';

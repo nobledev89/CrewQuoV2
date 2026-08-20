@@ -12,6 +12,7 @@ import {
   registerViaUi,
   setRegistrationIdentity,
   signIn,
+  totpCodeForSecret,
   verifyEmail,
 } from './helpers';
 
@@ -1014,4 +1015,155 @@ test.describe('Web core workflows', () => {
     // A skip is a recorded non-send, not a quiet success — it gets equal billing.
     await expect(queue.getByText('Deliberately not sent, with a recorded reason')).toBeVisible();
   });
+
+  test('a person sees their own devices, and can end one that is not this one', async ({
+    browser,
+  }) => {
+    /*
+     * The packet's §12.12 — "everything above is reversible by the account holder
+     * without an operator". Two browser contexts are two devices as far as the
+     * server is concerned, which is the only way to prove the interesting half:
+     * that ending one leaves the other alone, and that the list can tell them apart.
+     */
+    const email = await registerHeadless({ handle: 'devices', name: 'Devi Cess' });
+
+    const first = await freshPage(browser);
+    await signIn(first, email);
+    const second = await freshPage(browser);
+    await signIn(second, email);
+
+    await second.goto('/security');
+    await expect(second.getByRole('heading', { name: 'Security' })).toBeVisible();
+
+    const signedIn = second.locator('section.cq-section', {
+      has: second.getByRole('heading', { name: 'Signed in' }),
+    });
+    // Registering signed them in once and each browser again, so there are three.
+    // The badge is the assertion that matters: a device list that cannot say which
+    // row is the machine you are holding is a list nobody dares act on.
+    await expect(signedIn.getByRole('row')).toHaveCount(4); // header + three devices
+    await expect(signedIn.getByText('This device')).toHaveCount(1);
+
+    // End every other device from here. Keeping the caller's own session is what
+    // makes this a control people use: an action that also signs *you* out reads as
+    // a mistake you just made, at the moment somebody is already worried.
+    await second.getByRole('button', { name: 'Sign out other devices' }).click();
+    await expect(second.getByText(/devices signed out\.|device signed out\./)).toBeVisible();
+    await expect(signedIn.getByRole('row')).toHaveCount(2); // header + this device
+
+    // The ended ones are still listed, with why. "When did that device last sign in"
+    // is the question people actually ask after a scare, and it has to survive the
+    // token being gone.
+    const ended = second.locator('section.cq-section', {
+      has: second.getByRole('heading', { name: 'Recently ended' }),
+    });
+    await expect(ended.getByText('You ended it').first()).toBeVisible();
+
+    // And the other browser is genuinely out — not "out at its next refresh".
+    await first.goto('/profile');
+    await expect(first).toHaveURL(/\/login/);
+
+    await first.close();
+    await second.close();
+  });
+
+  test('signing out of this device from the security screen signs you out here', async ({
+    browser,
+  }) => {
+    // Ending the session you are holding is allowed, and the screen has to behave
+    // like it means it: refusing would leave the one device somebody is definitely
+    // holding as the one they cannot end.
+    const email = await registerHeadless({ handle: 'self-out', name: 'Self Out' });
+    const page = await freshPage(browser);
+    await signIn(page, email);
+
+    await page.goto('/security');
+    const signedIn = page.locator('section.cq-section', {
+      has: page.getByRole('heading', { name: 'Signed in' }),
+    });
+    await signedIn
+      .getByRole('row')
+      .filter({ hasText: 'This device' })
+      .getByRole('button', { name: 'Sign out' })
+      .click();
+
+    await expect(page).toHaveURL(/\/login/);
+    await page.close();
+  });
+
+  test('a person turns on two-step sign-in, uses it, and turns it off again', async ({
+    browser,
+  }) => {
+    /*
+     * The whole §12.5–12.7 arc from a browser: enrol, confirm, see the recovery codes
+     * exactly once, sign in through the second step, and remove it again with a
+     * password. Driven end to end because the parts that break are the seams — a code
+     * field that does not autofocus, codes rendered where nobody saves them, or a
+     * removal form that forgets it needs a password.
+     */
+    const email = await registerHeadless({ handle: 'two-step', name: 'Tess Two' });
+    const page = await freshPage(browser);
+    await signIn(page, email);
+
+    await page.goto('/security');
+    const section = page.locator('section.cq-section', {
+      has: page.getByRole('heading', { name: 'Two-step sign-in' }),
+    });
+    // `exact`: the section's own description ends "…off unless you turn it on", so a
+    // loose match resolves to two elements and trips strict mode.
+    await expect(section.getByText('Off', { exact: true })).toBeVisible();
+
+    await section.getByRole('button', { name: 'Set up an authenticator app' }).click();
+    // The key is shown as text as well as a link, because an authenticator app on
+    // this same device cannot scan a code on this same screen.
+    const key = await section.getByLabel('Setup key').inputValue();
+    expect(key).toMatch(/^[A-Z2-7]{32}$/);
+
+    // Enrolment is not finished until a code is accepted — so the state is still not
+    // "on" at this point, which is what stops a QR that never scanned from locking
+    // somebody out of their own account.
+    await expect(section.getByText('Unfinished', { exact: true })).toBeVisible();
+
+    await section.getByLabel('Code from the app').fill(totpCodeForSecret(key));
+    await section.getByRole('button', { name: 'Confirm' }).click();
+
+    await expect(section.getByText('On', { exact: true })).toBeVisible();
+    await expect(section.getByText('10 recovery codes left')).toBeVisible();
+    // Shown once, and the screen says so rather than leaving somebody to discover it.
+    await expect(section.getByText('this is the only time they are shown')).toBeVisible();
+    const codes = await section.locator('.cq-recovery-codes code').allTextContents();
+    expect(codes).toHaveLength(10);
+    expect(codes[0]).toMatch(/^[A-Z2-7]{5}-[A-Z2-7]{5}$/);
+    await section.getByRole('button', { name: 'I have saved them' }).click();
+    await expect(section.locator('.cq-recovery-codes')).toHaveCount(0);
+
+    // Sign in again on a second device, through the second step this time.
+    const second = await freshPage(browser);
+    await second.goto('/login');
+    await second.getByLabel('Email address').fill(email);
+    await second.getByLabel('Password').fill(PARITY_PASSWORD);
+    await second.getByRole('button', { name: 'Sign in' }).click();
+    await expect(second.getByRole('heading', { name: 'Enter your code' })).toBeVisible();
+    // Offered honestly: this account saved codes, so the alternative is real.
+    await expect(second.getByRole('button', { name: 'Use a recovery code instead' })).toBeVisible();
+
+    // The next window's code: confirming above consumed this one, and one code is
+    // worth exactly one sign-in.
+    await second.getByLabel('Six-digit code').fill(totpCodeForSecret(key, 1));
+    await second.getByRole('button', { name: 'Sign in' }).click();
+    await expect(second.locator('.cq-account__name')).toBeVisible();
+    await second.close();
+
+    // And off again, which needs the password back — adding protection is free,
+    // removing it is not.
+    await page.reload();
+    await section.getByRole('button', { name: 'Remove' }).click();
+    await expect(section.getByLabel('Confirm your password to remove it')).toBeVisible();
+
+    await section.getByLabel('Confirm your password to remove it').fill(PARITY_PASSWORD);
+    await section.getByRole('button', { name: 'Remove two-step sign-in' }).click();
+    await expect(section.getByText('Off', { exact: true })).toBeVisible();
+    await page.close();
+  });
+
 });

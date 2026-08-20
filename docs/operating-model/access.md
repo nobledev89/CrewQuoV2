@@ -5,7 +5,7 @@ device, and what a platform operator may do to somebody else's tenant. Covers
 authentication factors and recovery, session and device lifecycle, step-up
 re-authentication, request rate limiting, signing-secret rotation, support access,
 and the tenant-boundary threat model the rest of the packets assume.
-**Phase:** 6 · **Status:** adopted · **Last updated:** 2026-08-19
+**Phase:** 6 · **Status:** adopted · **Last updated:** 2026-08-20 (§14 fully built — all four steps shipped)
 **Plan refs:** §4 (auth context), §5 (tokens), §5B (platform staff), §3.1.1(7)
 (recent authentication, rate limiting, immutable decision record), §19.5 (this
 packet's shape), §42 (the security-hardening bullet this answers), §44 (the test
@@ -264,9 +264,10 @@ checks are expressed.
    browser storage, any page the user visits can call the API with their token. Not in
    the §42 bullet list; it belongs in this packet regardless.
 5. **No security headers and no explicit body limit** beyond Express's defaults.
-6. **A single static JWT secret with no key id**, so rotation means signing out every
+6. ~~**A single static JWT secret with no key id**, so rotation means signing out every
    user on the platform simultaneously — which means, in practice, that it never
-   happens.
+   happens.~~ **Closed on 2026-08-20** by step 4. Both JWT secrets are now rings, and
+   rotation is a three-deploy procedure with nobody signed out.
 7. ~~**Support access is undefined.**~~ **Closed by decision on 2026-08-19 (§13.3):
    there is no impersonation and no per-tenant operator read, now or by default
    later.** The hole was never the missing capability — it was that "we never built
@@ -278,6 +279,13 @@ a small active set while signing only with the current one. Rotation becomes
 publish-new → sign-with-new → retire-old-after-one-access-TTL, and nobody is logged
 out. Refresh tokens need no such scheme: they are opaque and their hash is the record,
 so rotating the *signing* secret does not touch them.
+
+**Built, and one thing here was wrong.** "Refresh tokens need no such scheme" is true
+and was read as "the refresh secret needs no such scheme", which is not. That secret
+signs no refresh token, but it does sign the single-purpose tokens — password-reset
+links, email-verification links, the MFA challenge — and a reset link is good for an
+hour, so it routinely outlives a deploy. It got a ring too. The other correction is in
+§14 step 4.
 
 **Rate limiting is Postgres-backed, not in-process.** Two reasons, and the second is
 the real one: the API runs more than one instance, so an in-memory counter is a
@@ -329,7 +337,12 @@ leaked password list.**
 7. **Recovered.** A recovery code signs her in once, is consumed, and cannot be reused.
    Regenerating the set invalidates every old code.
 8. **Sessions.** Dana sees her own sessions and no one else's; another user's session id
-   is a 404. Ending one stops that device's next refresh.
+   is a 404. Ending one stops that device's next refresh — **and, since it was built,
+   its current access token too.** The session id travels in the access token as `sid`,
+   so `requireAuth` can check the session is live in the same round trip it already
+   spends loading the user. The weaker promise was written expecting that check to cost
+   something; it costs one indexed read issued in parallel, so "ended" now means ended
+   rather than ended within fifteen minutes. §8's offline caveat is unaffected.
 9. **Rotation.** A refresh exchanges for a successor; replaying the retired token after
    the grace window revokes the whole family and emails her.
 10. **Secret rotation.** A key is rotated with both keys active: tokens signed by the old
@@ -380,15 +393,35 @@ whose rejected options are lost reads a year later like something nobody conside
 ## 14. Build order
 
 Nothing here needs another decision. Ordered by severity from §10 rather than by
-convenience:
+convenience. **All four shipped** — 1 and 2 on 2026-08-19 (`0016`, `0018`), 3 and 4 on
+2026-08-20 (`0019`, and step 4 needed no migration); PROGRESS.md records what each one
+decided along the way, including the three places where building it moved a bound in
+this document:
 
-1. **Rate limiting** (login, reset, register), Postgres-backed, keyed on address *and*
+1. ~~**Rate limiting** (login, reset, register), Postgres-backed, keyed on address *and*
    source, with the lockout notification itself rate-limited. Plus the CORS origin
-   allowlist, security headers and an explicit body limit — small, and they close §10.4
-   and §10.5 in the same pass.
-2. **Refresh rotation with reuse detection**, and self-service session/device
-   management on top of it.
-3. **MFA**: TOTP with recovery codes, mandatory for super admins, offered to customer
-   OWNER/ADMIN, plus the operator reset path from §13.2.
-4. **`kid`-based signing-secret rotation**, asserted by holding a live session across
-   a rotation.
+   allowlist, security headers and an explicit body limit.~~ **Shipped** — `0016`. Closed
+   §10.4 and §10.5 in the same pass, as expected. Left one thing open that it said out
+   loud: the lockout had no in-product row, because `notifications.company_id` was not
+   null and a lockout belongs to a person.
+2. ~~**Refresh rotation with reuse detection**, and self-service session/device
+   management on top of it.~~ **Shipped** — `0018`. Rotation existed; the lineage that
+   makes "revoke the family" expressible did not. Also widened
+   `notifications.company_id` — step 1's open item, needed here by two more kinds — and
+   strengthened §12.8 as noted above.
+3. ~~**MFA**: TOTP with recovery codes, mandatory for super admins, offered to customer
+   OWNER/ADMIN, plus the operator reset path from §13.2.~~ **Shipped** — `0019`. §13.1
+   was reopened by the owner on 2026-08-20 and reaffirmed unchanged. Two things this
+   document did not anticipate, both recorded in PROGRESS.md: a spent code needs its
+   own refusal (hiding it makes the holder retype a *correct* code until they are
+   locked out), and the staff mandate is enforced on the platform console rather than
+   at sign-in — blocking a staff login would lock an operator out of their own
+   customer-side account over a rule that exists to protect the console.
+4. ~~**`kid`-based signing-secret rotation**, asserted by holding a live session across
+   a rotation.~~ **Shipped** — no migration; a ring is configuration, not state. Both
+   JWT secrets got one, not just the access secret, for the reason recorded in §10
+   above. Two things this document did not anticipate, both in PROGRESS.md: a token
+   with **no** `kid` has to keep verifying or the deploy that adds the ring commits the
+   exact mass logout the ring exists to prevent; and the rate limiter was salting its
+   source hashes with a signing secret, so a rotation would have silently reset every
+   budget — a static secret can be borrowed, a rotating one cannot.

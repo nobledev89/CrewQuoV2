@@ -6,6 +6,8 @@ import { env } from './env';
 import { errorHandler, notFoundHandler } from './http/errorHandler';
 import { requireAuth, requireSuperAdmin } from './http/middleware/auth';
 import { authRouter } from './modules/auth/routes';
+import { sessionsRouter } from './modules/auth/sessions.routes';
+import { mfaRouter } from './modules/auth/mfa.routes';
 import { meRouter } from './modules/me/routes';
 import { companiesRouter } from './modules/companies/routes';
 import { entitlementsRouter } from './modules/entitlements/routes';
@@ -183,6 +185,13 @@ export function buildApp(): Express {
   app.use('/v1/auth', authRouter);
 
   // Authenticated routes.
+  //
+  // Sessions are mounted BEFORE `/v1/me` deliberately. Express would fall through
+  // from one router to the next anyway, but "the more specific path is registered
+  // first" is a property worth not relying on the fall-through for: a future
+  // `/:something` route inside `meRouter` would otherwise swallow this silently.
+  app.use('/v1/me/sessions', requireAuth, sessionsRouter);
+  app.use('/v1/me/mfa', requireAuth, mfaRouter);
   app.use('/v1/me', requireAuth, meRouter);
   // Additional-company requests (§3.1.1). Companyless by nature — a request
   // exists before its tenant does, so it takes no X-Company-Id.

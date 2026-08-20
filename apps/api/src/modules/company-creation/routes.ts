@@ -20,8 +20,7 @@ import { AppError } from '../../http/errors';
 import { uuidParam } from '../../http/params';
 import { withTransaction } from '../../db';
 import { findUserById } from '../users/repo';
-import { verifyPassword } from '../auth/passwords';
-import { verifyGoogleIdToken } from '../auth/google';
+import { requireStepUpAuth } from '../auth/stepUp';
 import { recordPlatformAudit } from '../admin/platform.repo';
 import { getCompanyCreationSettings } from './settings';
 import {
@@ -46,40 +45,6 @@ import {
  * distinct legal business.
  */
 export const companyCreationRouter = Router();
-
-/**
- * Step-up re-authentication (§3.1.1(7)'s "recent authentication").
- *
- * An access token is re-minted by refresh without anyone re-proving anything, so
- * its age is not evidence of a recent human. Re-entry is. A Google-only account
- * has no password hash, which is why the ID-token arm exists rather than being an
- * alternative for convenience.
- */
-async function requireStepUpAuth(
-  userId: string,
-  input: { password?: string; googleIdToken?: string }
-): Promise<void> {
-  const user = await findUserById(userId);
-  if (!user) throw new AppError('NOT_FOUND', 'User not found');
-
-  if (input.password && user.password_hash) {
-    if (await verifyPassword(input.password, user.password_hash)) return;
-    throw new AppError('UNAUTHENTICATED', 'That password was not correct');
-  }
-
-  if (input.googleIdToken) {
-    const identity = await verifyGoogleIdToken(input.googleIdToken);
-    if (identity.googleSub && identity.googleSub === user.google_sub) return;
-    throw new AppError('UNAUTHENTICATED', 'That Google account does not match this login');
-  }
-
-  throw new AppError(
-    'VALIDATION',
-    user.password_hash
-      ? 'Confirm your password to continue'
-      : 'Confirm your Google sign-in to continue'
-  );
-}
 
 /**
  * GET /v1/company-creation-requests — everything the profile screen needs to pick

@@ -8,6 +8,7 @@ import {
   adminPlanPriceSchema,
   adminPlanUpdateSchema,
   adminReasonSchema,
+  adminResetMfaSchema,
   adminReportingQuerySchema,
   adminSetSubscriptionSchema,
   adminSetSuperAdminSchema,
@@ -51,10 +52,11 @@ import {
   listAdminUsers,
   listPlatformAudit,
   recordPlatformAudit,
-  revokeAdminUserSessions,
   setUserSuperAdmin,
   updatePlatformSettings,
 } from './platform.repo';
+import { revokeSessionsAsOperator } from '../auth/securityEvents';
+import { resetMfaAsOperator } from '../auth/mfa.service';
 import { adminCompanyCreationRouter } from '../company-creation/admin';
 import {
   insertTrialGrants,
@@ -99,8 +101,36 @@ adminRouter.post(
   asyncHandler(async (req, res) => {
     const ctx = getCtx(req);
     const { reason } = adminReasonSchema.parse(req.body);
-    const revoked = await revokeAdminUserSessions(ctx.userId, uuidParam(req, 'id'), reason);
+    const revoked = await revokeSessionsAsOperator({
+      actorUserId: ctx.userId,
+      userId: uuidParam(req, 'id'),
+      reason,
+    });
     res.json({ revoked });
+  })
+);
+
+/**
+ * POST /v1/admin/users/:id/reset-mfa — the lost-device path (§13.2).
+ *
+ * The narrow, recorded, notified route the packet chose over "genuinely
+ * unrecoverable", whose cost it states plainly: this makes the operator the weakest
+ * link, which is why the same operators are the ones who must hold a factor
+ * themselves. It grants the operator nothing — it removes a factor and ends every
+ * session, so it takes access away rather than handing any over.
+ */
+adminRouter.post(
+  '/users/:id/reset-mfa',
+  asyncHandler(async (req, res) => {
+    const ctx = getCtx(req);
+    const { reason } = adminResetMfaSchema.parse(req.body);
+    res.json(
+      await resetMfaAsOperator({
+        actorUserId: ctx.userId,
+        userId: uuidParam(req, 'id'),
+        reason,
+      })
+    );
   })
 );
 

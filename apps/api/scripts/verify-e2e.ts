@@ -21,11 +21,20 @@
  * Every run uses a fresh set of accounts, so it is safe to re-run against a
  * database that already has data.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import ExcelJS from 'exceljs';
+import jwt from 'jsonwebtoken';
 import pg from 'pg';
 import { env } from '../src/env';
 import { pool } from '../src/db';
+import {
+  base32Decode,
+  totpCounter,
+  totpCounterBytes,
+  totpTruncate,
+} from '@crewquo/shared';
+import { deriveKid, parseRetiredSecrets } from '../src/modules/auth/signingKeys';
+import { currentAccessKid, signPurposeToken } from '../src/modules/auth/tokens';
 import { runOutboxBatch } from '../src/modules/delivery/worker';
 import { recoverStaleOutboxClaims } from '../src/modules/delivery/repo';
 import { runNotificationDeliveryBatch } from '../src/modules/notifications/deliveryWorker';
@@ -123,6 +132,53 @@ async function register(handle: string, companyName?: string, emailOverride?: st
     token: res.json.tokens.accessToken as string,
     companyId: (res.json.memberships[0]?.companyId as string | undefined) ?? null,
   };
+}
+
+/**
+ * Promote an account to platform staff, **and give it the factor the console now
+ * requires**.
+ *
+ * Both halves, because from build-order step 3 onwards they are one fact: a super
+ * admin without a confirmed second factor is refused by `/v1/admin/*` (§13.1), so a
+ * fixture that only flips the column produces staff who cannot reach the console
+ * they were created to test. That is the mandate working, and it is also exactly
+ * what a real deployment sees — every existing super admin must enrol before using
+ * the console again, which they can do from `/security` without it.
+ */
+async function promoteToStaff(user: { userId: string; token: string }): Promise<void> {
+  await db.query(`update users set is_super_admin = true where id = $1`, [user.userId]);
+  const enrol = await call('POST', '/v1/me/mfa', { token: user.token });
+  const secret = enrol.json?.secret as string;
+  if (!secret) throw new Error(`could not enrol a factor for staff: ${JSON.stringify(enrol.json)}`);
+  const counter = totpCounter(Date.now());
+  const digest = new Uint8Array(
+    createHmac('sha1', Buffer.from(base32Decode(secret))).update(totpCounterBytes(counter)).digest()
+  );
+  const confirmed = await call('POST', '/v1/me/mfa/confirm', {
+    token: user.token,
+    body: { code: totpTruncate(digest, 6) },
+  });
+  if (confirmed.status !== 200) {
+    throw new Error(`could not confirm the staff factor: ${JSON.stringify(confirmed.json)}`);
+  }
+}
+
+/**
+ * Clear the rate-limit counters before a section that deliberately spends them.
+ *
+ * **Without this the suite is only re-runnable once every fifteen minutes**, and it
+ * fails in the most confusing way possible: the *source* budget is shared by every
+ * failed sign-in from this machine, so a second run inside the window starts locked
+ * out and every later assertion reports a 429 instead of the thing it was testing.
+ * That is a property of the limiter working, not of the code under test.
+ *
+ * Safe to do, and the reason is the same one the pruning job rests on: these rows
+ * are operational counters, not evidence. The durable record that somebody was
+ * locked out is a `platform_audit_logs` row, which is insert-only, outside every
+ * purge, and untouched here.
+ */
+async function clearAuthAttempts(): Promise<void> {
+  await db.query('delete from auth_attempts');
 }
 
 /** Put a company on a seeded plan. Fresh companies default to `crew` (no exports). */
@@ -1014,7 +1070,7 @@ async function main(): Promise<void> {
   section('Super-admin companies console');
 
   const staff = await register('staff');
-  await db.query(`update users set is_super_admin = true where id = $1`, [staff.userId]);
+  await promoteToStaff(staff);
 
   const notStaff = await call('GET', '/v1/admin/companies', { token: owner.token });
   eq('an ordinary account cannot read the console', notStaff.status, 403);
@@ -3746,6 +3802,8 @@ async function main(): Promise<void> {
   // is an account-existence oracle with a hundredfold signal.
   section('Access hardening — the front door');
 
+  await clearAuthAttempts();
+
   const rlUser = await register('rl-user', `Lockout Ltd ${RUN}`);
   const rlEmail = rlUser.email;
 
@@ -3883,6 +3941,833 @@ async function main(): Promise<void> {
     eq('...and so is the other spelling of the same loopback host',
       loopback.headers.get('access-control-allow-origin'), sibling);
   }
+
+  // ── Sessions, rotation & reuse detection (§42) ────────────────────────────
+  // docs/operating-model/access.md §12, items 4 and 8–9. Rotation already worked
+  // before this slice; what did not exist was *detection*. Replaying a retired
+  // token returned the same 401 an expired one does, and the legitimate session
+  // carried on — so the strongest theft signal the product could have was thrown
+  // away as a routine failure.
+  section('Access hardening — the session, and the token that came back twice');
+
+  // The front-door section above just spent most of the source budget on purpose.
+  await clearAuthAttempts();
+
+  const sessUser = await register('sess-user', `Sessions Ltd ${RUN}`);
+
+  const signIn = async (userAgent?: string) => {
+    const res = await fetch(`${BASE}/v1/auth/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(userAgent ? { 'user-agent': userAgent } : {}),
+      },
+      body: JSON.stringify({ email: sessUser.email, password: 'Verify-passw0rd!' }),
+    });
+    const json = (await res.json()) as any;
+    return {
+      status: res.status,
+      access: json?.tokens?.accessToken as string,
+      refresh: json?.tokens?.refreshToken as string,
+    };
+  };
+
+  // 1 ── A sign-in opens one session, and the device label is coarse.
+  const laptop = await signIn(
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/141.0.7390.55 Safari/537.36'
+  );
+  eq('signing in succeeds', laptop.status, 200);
+  const sessList1 = await call('GET', '/v1/me/sessions', { token: laptop.access });
+  // Two, not one: registering signed this account in as well, and that sign-in is
+  // a device like any other. A registration that opened no session would mean the
+  // tokens it hands back belong to nothing anybody can see or end.
+  eq('the sign-in is its own session, beside the one registration opened',
+    sessList1.json?.sessions?.length, 2);
+  const laptopSession = sessList1.json?.sessions?.find((s: any) => s.current);
+  eq('...labelled from the User-Agent family and nothing finer',
+    laptopSession?.deviceLabel, 'Chrome on Windows');
+  check('...and the label carries no version or build number',
+    !/[0-9]/.test(String(laptopSession?.deviceLabel ?? '')),
+    laptopSession?.deviceLabel);
+  eq('...marked as the caller own device', laptopSession?.current, true);
+  eq('...and ACTIVE', laptopSession?.state, 'ACTIVE');
+  const laptopSessionId = laptopSession?.id as string;
+
+  // A caller whose User-Agent names nothing recognisable gets no label rather than
+  // a guessed one — inventing "Unknown browser on Unknown OS" would read as a
+  // device the holder does not own, which is the false alarm this list must not
+  // raise. (`fetch` sends `node`, which matches none of the families.)
+  const anonymousClient = await signIn();
+  const sessList2 = await call('GET', '/v1/me/sessions', { token: anonymousClient.access });
+  const unlabelled = sessList2.json?.sessions?.find((s: any) => s.current);
+  eq('an unrecognised client gets a null label, not a guess', unlabelled?.deviceLabel, null);
+  eq('...and each sign-in is a session of its own', sessList2.json?.sessions?.length, 3);
+
+  // 2 ── Rotation: the successor works and the predecessor is retired, with the
+  // lineage that made "revoke the family" expressible in the first place.
+  const rotated = await call('POST', '/v1/auth/refresh', {
+    body: { refreshToken: laptop.refresh },
+  });
+  eq('a refresh token exchanges for a successor', rotated.status, 200);
+  check('...which is a different string',
+    rotated.json?.tokens?.refreshToken !== laptop.refresh);
+  const lineage = await db.query<{ n: string; parents: string }>(
+    `select count(*)::text as n, count(parent_id)::text as parents
+       from refresh_tokens where session_id = $1`,
+    [laptopSessionId]
+  );
+  eq('...recorded as a lineage rather than an unrelated row', lineage.rows[0]?.n, '2');
+  eq('...with the successor naming its predecessor', lineage.rows[0]?.parents, '1');
+
+  // 3 ── The grace window. Two devices refreshing at once is a phone waking while
+  // a laptop polls — and this product's own web app does it on every sign-in that
+  // crosses a route group. Without the window, that ordinary race would revoke the
+  // family and sign people out at random, which is how an alarm gets ignored.
+  const graceUse = await call('POST', '/v1/auth/refresh', {
+    body: { refreshToken: laptop.refresh },
+  });
+  eq('the same token inside the grace window rotates again rather than raising the alarm',
+    graceUse.status, 200);
+  const stillLive = await db.query<{ n: string }>(
+    `select count(*)::text as n from auth_sessions where id = $1 and revoked_at is null`,
+    [laptopSessionId]
+  );
+  eq('...and the session is untouched', stillLive.rows[0]?.n, '1');
+
+  // 4 ── Reuse. Ageing the rotation past the window is deterministic; waiting
+  // thirty seconds in a test suite is not, and a test that sleeps is a test that
+  // eventually gets deleted.
+  await db.query(
+    `update refresh_tokens set rotated_at = now() - interval '10 minutes' where token_hash = $1`,
+    [createHash('sha256').update(laptop.refresh).digest('hex')]
+  );
+
+  const reuse = await call('POST', '/v1/auth/refresh', {
+    body: { refreshToken: laptop.refresh },
+  });
+  eq('a retired token replayed after the window is refused', reuse.status, 401);
+  const reuseText = String(reuse.json?.error?.message ?? '').toLowerCase();
+  check('...without telling whoever holds it which failure it was',
+    !['reuse', 'reused', 'twice', 'revoked', 'already'].some((w) => reuseText.includes(w)),
+    reuseText);
+
+  const familyGone = await db.query<{ revoked_cause: string; live_tokens: string }>(
+    `select s.revoked_cause,
+            (select count(*)::text from refresh_tokens t
+              where t.session_id = s.id and t.revoked_at is null) as live_tokens
+       from auth_sessions s where s.id = $1`,
+    [laptopSessionId]
+  );
+  eq('the whole family is revoked, not just the token presented',
+    familyGone.rows[0]?.revoked_cause, 'TOKEN_REUSE');
+  eq('...leaving no live token in it', familyGone.rows[0]?.live_tokens, '0');
+
+  // The successor the legitimate device holds dies with the family. That is the
+  // intended cost: the product cannot tell which presentation was the real one —
+  // the thief may well have refreshed first — so it stops trusting both.
+  const victimAfter = await call('POST', '/v1/auth/refresh', {
+    body: { refreshToken: rotated.json?.tokens?.refreshToken },
+  });
+  eq('the legitimate successor is dead too', victimAfter.status, 401);
+
+  // A later replay of the same stolen token must not raise a second alarm. One
+  // theft, one alert: the branch that makes that true is "a revoked session is
+  // DEAD before rotation is even considered".
+  const replayAgain = await call('POST', '/v1/auth/refresh', {
+    body: { refreshToken: laptop.refresh },
+  });
+  eq('a further replay is simply dead', replayAgain.status, 401);
+
+  // 5 ── Recorded as evidence, and told to the holder durably.
+  const reuseAudit = await db.query<{ n: string }>(
+    `select count(*)::text as n from platform_audit_logs
+      where action = 'auth.token_reuse' and entity_id = $1`,
+    [sessUser.userId]
+  );
+  eq('the reuse is platform-audited once, not once per replay', reuseAudit.rows[0]?.n, '1');
+
+  await drainWorkers();
+  const reuseNotice = await db.query<{ n: string; company_id: string | null; urgency: string }>(
+    `select count(*)::text as n, min(company_id::text) as company_id, min(urgency) as urgency
+       from notifications
+      where recipient_user_id = $1 and kind = 'auth.token_reuse'`,
+    [sessUser.userId]
+  );
+  eq('the holder gets one durable notification', reuseNotice.rows[0]?.n, '1');
+  eq('...account-scoped rather than pinned to one of their companies',
+    reuseNotice.rows[0]?.company_id, null);
+  eq('...and urgent, which is the exception this domain earns',
+    reuseNotice.rows[0]?.urgency, 'URGENT');
+  const reuseEmail = await db.query<{ n: string }>(
+    `select count(*)::text as n from notification_deliveries d
+       join notifications n on n.id = d.notification_id
+      where n.recipient_user_id = $1 and n.kind = 'auth.token_reuse' and d.channel = 'EMAIL'`,
+    [sessUser.userId]
+  );
+  eq('...with an email queued through the durable path', reuseEmail.rows[0]?.n, '1');
+
+  // 6 ── Ending a session is immediate, not eventual. The packet's honest bound was
+  // the device's next refresh — up to a whole access-token lifetime of a lost phone
+  // still working — and one indexed read in the middleware closes it.
+  const phone = await signIn('Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) Safari/604.1');
+  const desktop = await signIn(
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1 Version/17 Safari/605.1'
+  );
+  const beforeEnd = await call('GET', '/v1/me/sessions', { token: desktop.access });
+  const phoneSession = beforeEnd.json?.sessions?.find(
+    (s: any) => s.deviceLabel === 'Safari on iOS' && s.state === 'ACTIVE'
+  );
+  check('the phone is listed from the desktop', Boolean(phoneSession), beforeEnd.json);
+  eq('...and the desktop knows which row is itself',
+    beforeEnd.json?.sessions?.filter((s: any) => s.current).length, 1);
+
+  const phoneStillWorks = await call('GET', '/v1/me', { token: phone.access });
+  eq('the phone works before it is ended', phoneStillWorks.status, 200);
+  const ending = await call('DELETE', `/v1/me/sessions/${phoneSession?.id}`, {
+    token: desktop.access,
+  });
+  eq('ending the phone succeeds', ending.status, 200);
+  const phoneAccessAfter = await call('GET', '/v1/me', { token: phone.access });
+  eq('...and its unexpired access token stops working at once', phoneAccessAfter.status, 401);
+  const phoneRefreshAfter = await call('POST', '/v1/auth/refresh', {
+    body: { refreshToken: phone.refresh },
+  });
+  eq('...as does its next refresh', phoneRefreshAfter.status, 401);
+
+  const endedRow = await db.query<{ revoked_cause: string }>(
+    `select revoked_cause from auth_sessions where id = $1`,
+    [phoneSession?.id]
+  );
+  eq('...recorded as the holder ending it, not as something unexplained',
+    endedRow.rows[0]?.revoked_cause, 'ENDED_BY_USER');
+
+  // 7 ── Somebody else's session is a 404, never a 403. A 403 would confirm the id
+  // names something real, which is a fact about another account.
+  const stranger = await register('sess-stranger');
+  const strangerList = await call('GET', '/v1/me/sessions', { token: stranger.token });
+  const strangerSession = strangerList.json?.sessions?.[0]?.id;
+  const crossTenant = await call('DELETE', `/v1/me/sessions/${strangerSession}`, {
+    token: desktop.access,
+  });
+  eq('another user session id is a 404', crossTenant.status, 404);
+  const malformedSession = await call('DELETE', '/v1/me/sessions/not-a-uuid', {
+    token: desktop.access,
+  });
+  eq('...and so is a malformed one, rather than a 500', malformedSession.status, 404);
+  const strangerIntact = await call('GET', '/v1/me', { token: stranger.token });
+  eq('...and the stranger session is untouched', strangerIntact.status, 200);
+
+  // 8 ── The panic button keeps the device in your hand.
+  const keepMe = await signIn('Mozilla/5.0 (X11; Linux x86_64) Firefox/141.0');
+  const endOthers = await call('POST', '/v1/me/sessions/end-others', { token: keepMe.access });
+  eq('ending other devices succeeds', endOthers.status, 200);
+  check('...and reports how many went', (endOthers.json?.ended ?? 0) >= 1, endOthers.json);
+  const mineAfter = await call('GET', '/v1/me', { token: keepMe.access });
+  eq('...while the caller own session survives', mineAfter.status, 200);
+  const othersAfter = await call('GET', '/v1/me', { token: desktop.access });
+  eq('...and the others do not', othersAfter.status, 401);
+  const remaining = await call('GET', '/v1/me/sessions', { token: keepMe.access });
+  eq('one session is left signed in',
+    remaining.json?.sessions?.filter((s: any) => s.state === 'ACTIVE').length, 1);
+  check('...and the ended ones are still listed as the forensic tail',
+    remaining.json?.sessions?.some((s: any) => s.state === 'REVOKED'), remaining.json);
+
+  // 9 ── Signing out ends the session, not merely the token presented. A revoked
+  // token with a live session would leave the device list showing a device that
+  // has signed out.
+  const goodbye = await signIn('Mozilla/5.0 (Windows NT 10.0) Firefox/141.0');
+  await call('POST', '/v1/auth/logout', { body: { refreshToken: goodbye.refresh } });
+  const afterLogout = await call('GET', '/v1/me', { token: goodbye.access });
+  eq('signing out invalidates the access token too', afterLogout.status, 401);
+  const logoutCause = await db.query<{ n: string }>(
+    `select count(*)::text as n from auth_sessions
+      where user_id = $1 and revoked_cause = 'SIGNED_OUT'`,
+    [sessUser.userId]
+  );
+  check('...and the session is recorded as signed out',
+    Number(logoutCause.rows[0]?.n) >= 1, logoutCause.rows[0]);
+
+  // 10 ── A password reset ends every session, and says why. Somebody who resets
+  // *because* they suspect a compromise opens the device list next, and needs to
+  // see that the thing they hoped for actually happened.
+  const resetUser = await register('sess-reset', `Reset Ltd ${RUN}`);
+  const resetSignIn = await call('POST', '/v1/auth/login', {
+    body: { email: resetUser.email, password: 'Verify-passw0rd!' },
+  });
+  const resetPurposeToken = signPurposeToken(resetUser.userId, 'password_reset', 600);
+  const resetDone = await call('POST', '/v1/auth/reset-password', {
+    body: { token: resetPurposeToken, password: 'Verify-passw0rd!2' },
+  });
+  eq('the password reset succeeds', resetDone.status, 200);
+  const afterReset = await call('GET', '/v1/me', {
+    token: resetSignIn.json?.tokens?.accessToken,
+  });
+  eq('...and every session it covered is gone', afterReset.status, 401);
+  const resetCause = await db.query<{ n: string }>(
+    `select count(*)::text as n from auth_sessions
+      where user_id = $1 and revoked_cause = 'PASSWORD_RESET'`,
+    [resetUser.userId]
+  );
+  check('...recorded as the reset rather than as something unexplained',
+    Number(resetCause.rows[0]?.n) >= 1, resetCause.rows[0]);
+
+  // 11 ── The operator path (§13.2): reason required, audited, and — new in this
+  // slice — the holder is actually told. It revoked and audited before, and the
+  // person it happened to was never notified, which made a legitimate support
+  // action indistinguishable from a compromise.
+  const opsUser = await register('sess-ops', `Operator Target ${RUN}`);
+  const opsAdmin = await register('sess-admin', `Platform Staff ${RUN}`);
+  await promoteToStaff(opsAdmin);
+  const opsSignIn = await call('POST', '/v1/auth/login', {
+    body: { email: opsUser.email, password: 'Verify-passw0rd!' },
+  });
+
+  const revokeWithoutReason = await call(
+    'POST',
+    `/v1/admin/users/${opsUser.userId}/revoke-sessions`,
+    { token: opsAdmin.token, body: {} }
+  );
+  eq('an operator cannot revoke without a reason', revokeWithoutReason.status, 422);
+  const opsRevoke = await call('POST', `/v1/admin/users/${opsUser.userId}/revoke-sessions`, {
+    token: opsAdmin.token,
+    body: { reason: 'Customer reported a stolen laptop (verify-e2e)' },
+  });
+  eq('...and can with one', opsRevoke.status, 200);
+  const opsAfter = await call('GET', '/v1/me', { token: opsSignIn.json?.tokens?.accessToken });
+  eq('...which ends the sessions immediately', opsAfter.status, 401);
+
+  await drainWorkers();
+  const opsNotice = await db.query<{ n: string; body: string | null }>(
+    `select count(*)::text as n, min(body) as body from notifications
+      where recipient_user_id = $1 and kind = 'auth.session_revoked'`,
+    [opsUser.userId]
+  );
+  eq('the holder is told an operator did it', opsNotice.rows[0]?.n, '1');
+  check('...without the operator internal reason being shown to them',
+    !String(opsNotice.rows[0]?.body ?? '').includes('stolen laptop'),
+    opsNotice.rows[0]?.body);
+  const opsAudit = await db.query<{ changes: any }>(
+    `select changes from platform_audit_logs
+      where action = 'user.sessions_revoked' and entity_id = $1
+      order by created_at desc limit 1`,
+    [opsUser.userId]
+  );
+  check('...while the reason is kept as platform evidence',
+    String(opsAudit.rows[0]?.changes?.reason ?? '').includes('stolen laptop'),
+    opsAudit.rows[0]?.changes);
+
+  // 12 ── No back door (§12.11), asserted as an absence: the operator surface holds
+  // aggregates and metadata, and there is no route by which staff read one tenant's
+  // records or act as one of its users.
+  const opsMetadata = await call('GET', `/v1/admin/users/${opsUser.userId}`, {
+    token: opsAdmin.token,
+  });
+  eq('an operator sees session metadata', opsMetadata.status, 200);
+  eq('...as a count, now of sessions rather than tokens',
+    opsMetadata.json?.user?.activeSessionCount, 0);
+  const impersonation = await call('POST', `/v1/admin/users/${opsUser.userId}/impersonate`, {
+    token: opsAdmin.token,
+    body: {},
+  });
+  eq('...and there is no impersonation route to call', impersonation.status, 404);
+
+  // 13 ── Not a weapon (§12.4). An attacker hammering an address must not be able
+  // to end a live session on the victim's own device.
+  const hammered = await signIn('Mozilla/5.0 (Windows NT 10.0) Firefox/141.0');
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    await call('POST', '/v1/auth/login', {
+      body: { email: sessUser.email, password: `wrong-${attempt}` },
+    });
+  }
+  const survivor = await call('GET', '/v1/me', { token: hammered.access });
+  eq('a locked-out account keeps working on the device already signed in', survivor.status, 200);
+  const stillRefreshes = await call('POST', '/v1/auth/refresh', {
+    body: { refreshToken: hammered.refresh },
+  });
+  eq('...and can still rotate its token', stillRefreshes.status, 200);
+
+  // 14 ── The lockout notification finally lands in-product too. 0016 sent the email
+  // inline and left a comment saying the inbox row waited on a nullable company
+  // column; 0018 widened it, so this is that comment being closed.
+  await drainWorkers();
+  const lockoutNotice = await db.query<{ n: string; company_id: string | null }>(
+    `select count(*)::text as n, min(company_id::text) as company_id from notifications
+      where recipient_user_id = $1 and kind = 'auth.lockout'`,
+    [sessUser.userId]
+  );
+  eq('a lockout is now a durable inbox row as well as an email', lockoutNotice.rows[0]?.n, '1');
+  eq('...account-scoped, because it happened to a person',
+    lockoutNotice.rows[0]?.company_id, null);
+
+  // And it is actually readable. An account-scoped row shows in the holder's inbox
+  // whichever company they are viewing — the alternative would hide "somebody signed
+  // you out of everything" behind a company switcher, at the exact moment nobody is
+  // thinking about which tenant they are looking at.
+  const inbox = await call('GET', '/v1/notifications', {
+    token: hammered.access,
+    companyId: sessUser.companyId ?? undefined,
+  });
+  const inboxKinds = (inbox.json?.data ?? []).map((n: any) => n.kind);
+  check('a security alert is in the inbox while a company is selected',
+    inboxKinds.includes('auth.token_reuse') && inboxKinds.includes('auth.lockout'),
+    inboxKinds);
+  check('...and carries no company, rather than claiming it happened in one',
+    (inbox.json?.data ?? [])
+      .filter((n: any) => String(n.kind).startsWith('auth.'))
+      .every((n: any) => n.companyId === null),
+    inbox.json?.data);
+
+  // 15 ── The index that was missing. Every refresh looks a token up by hash, and
+  // until 0018 there was no index on `token_hash` at all — a sequential scan of a
+  // table that grows with every sign-in of every user on the platform.
+  const hashIndex = await db.query<{ indexdef: string }>(
+    `select indexdef from pg_indexes
+      where tablename = 'refresh_tokens' and indexdef ilike '%token_hash%'`
+  );
+  check('refresh tokens are looked up through an index', hashIndex.rows.length > 0);
+  check('...and it is unique, so a duplicate hash is a bug rather than a coincidence',
+    hashIndex.rows.some((r) => r.indexdef.toLowerCase().includes('unique')),
+    hashIndex.rows.map((r) => r.indexdef));
+
+  // ── Second factors (§42) ──────────────────────────────────────────────────
+  // docs/operating-model/access.md §12 items 5–7 and 11. Every account on this
+  // platform was a password and nothing else — including the super admins who can
+  // read every company on it.
+  section('Access hardening — the second factor');
+
+  await clearAuthAttempts();
+
+  const totpCodeFor = (secret: string, offsetSteps = 0): string => {
+    const counter = totpCounter(Date.now()) + offsetSteps;
+    const digest = new Uint8Array(
+      createHmac('sha1', Buffer.from(base32Decode(secret)))
+        .update(totpCounterBytes(counter))
+        .digest()
+    );
+    return totpTruncate(digest, 6);
+  };
+
+  const mfaUser = await register('mfa-user', `Second Factor Ltd ${RUN}`);
+
+  // 1 ── Empty. The majority of accounts never meet this domain, and on the day it
+  // ships nothing changes for them (§12.1).
+  const statusBefore = await call('GET', '/v1/me/mfa', { token: mfaUser.token });
+  eq('an account with no factor says so', statusBefore.json?.state, 'NONE');
+  eq('...and a customer is not required to hold one', statusBefore.json?.required, false);
+  const plainLogin = await call('POST', '/v1/auth/login', {
+    body: { email: mfaUser.email, password: 'Verify-passw0rd!' },
+  });
+  check('...and signs in exactly as before', Boolean(plainLogin.json?.tokens), plainLogin.json);
+
+  // 2 ── Enrolled, and incomplete until a code is produced (§12.5). Without the
+  // PENDING state a proportion of enrolments strand somebody outside their own
+  // account holding a QR code that never scanned properly.
+  const enrol = await call('POST', '/v1/me/mfa', { token: mfaUser.token });
+  eq('enrolment issues a secret', enrol.status, 201);
+  const secret = enrol.json?.secret as string;
+  check('...as base32 an authenticator app can take', /^[A-Z2-7]{32}$/.test(secret ?? ''), secret);
+  check('...with an otpauth URI naming the issuer twice',
+    String(enrol.json?.uri ?? '').includes('otpauth://totp/CrewQuo') &&
+      String(enrol.json?.uri ?? '').includes('issuer=CrewQuo'),
+    enrol.json?.uri);
+
+  const factorPending = await call('GET', '/v1/me/mfa', { token: mfaUser.token });
+  eq('the factor is PENDING until proven', factorPending.json?.state, 'PENDING');
+  const stillNoChallenge = await call('POST', '/v1/auth/login', {
+    body: { email: mfaUser.email, password: 'Verify-passw0rd!' },
+  });
+  check('an unfinished enrolment does not stand between somebody and their account',
+    Boolean(stillNoChallenge.json?.tokens), stillNoChallenge.json);
+
+  const wrongConfirm = await call('POST', '/v1/me/mfa/confirm', {
+    token: mfaUser.token,
+    body: { code: '000000' },
+  });
+  eq('a wrong code does not confirm it', wrongConfirm.status, 422);
+
+  const confirmed = await call('POST', '/v1/me/mfa/confirm', {
+    token: mfaUser.token,
+    body: { code: totpCodeFor(secret) },
+  });
+  eq('a correct code confirms it', confirmed.status, 200);
+  eq('...and hands over ten recovery codes', confirmed.json?.codes?.length, 10);
+  const recoveryCodes = confirmed.json?.codes as string[];
+  check('...formatted to be read off paper',
+    /^[A-Z2-7]{5}-[A-Z2-7]{5}$/.test(recoveryCodes?.[0] ?? ''), recoveryCodes?.[0]);
+
+  const active = await call('GET', '/v1/me/mfa', { token: mfaUser.token });
+  eq('the factor is now ACTIVE', active.json?.state, 'ACTIVE');
+  eq('...and the codes are counted', active.json?.recoveryCodesRemaining, 10);
+
+  // 3 ── The secret is never readable again (§2). "Nobody" is load-bearing: this
+  // has to be something the product is *unable* to show, not merely careful about.
+  const statusFields = JSON.stringify(active.json ?? {});
+  check('no endpoint returns the secret back', !statusFields.includes(secret), statusFields);
+
+  // 4 ── Sign-in is now two steps, and the first step mints nothing.
+  // Counted either side of the challenge rather than over a time window: earlier
+  // steps in this section signed in legitimately, so "sessions in the last five
+  // seconds" would be measuring those too.
+  const sessionCount = async (): Promise<number> => {
+    const { rows } = await db.query<{ n: string }>(
+      `select count(*)::text as n from auth_sessions where user_id = $1`,
+      [mfaUser.userId]
+    );
+    return Number(rows[0]?.n ?? 0);
+  };
+  const sessionsBeforeChallenge = await sessionCount();
+
+  const challenge = await call('POST', '/v1/auth/login', {
+    body: { email: mfaUser.email, password: 'Verify-passw0rd!' },
+  });
+  eq('the password alone no longer signs anybody in', challenge.json?.status, 'mfa_required');
+  check('...and issues no tokens at all', challenge.json?.tokens === undefined, challenge.json);
+  eq('...while offering recovery honestly', challenge.json?.recoveryAvailable, true);
+  const challengeToken = challenge.json?.challengeToken as string;
+  eq('...and opens no session while unanswered', await sessionCount(), sessionsBeforeChallenge);
+
+  const wrongCode = await call('POST', '/v1/auth/mfa', {
+    body: { challengeToken, code: '000000' },
+  });
+  eq('a wrong code is refused', wrongCode.status, 401);
+
+  // The confirmation above consumed this counter, so a real sign-in seconds later
+  // uses the next code — which the drift window accepts.
+  const answered = await call('POST', '/v1/auth/mfa', {
+    body: { challengeToken, code: totpCodeFor(secret, 1) },
+  });
+  eq('a correct code completes the sign-in', answered.status, 200);
+  check('...with a real session', Boolean(answered.json?.tokens?.refreshToken), answered.json);
+
+  // 5 ── One code, one login. Without the consumed-counter rule a code stays
+  // replayable for its whole 90-second window, and a code read over somebody's
+  // shoulder is worth a sign-in rather than nothing.
+  const replayed = await call('POST', '/v1/auth/mfa', {
+    body: { challengeToken, code: totpCodeFor(secret, 1) },
+  });
+  eq('the same code cannot be used twice', replayed.status, 401);
+  check('...and says so, so nobody retypes it until they are locked out',
+    String(replayed.json?.error?.message ?? '').toLowerCase().includes('already been used'),
+    replayed.json?.error?.message);
+
+  // 6 ── Recovered (§12.7). A recovery code signs in once, is consumed, and cannot
+  // be reused.
+  const recoveryChallenge = await call('POST', '/v1/auth/login', {
+    body: { email: mfaUser.email, password: 'Verify-passw0rd!' },
+  });
+  const spent = await call('POST', '/v1/auth/mfa', {
+    body: {
+      challengeToken: recoveryChallenge.json?.challengeToken,
+      recoveryCode: recoveryCodes?.[0],
+    },
+  });
+  eq('a recovery code signs somebody in', spent.status, 200);
+  const afterSpend = await call('GET', '/v1/me/mfa', { token: mfaUser.token });
+  eq('...and is spent', afterSpend.json?.recoveryCodesRemaining, 9);
+
+  const reuseRecovery = await call('POST', '/v1/auth/login', {
+    body: { email: mfaUser.email, password: 'Verify-passw0rd!' },
+  });
+  const spentTwice = await call('POST', '/v1/auth/mfa', {
+    body: {
+      challengeToken: reuseRecovery.json?.challengeToken,
+      recoveryCode: recoveryCodes?.[0],
+    },
+  });
+  eq('the same recovery code cannot be spent twice', spentTwice.status, 401);
+  check('...and tells the holder to try another line rather than that the sheet is wrong',
+    String(spentTwice.json?.error?.message ?? '').toLowerCase().includes('already been used'),
+    spentTwice.json?.error?.message);
+
+  // Regenerating invalidates the whole previous set (§12.7).
+  const regenerated = await call('POST', '/v1/me/mfa/recovery-codes', { token: mfaUser.token });
+  eq('regenerating issues a fresh set', regenerated.json?.codes?.length, 10);
+  const oldCodeChallenge = await call('POST', '/v1/auth/login', {
+    body: { email: mfaUser.email, password: 'Verify-passw0rd!' },
+  });
+  const oldCode = await call('POST', '/v1/auth/mfa', {
+    body: {
+      challengeToken: oldCodeChallenge.json?.challengeToken,
+      recoveryCode: recoveryCodes?.[1],
+    },
+  });
+  eq('...and every code from the old set stops working', oldCode.status, 401);
+
+  // 7 ── Guessing is budgeted. A six-digit code is a million possibilities and
+  // about three are valid at any moment, so an unlimited guesser reaches even odds
+  // in minutes of scripted traffic.
+  const guessChallenge = await call('POST', '/v1/auth/login', {
+    body: { email: mfaUser.email, password: 'Verify-passw0rd!' },
+  });
+  let codeLimited = 0;
+  for (let attempt = 0; attempt < 14; attempt += 1) {
+    const res = await call('POST', '/v1/auth/mfa', {
+      body: { challengeToken: guessChallenge.json?.challengeToken, code: '111111' },
+    });
+    if (res.status === 429) codeLimited += 1;
+  }
+  check('code guessing is rate-limited on its own budget', codeLimited > 0, codeLimited);
+  const mfaAttempts = await db.query<{ n: string }>(
+    `select count(*)::text as n from auth_attempts where scope = 'MFA'`
+  );
+  check('...and recorded under its own scope', Number(mfaAttempts.rows[0]?.n) > 0,
+    mfaAttempts.rows[0]);
+
+  // 8 ── Denied (§12.6). Removing protection is step-up-gated; adding it never is,
+  // because friction on the safe direction is how you get people who never turn it on.
+  await clearAuthAttempts();
+  const removeBare = await call('DELETE', '/v1/me/mfa', { token: mfaUser.token, body: {} });
+  eq('removing without re-authenticating is refused', removeBare.status, 422);
+  const removeWrong = await call('DELETE', '/v1/me/mfa', {
+    token: mfaUser.token,
+    body: { password: 'not-the-password' },
+  });
+  eq('...and a wrong password does not do it either', removeWrong.status, 401);
+  const stillActive = await call('GET', '/v1/me/mfa', { token: mfaUser.token });
+  eq('...so the factor is still there', stillActive.json?.state, 'ACTIVE');
+
+  // 9 ── Told, unconditionally and durably. If it was not you who changed the
+  // factor on your account, that email is the only warning you get.
+  await drainWorkers();
+  const enrolNotice = await db.query<{ n: string; company_id: string | null; urgency: string }>(
+    `select count(*)::text as n, min(company_id::text) as company_id, min(urgency) as urgency
+       from notifications where recipient_user_id = $1 and kind = 'auth.mfa_enrolled'`,
+    [mfaUser.userId]
+  );
+  eq('enrolling notifies the holder', enrolNotice.rows[0]?.n, '1');
+  eq('...account-scoped, not pinned to a tenant', enrolNotice.rows[0]?.company_id, null);
+  eq('...and urgently', enrolNotice.rows[0]?.urgency, 'URGENT');
+
+  // 10 ── Mandatory for platform staff, and enforced where the blast radius is
+  // (§13.1). A staff password compromise reads every tenant on the platform.
+  const mfaStaff = await register('mfa-staff', `Platform Staff MFA ${RUN}`);
+  // Deliberately *not* `promoteToStaff` here: this section proves the refusal and
+  // then the enrolment that lifts it, so it needs the un-enrolled state first.
+  await db.query(`update users set is_super_admin = true where id = $1`, [mfaStaff.userId]);
+  const staffStatus = await call('GET', '/v1/me/mfa', { token: mfaStaff.token });
+  eq('platform staff are told a factor is required', staffStatus.json?.required, true);
+
+  const consoleBlocked = await call('GET', '/v1/admin/dashboard', { token: mfaStaff.token });
+  eq('...and the console refuses them until they hold one', consoleBlocked.status, 403);
+  check('...naming what to do rather than saying "forbidden"',
+    String(consoleBlocked.json?.error?.message ?? '').toLowerCase().includes('authenticator app'),
+    consoleBlocked.json?.error?.message);
+
+  const staffEnrol = await call('POST', '/v1/me/mfa', { token: mfaStaff.token });
+  const staffPending = await call('GET', '/v1/admin/dashboard', { token: mfaStaff.token });
+  eq('an unfinished enrolment is refused as firmly as none', staffPending.status, 403);
+  await call('POST', '/v1/me/mfa/confirm', {
+    token: mfaStaff.token,
+    body: { code: totpCodeFor(staffEnrol.json?.secret as string) },
+  });
+  const consoleOpen = await call('GET', '/v1/admin/dashboard', { token: mfaStaff.token });
+  eq('...and opens once the factor is confirmed', consoleOpen.status, 200);
+
+  // A customer is never blocked by this: the mandate is about the console.
+  const customerWorkspace = await call('GET', '/v1/me', { token: mfaUser.token });
+  eq('a customer with no factor is unaffected everywhere else', customerWorkspace.status, 200);
+
+  // 11 ── The operator reset (§13.2), which is the one path that removes somebody's
+  // protection without them. Reason required, holder told unconditionally, and it
+  // grants the operator nothing.
+  const lost = await register('mfa-lost', `Lost Phone Ltd ${RUN}`);
+  const lostEnrol = await call('POST', '/v1/me/mfa', { token: lost.token });
+  await call('POST', '/v1/me/mfa/confirm', {
+    token: lost.token,
+    body: { code: totpCodeFor(lostEnrol.json?.secret as string) },
+  });
+
+  const resetNoReason = await call('POST', `/v1/admin/users/${lost.userId}/reset-mfa`, {
+    token: mfaStaff.token,
+    body: {},
+  });
+  eq('an operator cannot reset a factor without a reason', resetNoReason.status, 422);
+
+  const reset = await call('POST', `/v1/admin/users/${lost.userId}/reset-mfa`, {
+    token: mfaStaff.token,
+    body: { reason: 'Customer lost phone and recovery codes (verify-e2e)' },
+  });
+  eq('...and can with one', reset.status, 200);
+  eq('...which removes the factor', reset.json?.removed, 1);
+  check('...and ends every session it could not vouch for',
+    (reset.json?.sessionsEnded ?? 0) >= 1, reset.json);
+
+  const lostAfter = await call('POST', '/v1/auth/login', {
+    body: { email: lost.email, password: 'Verify-passw0rd!' },
+  });
+  check('the holder can sign in with their password again',
+    Boolean(lostAfter.json?.tokens), lostAfter.json);
+  // A fresh token, because the reset ended every session — including the one this
+  // fixture had been using. That is the reset working, and a test that reused the
+  // old token would be asserting the opposite.
+  const lostToken = lostAfter.json?.tokens?.accessToken as string;
+
+  const resetAudit = await db.query<{ changes: any }>(
+    `select changes from platform_audit_logs
+      where action = 'auth.mfa_reset_by_operator' and entity_id = $1
+      order by created_at desc limit 1`,
+    [lost.userId]
+  );
+  check('the reset is platform-audited with its reason',
+    String(resetAudit.rows[0]?.changes?.reason ?? '').includes('lost phone'),
+    resetAudit.rows[0]?.changes);
+
+  await drainWorkers();
+  const resetNotice = await db.query<{ n: string; body: string }>(
+    `select count(*)::text as n, min(body) as body from notifications
+      where recipient_user_id = $1 and kind = 'auth.mfa_reset_by_operator'`,
+    [lost.userId]
+  );
+  eq('the holder is told unconditionally', resetNotice.rows[0]?.n, '1');
+  check('...without the operator internal note reaching them',
+    !String(resetNotice.rows[0]?.body ?? '').includes('verify-e2e'),
+    resetNotice.rows[0]?.body);
+
+  // 12 ── No back door (§12.11), asserted as an absence: resetting a factor takes
+  // access away and hands the operator none of it.
+  const impersonateViaReset = await call('GET', `/v1/admin/users/${lost.userId}/sessions`, {
+    token: mfaStaff.token,
+  });
+  eq('an operator cannot read another user session list', impersonateViaReset.status, 404);
+
+  // 13 ── Correction (§12.12): everything above is reversible by the holder without
+  // an operator. Re-enrol, then remove with a password.
+  const reEnrol = await call('POST', '/v1/me/mfa', { token: lostToken });
+  eq('the holder can enrol again themselves', reEnrol.status, 201);
+  await call('POST', '/v1/me/mfa/confirm', {
+    token: lostToken,
+    body: { code: totpCodeFor(reEnrol.json?.secret as string) },
+  });
+  const holderRemove = await call('DELETE', '/v1/me/mfa', {
+    token: lostToken,
+    body: { password: 'Verify-passw0rd!' },
+  });
+  eq('...and remove it themselves, with their password', holderRemove.status, 204);
+  const finalState = await call('GET', '/v1/me/mfa', { token: lostToken });
+  eq('...leaving the account as it started', finalState.json?.state, 'NONE');
+  const codesGone = await db.query<{ n: string }>(
+    `select count(*)::text as n from auth_recovery_codes where user_id = $1`,
+    [lost.userId]
+  );
+  eq('...with no recovery codes left behind for a factor that is gone',
+    codesGone.rows[0]?.n, '0');
+
+  await drainWorkers();
+  const removeNotice = await db.query<{ n: string }>(
+    `select count(*)::text as n from notifications
+      where recipient_user_id = $1 and kind = 'auth.mfa_removed'`,
+    [lost.userId]
+  );
+  eq('removal is notified too, because it lowers protection', removeNotice.rows[0]?.n, '1');
+
+  // 14 ── Every enrolment on one account is its own email. The dedupe key is per
+  // occurrence rather than per user; keyed on the user, only the first would ever
+  // arrive — and enrol → reset → re-enrol → enrol again is exactly the sequence an
+  // account recovering from a lost phone goes through, so the later ones are the
+  // ones that matter most.
+  const secondEnrol = await call('POST', '/v1/me/mfa', { token: lostToken });
+  await call('POST', '/v1/me/mfa/confirm', {
+    token: lostToken,
+    body: { code: totpCodeFor(secondEnrol.json?.secret as string) },
+  });
+  await drainWorkers();
+  const twoEnrolments = await db.query<{ n: string }>(
+    `select count(*)::text as n from notifications
+      where recipient_user_id = $1 and kind = 'auth.mfa_enrolled'`,
+    [lost.userId]
+  );
+  // Three, and each is real: the enrolment before the operator reset, the
+  // re-enrolment after it, and this one.
+  eq('every enrolment is its own notification, not a deduplication',
+    twoEnrolments.rows[0]?.n, '3');
+
+  // ══ Signing-secret rotation (access.md §12.10, §14 step 4) ════════════════
+  //
+  // Asserted against the *running* API rather than in a unit test, because the
+  // claim is about a live session surviving — and the thing that decides that is
+  // the ring the server booted with, not the one this script can construct.
+  section('signing-secret rotation');
+
+  const rotUser = await register('rotation');
+  const rotHeader = jwt.decode(rotUser.token, { complete: true });
+  const rotPayload = (rotHeader?.payload ?? {}) as { sub?: string; sid?: string };
+  const liveKid = typeof rotHeader?.header.kid === 'string' ? rotHeader.header.kid : null;
+
+  check('a token from a real sign-in names the key that signed it',
+    liveKid !== null, rotHeader?.header);
+  eq('...which is the key this deployment is currently signing with',
+    liveKid, currentAccessKid());
+  eq('...derived from the secret, so a label can never name the wrong key',
+    liveKid, deriveKid(env.JWT_ACCESS_SECRET));
+
+  // Mint variants for the same live session. The session must be real: since
+  // 0018 `requireAuth` checks `sid` is still live, so a forged claim set alone
+  // does not open a door even when the signature is genuine.
+  const mint = (secret: string, options: jwt.SignOptions) =>
+    jwt.sign({ sub: rotPayload.sub, sid: rotPayload.sid }, secret, {
+      algorithm: 'HS256',
+      expiresIn: 900,
+      ...options,
+    });
+
+  // 1 ── The deploy that introduces the ring must sign nobody out. Every token in
+  // flight at that moment carries no kid header at all.
+  const kidless = await call('GET', '/v1/me', {
+    token: mint(env.JWT_ACCESS_SECRET, {}),
+  });
+  eq('a token minted before kids existed still works, so the deploy logs nobody out',
+    kidless.status, 200);
+
+  // 2 ── A kid is a claim about which key signed the token, not a substitute for
+  // the signature. Naming one of ours must be worth nothing on its own.
+  const foreignSecret = `never-a-key-of-this-deployment-${RUN}`;
+  const forgedUnderRealKid = await call('GET', '/v1/me', {
+    token: mint(foreignSecret, { keyid: currentAccessKid() }),
+  });
+  eq('naming a real key over a signature that is not ours is refused',
+    forgedUnderRealKid.status, 401);
+
+  // 3 ── ...and a kid we do not hold is refused rather than falling back to
+  // trying every key anyway, which is what retiring a key has to mean.
+  const unknownKid = await call('GET', '/v1/me', {
+    token: mint(foreignSecret, { keyid: deriveKid(foreignSecret) }),
+  });
+  eq('a kid this deployment does not hold is refused', unknownKid.status, 401);
+
+  // 4 ── Neither refusal may say which one it was. "Unknown key id" would tell an
+  // attacker when a guess had named a real key — the same oracle rule §12.3
+  // applies to the sign-in surface, applied here to the ring.
+  eq('...and the two refusals are indistinguishable, so the ring is not an oracle',
+    stable(unknownKid.json), stable(forgedUnderRealKid.json));
+
+  // 5 ── The rotation itself: a token signed by a *retired* key, presented to a
+  // server now signing with a different one. This is the assertion the packet
+  // asks for, and it only means anything when the deployment actually has an
+  // overlap configured — so it is reported as absent rather than passed quietly.
+  const retiredSecrets = parseRetiredSecrets(env.JWT_ACCESS_SECRET_RETIRED);
+  if (retiredSecrets.length > 0) {
+    const retired = retiredSecrets[0] as string;
+    const heldAcrossRotation = await call('GET', '/v1/me', {
+      token: mint(retired, { keyid: deriveKid(retired) }),
+    });
+    eq('a session signed by a retired key survives the rotation',
+      heldAcrossRotation.status, 200);
+    check('...while new tokens are signed by the current key, not the retired one',
+      currentAccessKid() !== deriveKid(retired), { current: currentAccessKid() });
+  } else {
+    console.log('  --   no JWT_ACCESS_SECRET_RETIRED configured — overlap not exercised');
+    console.log('       set it in .env to prove the rotation against a live server');
+  }
+
+  // 6 ── Single-purpose tokens ride the same mechanism, because this secret signs
+  // password-reset links that routinely outlive a deploy.
+  const resetLink = signPurposeToken(rotUser.userId, 'password_reset', 3600);
+  const resetHeader = jwt.decode(resetLink, { complete: true });
+  eq('a password-reset link names its key too',
+    typeof resetHeader?.header.kid === 'string'
+      ? resetHeader.header.kid
+      : null,
+    deriveKid(env.JWT_REFRESH_SECRET));
 
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);

@@ -9,7 +9,13 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import type { AuthResponse, MembershipSummary, PublicUser, RegisterRequest } from '@crewquo/shared';
+import type {
+  AuthResponse,
+  LoginChallenge,
+  MembershipSummary,
+  PublicUser,
+  RegisterRequest,
+} from '@crewquo/shared';
 import { api } from '@/api/client';
 
 /**
@@ -30,7 +36,21 @@ interface AuthState {
   session: Session | null;
   companyId: string | null;
   activeMembership: MembershipSummary | null;
-  login: (email: string, password: string) => Promise<PublicUser>;
+  /**
+   * Sign in, which may not finish here.
+   *
+   * Returns either the signed-in user or the challenge the account's second factor
+   * demands (`access.md` §3). A union rather than a nullable user, because the two
+   * outcomes need different screens and the caller must not be able to treat an
+   * unanswered challenge as a session.
+   */
+  login: (email: string, password: string) => Promise<PublicUser | LoginChallenge>;
+  /** Answer a challenge with a TOTP code or a recovery code, completing the sign-in. */
+  completeMfa: (input: {
+    challengeToken: string;
+    code?: string;
+    recoveryCode?: string;
+  }) => Promise<PublicUser>;
   register: (input: RegisterRequest) => Promise<void>;
   logout: () => Promise<void>;
   setCompanyId: (companyId: string) => void;
@@ -116,9 +136,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (typeof window !== 'undefined') localStorage.setItem(COMPANY_KEY, id);
   }, []);
 
-  const login = useCallback(
-    async (email: string, password: string) => {
-      const res = await api.login({ email, password });
+  /**
+   * Adopt a completed sign-in. Shared by the one-step and two-step paths so the
+   * session is established identically either way — a second copy of this is how a
+   * two-step login ends up subtly different from a one-step one.
+   */
+  const adopt = useCallback(
+    (res: AuthResponse) => {
       const next = fromAuthResponse(res);
       setSession(next);
       persist(next);
@@ -126,6 +150,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return next.user;
     },
     [setCompanyId]
+  );
+
+  const login = useCallback(
+    async (email: string, password: string) => {
+      const res = await api.login({ email, password });
+      // Nothing is stored for a challenge: no session, no token, nothing to clean up
+      // if the person closes the tab. The challenge string lives in the login
+      // screen's own state for the seconds it is needed.
+      if ('status' in res && res.status === 'mfa_required') return res;
+      return adopt(res as AuthResponse);
+    },
+    [adopt]
+  );
+
+  const completeMfa = useCallback(
+    async (input: { challengeToken: string; code?: string; recoveryCode?: string }) =>
+      adopt(await api.completeMfa(input)),
+    [adopt]
   );
 
   const register = useCallback(
@@ -192,6 +234,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       companyId,
       activeMembership,
       login,
+      completeMfa,
       register,
       logout,
       setCompanyId,
@@ -204,6 +247,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     session,
     companyId,
     login,
+    completeMfa,
     register,
     logout,
     setCompanyId,

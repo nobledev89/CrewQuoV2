@@ -23,7 +23,7 @@ import { query, queryOne, type Queryable } from '../../db';
 
 interface NotificationRow {
   id: string;
-  company_id: string;
+  company_id: string | null;
   kind: NotificationKind;
   title: string;
   body: string;
@@ -76,7 +76,8 @@ function toView(row: NotificationRow): NotificationView {
 
 export interface NewNotification {
   recipientUserId: string;
-  companyId: string;
+  /** Null is account-scoped: a security event about the person (0018). */
+  companyId: string | null;
   kind: NotificationKind;
   title: string;
   body: string;
@@ -126,7 +127,15 @@ export async function listNotifications(
   companyId: string,
   filter: ListNotificationsQuery
 ): Promise<{ data: NotificationView[]; nextBefore: string | null }> {
-  const clauses = ['n.recipient_user_id = $1', 'n.company_id = $2'];
+  /*
+   * **Account-scoped rows are in every company's inbox for their holder.**
+   *
+   * A security alert belongs to the person, so the alternative — showing it only
+   * while some particular company is selected — would hide "somebody signed you
+   * out of everything" behind a company switcher, which is precisely the moment
+   * nobody is thinking about which tenant they are looking at.
+   */
+  const clauses = ['n.recipient_user_id = $1', '(n.company_id = $2 or n.company_id is null)'];
   if (filter.filter === 'open') {
     clauses.push('n.requires_action and n.resolved_at is null and n.dismissed_at is null');
   } else if (filter.filter === 'unread') {

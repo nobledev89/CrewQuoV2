@@ -29,15 +29,30 @@ import { AppError } from '../../http/errors';
  * Hashed because the limiter needs to compare sources and never needs to know
  * one: an un-hashed column here would be a log of which addresses signed in from
  * where, which is the location history the packet's §7 explicitly refuses to
- * build. Salted with the refresh-token secret so the hashes are not comparable
- * against a rainbow table of the IPv4 space, which is small enough to enumerate.
+ * build. Salted so the hashes are not comparable against a rainbow table of the
+ * IPv4 space, which is small enough to enumerate.
+ *
+ * **The salt must not be a key that rotates**, which is why it has its own
+ * variable rather than continuing to borrow the refresh secret. Every stored hash
+ * is only meaningful against the salt that produced it, so moving the salt resets
+ * every budget at once — invisibly, since the rows are still there and still
+ * counted, just never again matched to the caller they belong to. That was inert
+ * while the secret was static. Now that §14 step 4 asks operators to rotate it,
+ * borrowing it would mean each rotation quietly handed anyone mid-lockout a fresh
+ * set of guesses, at the one moment nobody is watching the limiter.
+ *
+ * `AUTH_SOURCE_PEPPER` falls back to the refresh secret when unset, so nothing
+ * changes for a deployment that has not set it and no existing counter is
+ * invalidated by this change alone.
  */
+const SOURCE_PEPPER = env.AUTH_SOURCE_PEPPER ?? env.JWT_REFRESH_SECRET;
+
 function sourceKeyFor(req: Request): string {
   // `req.ip` honours Express's trust-proxy setting; falling back to the socket
   // keeps this working in tests and direct-connection dev.
   const raw = req.ip ?? req.socket.remoteAddress ?? 'unknown';
   return createHash('sha256')
-    .update(`auth-source:${env.JWT_REFRESH_SECRET}:${raw}`)
+    .update(`auth-source:${SOURCE_PEPPER}:${raw}`)
     .digest('hex');
 }
 

@@ -56,7 +56,13 @@ async function localTimeFor(timeZone: string): Promise<string> {
 
 export interface DispatchInput {
   kind: NotificationKind;
-  companyId: string;
+  /**
+   * Null for an account-scoped notification — a security event about the person
+   * rather than about a tenant (0018). Hanging one on a company would claim the
+   * event happened inside that tenant, which is false and crosses a boundary the
+   * rest of the product spends four checks defending.
+   */
+  companyId: string | null;
   recipientUserIds: readonly string[];
   title: string;
   /** Composed server-side from resolved facts — never from caller-supplied text. */

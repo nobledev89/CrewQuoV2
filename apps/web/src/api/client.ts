@@ -61,6 +61,10 @@ import type {
   LimitKey,
   LineItemNoteView,
   LoginRequest,
+  LoginResult,
+  MfaEnrolment,
+  MfaRecoveryCodes,
+  MfaStatus,
   MeResponse,
   MemberView,
   MembershipSummary,
@@ -81,6 +85,8 @@ import type {
   ResolveRateResponse,
   RoleCatalogCreate,
   RoleCatalogView,
+  SessionsEndedResponse,
+  SessionsResponse,
   SubmissionView,
   TimeLogView,
   UpdateAuditSettings,
@@ -217,7 +223,11 @@ export const api = {
   // ── Auth ─────────────────────────────────────────────────────────────────────
   register: (body: RegisterRequest) =>
     request<AuthResponse>('POST', '/v1/auth/register', { body }),
-  login: (body: LoginRequest) => request<AuthResponse>('POST', '/v1/auth/login', { body }),
+  // Either a session or a challenge — see `loginResultSchema` for why the two are a
+  // union rather than one shape with optional tokens.
+  login: (body: LoginRequest) => request<LoginResult>('POST', '/v1/auth/login', { body }),
+  completeMfa: (body: { challengeToken: string; code?: string; recoveryCode?: string }) =>
+    request<AuthResponse>('POST', '/v1/auth/mfa', { body }),
   refresh: (refreshToken: string) =>
     request<AuthResponse>('POST', '/v1/auth/refresh', { body: { refreshToken } }),
   logout: (refreshToken: string) =>
@@ -237,6 +247,29 @@ export const api = {
     request<{ memberships: MembershipSummary[] }>('GET', '/v1/me/memberships', { accessToken }),
   workspaces: (accessToken: string) =>
     request<WorkspacesResponse>('GET', '/v1/me/workspaces', { accessToken }),
+  // ── Second factor (access.md §3, §4) ─────────────────────────────────────────
+  mfaStatus: (t: string) => request<MfaStatus>('GET', '/v1/me/mfa', { accessToken: t }),
+  startMfa: (t: string) => request<MfaEnrolment>('POST', '/v1/me/mfa', { accessToken: t }),
+  confirmMfa: (t: string, code: string) =>
+    request<MfaRecoveryCodes>('POST', '/v1/me/mfa/confirm', { accessToken: t, body: { code } }),
+  regenerateRecoveryCodes: (t: string) =>
+    request<MfaRecoveryCodes>('POST', '/v1/me/mfa/recovery-codes', { accessToken: t }),
+  removeMfa: (t: string, body: { password?: string; googleIdToken?: string }) =>
+    request<void>('DELETE', '/v1/me/mfa', { accessToken: t, body }),
+  resetUserMfa: (t: string, id: string, reason: string) =>
+    request<{ removed: number; sessionsEnded: number }>(
+      'POST',
+      `/v1/admin/users/${id}/reset-mfa`,
+      { accessToken: t, body: { reason } }
+    ),
+
+  // ── Sessions & devices (access.md §4) ────────────────────────────────────────
+  sessions: (t: string) => request<SessionsResponse>('GET', '/v1/me/sessions', { accessToken: t }),
+  endSession: (t: string, id: string) =>
+    request<SessionsEndedResponse>('DELETE', `/v1/me/sessions/${id}`, { accessToken: t }),
+  endOtherSessions: (t: string) =>
+    request<SessionsEndedResponse>('POST', '/v1/me/sessions/end-others', { accessToken: t }),
+
   createCompany: (t: string, body: CreateCompanyRequest) =>
     request<{ company: CompanySummary; path: string; requestId: string | null }>(
       'POST',

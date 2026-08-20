@@ -40,11 +40,50 @@ describe('the kind catalog', () => {
     expect(Object.keys(NOTIFICATION_KIND_SPECS).sort()).toEqual([...NOTIFICATION_KINDS].sort());
   });
 
-  it('keeps URGENT to operator alerts only', () => {
-    // A customer's work will still be there at 8am. Waking somebody for it would
-    // make the setting worthless, because they would turn it off entirely.
+  it('keeps URGENT off every kind about work', () => {
+    /*
+     * A customer's *work* will still be there at 8am. Waking somebody for it would
+     * make the setting worthless, because they would turn it off entirely — and the
+     * kinds that then get silenced with it are the two below.
+     *
+     * Account security is the stated exception (`access.md` §6): somebody else
+     * holding your credentials will not still be fine at 8am. So the assertion is
+     * not "operator alerts only" any more, it is that the urgent list contains
+     * nothing from the delivery loop, the rate negotiation or the invoice flow.
+     */
     const urgent = NOTIFICATION_KINDS.filter((k) => NOTIFICATION_KIND_SPECS[k].urgency === 'URGENT');
-    expect(urgent).toEqual(['delivery.dead_lettered']);
+    expect(urgent).toEqual([
+      'delivery.dead_lettered',
+      'auth.token_reuse',
+      'auth.mfa_enrolled',
+      'auth.mfa_removed',
+      'auth.mfa_reset_by_operator',
+    ]);
+    expect(urgent.some((k) => /^(work|expense|submission|rate_proposal|invoice)\./.test(k)))
+      .toBe(false);
+  });
+
+  it('makes only account-security kinds unsilenceable', () => {
+    // The flag exists so a stolen-credential warning cannot be turned off by
+    // accident six months earlier. The moment a *product* kind sets it, users
+    // start silencing the security ones by silencing everything.
+    const unconditional = NOTIFICATION_KINDS.filter(
+      (k) => NOTIFICATION_KIND_SPECS[k].unconditional
+    );
+    expect(unconditional).toEqual([
+      'auth.token_reuse',
+      'auth.mfa_enrolled',
+      'auth.mfa_removed',
+      'auth.mfa_reset_by_operator',
+    ]);
+  });
+
+  it('gives no security kind an Action Centre task', () => {
+    // There is nothing the product can ask the holder to do that "resolve" would
+    // represent: the session is already gone. What they should do is in the body.
+    for (const kind of NOTIFICATION_KINDS.filter((k) => k.startsWith('auth.'))) {
+      expect(NOTIFICATION_KIND_SPECS[kind].requiresAction).toBe(false);
+    }
   });
 
   it('marks a decision somebody must take as actionable, and news as not', () => {
@@ -57,6 +96,17 @@ describe('the kind catalog', () => {
 });
 
 describe('resolveChannels', () => {
+  it('ignores an override that would silence a security alert', () => {
+    // A preference switched off six months ago is not a preference being
+    // respected — it is the alarm being disconnected. Read inside resolveChannels
+    // rather than at the call site, so there is no sender that can forget it.
+    expect(resolveChannels('auth.token_reuse', { 'auth.token_reuse': { email: false } }))
+      .toEqual(['EMAIL']);
+    // ...while an ordinary kind still obeys the same override.
+    expect(resolveChannels('auth.session_revoked', { 'auth.session_revoked': { email: false } }))
+      .toEqual([]);
+  });
+
   it('uses the kind default when the user has said nothing', () => {
     expect(resolveChannels('work.submitted')).toEqual(['PUSH']);
     expect(resolveChannels('rate_proposal.submitted')).toEqual(['EMAIL', 'PUSH']);

@@ -30,6 +30,15 @@ interface NavItem {
   feature?: FeatureKey;
   /** Hide unless the plan allows this company to engage subcontractors. */
   requiresDownstream?: boolean;
+  /**
+   * Belongs to the *account*, not to a company — so it survives having no company.
+   *
+   * A person who registered without one, or who was removed from the only company
+   * they were in, still has live sessions on real devices. "Everything is reversible
+   * by the account holder without an operator" (`access.md` §12.12) has to hold for
+   * them too, and a link the company filter hides makes it hold for nobody.
+   */
+  accountLevel?: boolean;
 }
 
 interface NavGroup {
@@ -84,6 +93,7 @@ const VIEW_NAV: Record<WorkspaceView, NavGroup[]> = {
         { href: '/plan', label: 'Plan & usage', icon: 'gauge' },
         { href: '/settings', label: 'Settings', icon: 'settings' },
         { href: '/profile', label: 'Profile', icon: 'people' },
+        { href: '/security', label: 'Security', icon: 'lock', accountLevel: true },
       ],
     },
   ],
@@ -109,6 +119,7 @@ const VIEW_NAV: Record<WorkspaceView, NavGroup[]> = {
         { href: '/plan', label: 'Plan & usage', icon: 'gauge' },
         { href: '/settings', label: 'Settings', icon: 'settings' },
         { href: '/profile', label: 'Profile', icon: 'people' },
+        { href: '/security', label: 'Security', icon: 'lock', accountLevel: true },
       ],
     },
   ],
@@ -128,6 +139,7 @@ const VIEW_NAV: Record<WorkspaceView, NavGroup[]> = {
         { href: '/plan', label: 'Plan & usage', icon: 'gauge' },
         { href: '/settings', label: 'Settings', icon: 'settings' },
         { href: '/profile', label: 'Profile', icon: 'people' },
+        { href: '/security', label: 'Security', icon: 'lock', accountLevel: true },
       ],
     },
   ],
@@ -137,6 +149,7 @@ const ACCOUNT_NAV: NavGroup[] = [{
   label: 'Account',
   items: [
     { href: '/profile', label: 'Profile', icon: 'people' },
+    { href: '/security', label: 'Security', icon: 'lock', accountLevel: true },
     { href: '/company/members', label: 'Members', icon: 'people' },
     { href: '/plan', label: 'Plan & usage', icon: 'gauge' },
     { href: '/settings', label: 'Settings', icon: 'settings' },
@@ -174,6 +187,11 @@ const PLATFORM_NAV: NavGroup[] = [
     label: 'Platform',
     items: [
       { href: '/admin/settings', label: 'Settings', icon: 'settings', superAdmin: true },
+      // Platform staff usually own no company at all, and theirs are the most
+      // valuable accounts on the platform — they are also where step 3 makes a
+      // second factor mandatory. Reaching this screen must not depend on owning a
+      // tenant.
+      { href: '/security', label: 'Security', icon: 'lock', accountLevel: true },
       { href: '/admin/access', label: 'Admin access', icon: 'people', superAdmin: true },
     ],
   },
@@ -199,6 +217,7 @@ const PAGE_NAMES: Record<string, string> = {
   '/plan': 'Plan & usage',
   '/settings': 'Settings',
   '/profile': 'Profile',
+  '/security': 'Security',
   '/admin/plans': 'Plans',
   '/admin/companies': 'Companies',
   '/admin/users': 'Users',
@@ -267,6 +286,18 @@ export function Shell({ children }: { children: ReactNode }) {
   const platformScreen = isSuperAdmin && pathname.startsWith('/admin');
 
   /**
+   * Screens that are about the account rather than about a company, and therefore
+   * render without one.
+   *
+   * `/profile` deliberately stays behind the gate: the companyless prompt *is* the
+   * create-a-company action, which is the thing that screen is for. Security is
+   * different — a person with no company still has devices signed in, and being
+   * told to create a company before they can sign a lost phone out would make the
+   * one action that matters unreachable at the one moment it matters.
+   */
+  const accountLevelScreen = pathname === '/security' || pathname.startsWith('/security/');
+
+  /**
    * Staff with no company get the platform group alone. Showing them the workspace
    * navigation offers fifteen links that every one of them lands on "create a company",
    * and buries the two that work below the fold.
@@ -274,6 +305,9 @@ export function Shell({ children }: { children: ReactNode }) {
   const companyless = !activeMembership;
   const visible = (items: NavItem[]) =>
     items.filter((item) => {
+      // Account-level first: a company filter must not hide the screen somebody
+      // with no company needs.
+      if (item.accountLevel) return true;
       if (item.superAdmin) return isSuperAdmin;
       if (companyless) return false;
       // Within Operations, effective plan entitlements still decide which controls
@@ -428,7 +462,11 @@ export function Shell({ children }: { children: ReactNode }) {
 
           <main className="cq-main" id="main-content" tabIndex={-1}>
             <div className="cq-container">
-              {activeMembership || platformScreen ? children : <NoCompany />}
+              {activeMembership || platformScreen || accountLevelScreen ? (
+                children
+              ) : (
+                <NoCompany />
+              )}
             </div>
           </main>
         </div>
@@ -642,6 +680,13 @@ function NavIcon({ name }: { name: string }) {
       <svg {...common}>
         <path d="M4 13.5a6.5 6.5 0 1 1 12 0" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
         <path d="M10 13 12.8 9.4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      </svg>
+    );
+  if (name === 'lock')
+    return (
+      <svg {...common}>
+        <rect x="4.5" y="8.5" width="11" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+        <path d="M7.25 8.5V6.75a2.75 2.75 0 0 1 5.5 0V8.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
       </svg>
     );
   return (

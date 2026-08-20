@@ -31,6 +31,15 @@ export const NOTIFICATION_KINDS = [
   'rate_proposal.decided',
   'invoice.issued',
   'delivery.dead_lettered',
+  // Account security (`docs/operating-model/access.md` §6). The first kinds in
+  // this catalog that belong to a *person* rather than to a company, which is why
+  // `notifications.company_id` became nullable in 0018.
+  'auth.token_reuse',
+  'auth.session_revoked',
+  'auth.lockout',
+  'auth.mfa_enrolled',
+  'auth.mfa_removed',
+  'auth.mfa_reset_by_operator',
 ] as const;
 export const notificationKindSchema = z.enum(NOTIFICATION_KINDS);
 export type NotificationKind = z.infer<typeof notificationKindSchema>;
@@ -48,6 +57,17 @@ export interface NotificationKindSpec {
   urgency: NotificationUrgency;
   /** Channels attempted unless the user says otherwise. In-product is always on. */
   defaultChannels: readonly NotificationChannel[];
+  /**
+   * Ignore the user's channel overrides for this kind.
+   *
+   * **Only account-security kinds set this** (`access.md` §5): if somebody else
+   * changed your credentials, the email is the only warning you get, and a
+   * preference switched off by accident six months ago is not a preference being
+   * respected — it is the alarm being disconnected. Deliberately not a general
+   * "important" flag: the moment a *product* kind sets it, users start silencing
+   * the security ones by silencing everything.
+   */
+  unconditional?: boolean;
 }
 
 /**
@@ -71,9 +91,55 @@ export const NOTIFICATION_KIND_SPECS: Readonly<Record<NotificationKind, Notifica
   'rate_proposal.submitted': { requiresAction: true, urgency: 'NORMAL', defaultChannels: ['PUSH', 'EMAIL'] },
   'rate_proposal.decided': { requiresAction: false, urgency: 'NORMAL', defaultChannels: ['PUSH', 'EMAIL'] },
   'invoice.issued': { requiresAction: true, urgency: 'NORMAL', defaultChannels: ['EMAIL'] },
-  // The only URGENT kind, and deliberately an operator one. A customer event is
-  // never urgent enough to wake somebody: their work will still be there at 8am.
+  // The only URGENT kind among the *product* events, and deliberately an operator
+  // one. A customer event is never urgent enough to wake somebody: their work will
+  // still be there at 8am.
   'delivery.dead_lettered': { requiresAction: true, urgency: 'URGENT', defaultChannels: ['EMAIL'] },
+
+  /*
+   * Account security — the stated exception to "no customer event is urgent"
+   * (access.md §6). Somebody else holding your credentials will not still be fine
+   * at 8am.
+   *
+   * None of the three `requiresAction`. There is nothing the product can ask the
+   * holder to *do* that closing a task would represent: the session is already
+   * gone, and an item that sits in the Action Centre until somebody clicks
+   * "resolve" on their own security alert is a task with no work in it. What they
+   * should do — change the password — is in the body, where it belongs.
+   */
+  // Theft, as far as anything can tell. Unconditional: this is the one warning a
+  // victim gets, and it must not be silenceable.
+  'auth.token_reuse': {
+    requiresAction: false, urgency: 'URGENT', defaultChannels: ['EMAIL'], unconditional: true,
+  },
+  // A human at the platform did this deliberately and can explain it, so it takes
+  // the normal rules: NORMAL urgency, quiet hours and digests respected.
+  'auth.session_revoked': { requiresAction: false, urgency: 'NORMAL', defaultChannels: ['EMAIL'] },
+  // Rate-limited by the lockout it reports — one per window, never one per
+  // attempt, or the alarm becomes a mail bomb aimed at whatever address an
+  // attacker types.
+  'auth.lockout': { requiresAction: false, urgency: 'NORMAL', defaultChannels: ['EMAIL'] },
+
+  /*
+   * The three factor events, all unconditional (§5, §6).
+   *
+   * **Enrolment is on this list as well as removal**, which looks like noise until
+   * you consider who else might have done it: somebody who has your password and
+   * adds *their* authenticator app to your account has locked you out of it and
+   * kept themselves in. That mail is the only thing that tells you.
+   */
+  'auth.mfa_enrolled': {
+    requiresAction: false, urgency: 'URGENT', defaultChannels: ['EMAIL'], unconditional: true,
+  },
+  'auth.mfa_removed': {
+    requiresAction: false, urgency: 'URGENT', defaultChannels: ['EMAIL'], unconditional: true,
+  },
+  // The one path that removes somebody's protection without them (§13.2). Told
+  // unconditionally, because the alternative is learning about it by being unable
+  // to sign in.
+  'auth.mfa_reset_by_operator': {
+    requiresAction: false, urgency: 'URGENT', defaultChannels: ['EMAIL'], unconditional: true,
+  },
 };
 
 // ── Preferences ───────────────────────────────────────────────────────────────
@@ -135,12 +201,17 @@ export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
  * Precedence is user override → kind default. An override of `true` can also turn
  * a channel *on* that the kind does not use by default, because a user asking for
  * more email is a preference, not a risk.
+ *
+ * An `unconditional` kind ignores overrides entirely — see the flag. It is read
+ * here rather than at the call site so there is no path to the sender in which the
+ * check can be forgotten.
  */
 export function resolveChannels(
   kind: NotificationKind,
   overrides: NotificationChannelOverrides = {}
 ): NotificationChannel[] {
   const spec = NOTIFICATION_KIND_SPECS[kind];
+  if (spec.unconditional) return [...spec.defaultChannels];
   const override = overrides[kind] ?? {};
   return NOTIFICATION_CHANNELS.filter((channel) => {
     const chosen = channel === 'EMAIL' ? override.email : override.push;
@@ -362,7 +433,13 @@ export function notificationTransitionRefusal(
 
 export const notificationViewSchema = z.object({
   id: z.string().uuid(),
-  companyId: z.string().uuid(),
+  /**
+   * Null for an account-scoped notification — a security event about the person
+   * rather than about a tenant (0018). It shows in the holder's inbox whichever
+   * company they happen to be viewing, because hanging it on one of their
+   * companies would claim the event happened there.
+   */
+  companyId: z.string().uuid().nullable(),
   kind: notificationKindSchema,
   title: z.string(),
   body: z.string(),

@@ -203,7 +203,12 @@ function toAdminUser(row: AdminUserRow): AdminUserSummary {
 const ADMIN_USER_SELECT = `select u.id, u.email, u.name, u.avatar_url, u.is_super_admin,
   (u.email_verified_at is not null) as email_verified,
   (select count(*)::int from memberships m where m.user_id = u.id and m.status = 'ACTIVE') as membership_count,
-  (select count(*)::int from refresh_tokens r where r.user_id = u.id and r.revoked_at is null and r.expires_at > now()) as active_session_count,
+  -- Sessions, not tokens. One session legitimately holds two live tokens for the
+  -- length of a grace window (0018), so counting tokens would show an operator two
+  -- devices where the customer has one - and this number is metadata about somebody
+  -- else's account, which is the one kind of number that must not be overstated.
+  (select count(*)::int from auth_sessions s
+    where s.user_id = u.id and s.revoked_at is null and s.expires_at > now()) as active_session_count,
   u.created_at from users u`;
 
 export async function listAdminUsers(input: AdminUserListQuery): Promise<AdminUserSummary[]> {
@@ -236,29 +241,6 @@ export async function getAdminUser(userId: string): Promise<AdminUserDetail | nu
     [userId]
   );
   return { user: toAdminUser(row), memberships };
-}
-
-export async function revokeAdminUserSessions(
-  actorUserId: string,
-  userId: string,
-  reason: string
-): Promise<number> {
-  return withTransaction(async (client) => {
-    const result = await client.query(
-      `update refresh_tokens set revoked_at = now()
-        where user_id = $1 and revoked_at is null and expires_at > now()`,
-      [userId]
-    );
-    await recordPlatformAudit({
-      actorUserId,
-      action: 'user.sessions_revoked',
-      entityType: 'USER',
-      entityId: userId,
-      changes: { revoked: result.rowCount ?? 0, reason },
-      description: 'Active refresh sessions were revoked by a super admin',
-    }, client);
-    return result.rowCount ?? 0;
-  });
 }
 
 export async function setUserSuperAdmin(
