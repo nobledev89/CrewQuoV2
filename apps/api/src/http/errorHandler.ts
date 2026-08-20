@@ -1,7 +1,7 @@
 import type { ErrorRequestHandler, Request, RequestHandler } from 'express';
 import { ZodError } from 'zod';
 import { log, routeTemplate } from '../observability/log';
-import { AppError, type ErrorCode } from './errors';
+import { AppError, TokenRejected, type ErrorCode } from './errors';
 import { appErrorForPgError } from './pgErrors';
 
 /** 404 for unmatched routes — emits the standard error envelope. */
@@ -58,6 +58,19 @@ function logFailure(req: Request, status: number, code: string, err: unknown): v
 /** Terminal error middleware: maps AppError / ZodError / unknown to the envelope. */
 export const errorHandler: ErrorRequestHandler = (err, req: Request, res, _next) => {
   if (err instanceof AppError) {
+    /*
+     * The one 401 a client can act on says so in the field reserved for it.
+     *
+     * Without this, "your fifteen minutes are up" and "the password you typed into
+     * this form is wrong" are the same response, and a client that recovers from the
+     * first would rotate its refresh token over the second. See `TokenRejected`.
+     *
+     * No `realm` and no `error=` parameter: a realm names a protection space this API
+     * does not partition, and the RFC 6750 error codes would put the reason a token
+     * failed on the wire — which §9 keeps off it deliberately, since "expired" versus
+     * "revoked" tells whoever holds a stolen one whether the theft was noticed.
+     */
+    if (err instanceof TokenRejected) res.setHeader('WWW-Authenticate', 'Bearer');
     // Not logged as a failure. An AppError is the API working: a 403 on a route
     // somebody may not use, a 409 on a resubmit. Logging every one at warn would
     // bury the lines that mean something under the ones that mean the rules held,

@@ -10,6 +10,11 @@ export default [
       '**/coverage/**',
       '**/test-results/**',
       '**/playwright-report/**',
+      // Scratch: logs, and build output moved aside for post-mortem. Linting a
+      // *copy* of a broken build reports 42 parse errors about files that are not
+      // in any tsconfig and were never meant to be — which is a repo-wide lint
+      // failure caused by keeping evidence.
+      '**/.tmp/**',
     ],
   },
   {
@@ -18,7 +23,10 @@ export default [
       parser: tseslint.parser,
       parserOptions: {
         projectService: {
-          allowDefaultProject: ['infra/migrations/run.ts', 'infra/seed/index.ts'],
+          allowDefaultProject: [
+            'infra/migrations/run.ts',
+            'infra/seed/index.ts',
+          ],
         },
         tsconfigRootDir: import.meta.dirname,
       },

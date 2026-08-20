@@ -38,6 +38,10 @@ const CLIENT_CO = `Hanmore Estates ${RUN}`;
 const FIRST_CO = `Northlight Rigging ${RUN}`;
 const SECOND_CO = `Northlight Plant Hire ${RUN}`;
 const ROLE = 'Rigger';
+// Its own company and role, so the recovery test cannot be affected by — or affect —
+// the state the core loop above is asserting.
+const STALE_CO = `Overnight Tab Ltd ${RUN}`;
+const STALE_ROLE = 'Night watch';
 
 // PAY 50.00/h, BILL 82.00/h. 8 hours -> cost 40000c, bill 65600c.
 const PAY_HOURLY = '50.00';
@@ -1163,6 +1167,151 @@ test.describe('Web core workflows', () => {
     await section.getByLabel('Confirm your password to remove it').fill(PARITY_PASSWORD);
     await section.getByRole('button', { name: 'Remove two-step sign-in' }).click();
     await expect(section.getByText('Off', { exact: true })).toBeVisible();
+    await page.close();
+  });
+
+  test('a tab whose access token has been refused recovers, and gives up exactly once', async ({
+    browser,
+  }) => {
+    /*
+     * The bug this closes: an access token lives fifteen minutes, the provider
+     * refreshed once on mount and never again, and `api/client.ts` had no retry path.
+     * So a tab left open over lunch started failing and *kept* failing — on a session
+     * that was perfectly alive — until the person thought to reload. Nothing about it
+     * looked like an expiry from the screen; it looked like the product was broken.
+     *
+     * **The token is refused by fault injection, not by waiting fifteen minutes.** The
+     * Authorization header on one call is rewritten to a string the API will not
+     * accept, which reaches the same `requireAuth` refusal an expired token reaches.
+     * Everything after that is real: a real 401 from the real API, the real refresh,
+     * the real retry, real data on the screen. The alternative is a suite that sleeps
+     * for a quarter of an hour, or an API restarted mid-run with a two-second token
+     * lifetime — and a test that sleeps is a test that eventually gets deleted.
+     */
+    const email = await provisionCompany({
+      handle: 'stale-tab',
+      name: 'Stan Stale',
+      companyName: STALE_CO,
+      planId: 'pro',
+    });
+    const page = await freshPage(browser);
+    await signIn(page, email);
+
+    // Something on the screen that only a *successful* read can produce. Asserting a
+    // heading would pass on a page whose every fetch had failed.
+    await page.goto('/rates/roles');
+    await page.getByRole('button', { name: 'New role' }).click();
+    await page.getByPlaceholder('e.g. Lighting technician…').fill(STALE_ROLE);
+    await page.getByRole('button', { name: 'Add role' }).click();
+    await expect(page.getByRole('cell', { name: STALE_ROLE, exact: true })).toBeVisible();
+
+    /*
+     * ── Phase 1: every first-attempt read refused, and recovered ───────────────
+     *
+     * The read *behind the assertion* is the one interfered with, and **every** first
+     * attempt at it is refused rather than just the first one. Three things had to be
+     * got right here and each was arrived at by watching the test pass when it should
+     * not have:
+     *
+     *  - Poisoning whichever authenticated call went out first passed on a build with
+     *    no recovery in it at all, on any run where that call happened to be
+     *    `/v1/entitlements` rather than this one.
+     *  - Poisoning only the *first* read of this endpoint still passed without the fix,
+     *    because this screen reads it twice — two components want the role list — and
+     *    the second, unpoisoned read quietly filled the table being asserted on.
+     *  - Poisoning by token *string* — refuse anything carrying the token the page
+     *    loaded with — looked like the faithful model of an expiry and broke on a real
+     *    property of this API: **an access token is a JWT over `{sub, sid}` with a
+     *    whole-second `iat`/`exp`, so two refreshes inside the same second return a
+     *    byte-identical string.** The retry then carried a token indistinguishable
+     *    from the dead one and was refused again. (Worth knowing beyond this test: it
+     *    is also why "assert the stored token changed" is not a valid way to detect
+     *    that a refresh happened.)
+     *
+     * So the count is the discriminator, and the baseline is measured rather than
+     * assumed — a hardcoded "expect two reads" would be a number that is right today
+     * and breaks on any unrelated change to this page.
+     */
+    const countRoleReads = async () => {
+      let reads = 0;
+      await page.route('**/v1/role-catalog**', async (route) => {
+        // Only a call carrying a bearer: a CORS preflight carries none.
+        if (route.request().headers().authorization) reads += 1;
+        await route.continue();
+      });
+      await page.goto('/rates/roles');
+      await expect(page.getByRole('cell', { name: STALE_ROLE, exact: true })).toBeVisible();
+      await page.unroute('**/v1/role-catalog**');
+      return reads;
+    };
+    const baseline = await countRoleReads();
+    expect(baseline).toBeGreaterThan(0);
+
+    let reads = 0;
+    await page.route('**/v1/role-catalog**', async (route) => {
+      const headers = route.request().headers();
+      if (!headers.authorization) {
+        await route.continue();
+        return;
+      }
+      reads += 1;
+      if (reads <= baseline) {
+        await route.continue({ headers: { ...headers, authorization: 'Bearer not-a-token' } });
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.goto('/rates/roles');
+    /*
+     * The claim, in two lines. The row cannot be on the screen unless a refused read
+     * was refreshed and sent again, because every read this page makes of its own
+     * accord was refused. And the total is exact: one retry per refusal, no more — if
+     * a retry ever arrived early enough to be counted as a first attempt, this fails
+     * with a number rather than flaking on the row.
+     */
+    await expect(page.getByRole('cell', { name: STALE_ROLE, exact: true })).toBeVisible();
+    expect(reads).toBe(baseline * 2);
+    await page.unroute('**/v1/role-catalog**');
+
+    // ── Phase 2: the refusal that is real, which must end at sign-in ────────────
+    /*
+     * A retry that cannot fail is a retry that loops. When the refresh is dead too —
+     * the session was ended from another device, or reuse was detected — the client
+     * has to try once, accept the answer and hand the person the sign-in screen.
+     *
+     * The mount refresh is let through and every one after it is broken, so the
+     * failure lands on the *recovery* path specifically rather than on the
+     * refresh-on-mount that has always cleared a dead session.
+     */
+    let refreshes = 0;
+    await page.route(/\/v1\//, async (route) => {
+      const request = route.request();
+      if (request.url().includes('/v1/auth/refresh')) {
+        refreshes += 1;
+        if (refreshes === 1) {
+          await route.continue();
+          return;
+        }
+        await route.continue({ postData: JSON.stringify({ refreshToken: 'not-a-token' }) });
+        return;
+      }
+      const headers = request.headers();
+      if (headers.authorization) {
+        await route.continue({ headers: { ...headers, authorization: 'Bearer not-a-token' } });
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.goto('/rates/roles');
+    await expect(page).toHaveURL(/\/login/);
+    // Exactly two: the one on mount, and the single attempt the recovery is allowed.
+    // More would mean a screen's parallel fetches each walking the refresh chain,
+    // which is how an ordinary page load trips reuse detection and signs everybody
+    // out — the failure the single-flight guard in `AuthProvider` exists to prevent.
+    expect(refreshes).toBe(2);
+    await page.unroute(/\/v1\//);
     await page.close();
   });
 

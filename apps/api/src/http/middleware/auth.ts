@@ -1,6 +1,6 @@
 import type { RequestHandler } from 'express';
 import type { MembershipRole } from '@crewquo/shared';
-import { AppError } from '../errors';
+import { AppError, TokenRejected } from '../errors';
 import { getCompanyCtx, type Ctx } from '../context';
 import { verifyAccessToken } from '../../modules/auth/tokens';
 import { findUserById } from '../../modules/users/repo';
@@ -26,7 +26,7 @@ function bearer(header: string | undefined): string | null {
 export const requireAuth: RequestHandler = async (req, _res, next) => {
   try {
     const token = bearer(req.header('authorization'));
-    if (!token) throw new AppError('UNAUTHENTICATED', 'Missing bearer token');
+    if (!token) throw new TokenRejected('Missing bearer token');
 
     const claims = verifyAccessToken(token);
 
@@ -53,8 +53,8 @@ export const requireAuth: RequestHandler = async (req, _res, next) => {
       findUserById(claims.sub),
       claims.sessionId ? sessionIsLive(claims.sessionId, claims.sub) : Promise.resolve(true),
     ]);
-    if (!user) throw new AppError('UNAUTHENTICATED', 'Account no longer exists');
-    if (!sessionLive) throw new AppError('UNAUTHENTICATED', 'This session has ended');
+    if (!user) throw new TokenRejected('Account no longer exists');
+    if (!sessionLive) throw new TokenRejected('This session has ended');
 
     const ctx: Ctx = {
       userId: user.id,

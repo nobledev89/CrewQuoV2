@@ -225,6 +225,23 @@ cannot keep.
 | **Lost device, no recovery codes** | n/a | told to contact support, and *not* told the account is unrecoverable | a super admin resets the factor with a reason; the holder is emailed unconditionally and the reset is platform-audited (§13.2) |
 | Refresh-token reuse detected | no | signed out everywhere, told why | sign in again; change the password if it was not them |
 | Signing secret rotated | n/a | nothing — overlapping validation means no forced logout | none |
+| **Access token aged out under an open tab** | yes, silently and once | nothing — the call is refreshed and sent again | none; the client recovers itself |
+| Refresh dead as well (session ended elsewhere) | no | the sign-in screen, once — not a screen that keeps failing | sign in again |
+
+> **The 401 a client can act on is marked as such.** A 401 means "your access token
+> aged out" *and* "the password you typed into this step-up form is wrong" (§4), and to
+> a client those are the same response. One is worth refreshing and retrying; the other
+> must not be — rotating credentials because somebody mistyped a password inverts what
+> step-up is for, and a rotation that lost a race would sign them out of a session that
+> was never in question. Token refusals therefore carry `WWW-Authenticate: Bearer`,
+> which is the field RFC 9110 §11.6.1 already reserves for it; the API had been omitting
+> it on every 401, so this is conformance rather than invention. The header is bare — no
+> `realm`, no RFC 6750 `error=` — because naming *why* a token failed would put on the
+> wire the distinction this section keeps off it.
+
+> **A retry that cannot fail is a retry that loops.** The recovery gets exactly one
+> attempt. If the refresh is dead too, the client stops, clears the session and hands
+> over the sign-in screen — the one outcome a person can act on.
 
 **Sign-in failures are deliberately indistinguishable.** "No account with that
 address" is a free account-existence oracle, and this product already refused to build
@@ -355,6 +372,12 @@ leaked password list.**
     it grants Ola no access to Dana's data at any point.
 12. **Correction.** Everything above is reversible by the account holder without an
     operator: remove the factor, regenerate codes, end sessions, revoke a grant.
+13. **Still working after lunch.** Dana leaves a tab open past the access token's fifteen
+    minutes. The next thing she clicks works — the refused call is refreshed and sent
+    again, once, and she is told nothing because nothing happened to her. If the refresh
+    is dead too she gets the sign-in screen rather than a screen that keeps failing. A
+    401 that is *not* about her token — a mistyped step-up password — is answered as
+    what it is and rotates nothing.
 
 ## 13. Decisions — answered 2026-08-19
 

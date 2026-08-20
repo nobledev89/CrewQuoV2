@@ -4330,6 +4330,111 @@ async function main(): Promise<void> {
     hashIndex.rows.some((r) => r.indexdef.toLowerCase().includes('unique')),
     hashIndex.rows.map((r) => r.indexdef));
 
+  // ── The 401 a client can act on (§9, §12.13) ──────────────────────────────
+  // A tab left open past the fifteen-minute access token used to start failing and
+  // keep failing until somebody thought to reload — the session was alive the whole
+  // time and the client had no path from a 401 back to a working token. It has one
+  // now, and this is the signal it steers by.
+  section('Access hardening — telling a stale token from a wrong password');
+
+  await clearAuthAttempts();
+  const staleUser = await register('stale-token', `Stale Token Ltd ${RUN}`);
+
+  /*
+   * 1 ── Every way the *bearer* can be refused says so in the field reserved for it.
+   *
+   * `WWW-Authenticate` on a 401 is RFC 9110 §11.6.1 and this API had been omitting it
+   * on every one, so this is conformance as much as it is a feature. The header is
+   * bare on purpose: a `realm` would name a protection space this API does not
+   * partition, and RFC 6750's `error="invalid_token"` would put *why* a token failed
+   * on the wire — which §9 keeps off it, since "expired" versus "revoked" tells
+   * whoever holds a stolen one whether the theft has been noticed.
+   */
+  const expiredBearer = jwt.sign({ sub: staleUser.userId }, env.JWT_ACCESS_SECRET, {
+    algorithm: 'HS256',
+    expiresIn: -60,
+    keyid: currentAccessKid(),
+  });
+  for (const [label, token] of [
+    ['an expired access token', expiredBearer],
+    ['a token signed by nobody we know', jwt.sign({ sub: staleUser.userId }, 'not-our-secret')],
+    ['a string that is not a token at all', 'not-a-jwt'],
+    ['no bearer at all', undefined],
+  ] as [string, string | undefined][]) {
+    const res = await call('GET', '/v1/me', token === undefined ? {} : { token });
+    eq(`${label} is refused`, res.status, 401);
+    eq(`...and says the bearer is what was refused (${label})`,
+      res.headers.get('www-authenticate'), 'Bearer');
+    check(`...without naming which failure it was (${label})`,
+      !/expired|invalid_token|revoked|realm/i.test(res.headers.get('www-authenticate') ?? ''),
+      res.headers.get('www-authenticate'));
+  }
+
+  // An ended session is the same answer, which is the point: the client retries once,
+  // the refresh fails too, and the person is sent to sign in rather than watching a
+  // screen fail silently.
+  const endedSignIn = await call('POST', '/v1/auth/login', {
+    body: { email: staleUser.email, password: 'Verify-passw0rd!' },
+  });
+  const endedAccess = endedSignIn.json?.tokens?.accessToken as string;
+  const ownSessions = await call('GET', '/v1/me/sessions', { token: endedAccess });
+  const ownSession = (ownSessions.json?.sessions ?? []).find((x: any) => x.current);
+  await call('DELETE', `/v1/me/sessions/${ownSession?.id}`, { token: endedAccess });
+  const afterEnded = await call('GET', '/v1/me', { token: endedAccess });
+  eq('an access token from an ended session is refused', afterEnded.status, 401);
+  eq('...and also names the bearer', afterEnded.headers.get('www-authenticate'), 'Bearer');
+
+  /*
+   * 2 ── A 401 that is *not* about the token does not carry it.
+   *
+   * This is the whole reason the signal exists rather than the client keying on the
+   * status alone. Step-up re-authentication (§4) answers a mistyped password with 401
+   * too, and a client that treated the two alike would rotate its refresh token over
+   * a typo, re-submit the same wrong password to get the same answer, and — if that
+   * rotation lost a race — sign the person out of a session that was never in
+   * question. It also inverts what step-up is for: proof of a live human, not proof
+   * that the client can mint another token.
+   */
+  const stepUpUser = await register('stale-stepup', `Stale Step Up ${RUN}`);
+  // The route refuses in order — staff, allowance, verification, *then* step-up — so
+  // an unverified address would be answered by the check above the one under test.
+  await db.query(`update users set email_verified_at = now() where id = $1`, [stepUpUser.userId]);
+  const wrongStepUp = await call('POST', '/v1/company-creation-requests', {
+    token: stepUpUser.token,
+    body: {
+      legalName: `Second Company ${RUN}`,
+      country: 'PH',
+      attestation: true,
+      password: 'not-the-password',
+    },
+  });
+  eq('a wrong step-up password is refused', wrongStepUp.status, 401);
+  eq('...as a 401 about what was typed, not about the token',
+    wrongStepUp.headers.get('www-authenticate'), null);
+  check('...while the token it arrived with still works',
+    (await call('GET', '/v1/me', { token: stepUpUser.token })).status === 200);
+
+  /*
+   * 3 ── And the browser can actually read it.
+   *
+   * `WWW-Authenticate` is not one of the seven response headers script may read by
+   * default, so setting it without naming it in `Access-Control-Expose-Headers` would
+   * produce exactly the bug this section exists to prevent — correct on the wire,
+   * invisible to the only client that needs it, and undetectable from curl.
+   */
+  const browserOrigin = process.env.APP_BASE_URL ?? 'http://localhost:3000';
+  const fromBrowser = await fetch(`${BASE}/v1/me`, {
+    headers: { Origin: browserOrigin, Authorization: `Bearer ${expiredBearer}` },
+  });
+  eq('a browser-origin call is answered', fromBrowser.status, 401);
+  check('...and script is allowed to read the header it has to key on',
+    (fromBrowser.headers.get('access-control-expose-headers') ?? '')
+      .toLowerCase()
+      .split(',')
+      .map((h) => h.trim())
+      .includes('www-authenticate'),
+    fromBrowser.headers.get('access-control-expose-headers'));
+
   // ── Second factors (§42) ──────────────────────────────────────────────────
   // docs/operating-model/access.md §12 items 5–7 and 11. Every account on this
   // platform was a password and nothing else — including the super admins who can
@@ -4524,6 +4629,12 @@ async function main(): Promise<void> {
     body: { password: 'not-the-password' },
   });
   eq('...and a wrong password does not do it either', removeWrong.status, 401);
+  // Not a stale bearer, so no `WWW-Authenticate` — otherwise the web client would
+  // refresh its session every time somebody mistyped this field. Asserted here as
+  // well as in the section above because this is a second, independent step-up route,
+  // and the two must not drift into disagreeing about what a 401 means.
+  eq('...and says nothing about the bearer, which was fine',
+    removeWrong.headers.get('www-authenticate'), null);
   const stillActive = await call('GET', '/v1/me/mfa', { token: mfaUser.token });
   eq('...so the factor is still there', stillActive.json?.state, 'ACTIVE');
 

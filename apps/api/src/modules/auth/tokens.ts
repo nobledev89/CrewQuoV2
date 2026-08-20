@@ -7,7 +7,7 @@ import {
   type SigningKeyring,
 } from './signingKeys';
 import { env, NO_SIGNING_KEY } from '../../env';
-import { AppError } from '../../http/errors';
+import { AppError, TokenRejected } from '../../http/errors';
 
 /**
  * Token utilities (§5). The access token is a short-lived JWT carrying only
@@ -188,7 +188,7 @@ export function verifyAccessToken(token: string): AccessTokenClaims {
   try {
     const decoded = verifyWithKeyring(token, accessKeyring());
     if (typeof decoded.sub !== 'string') {
-      throw new AppError('UNAUTHENTICATED', 'Invalid access token');
+      throw new TokenRejected('Invalid access token');
     }
     return {
       sub: decoded.sub,
@@ -197,7 +197,7 @@ export function verifyAccessToken(token: string): AccessTokenClaims {
     };
   } catch (err) {
     if (err instanceof AppError) throw err;
-    throw new AppError('UNAUTHENTICATED', 'Invalid or expired access token');
+    throw new TokenRejected('Invalid or expired access token');
   }
 }
 

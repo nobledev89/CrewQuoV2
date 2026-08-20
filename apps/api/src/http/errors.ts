@@ -45,3 +45,29 @@ export const validation = (msg = 'Validation failed', details?: unknown) =>
 export const limitExceeded = (msg: string, details?: unknown) =>
   new AppError('LIMIT_EXCEEDED', msg, details);
 export const conflict = (msg = 'Conflict') => new AppError('CONFLICT', msg);
+
+/**
+ * A 401 raised because the **bearer token itself** was rejected — missing, invalid,
+ * expired, or naming a session or an account that no longer exists.
+ *
+ * A separate type because a client can do something about this one and nothing about
+ * the others. `stepUp.ts` answers a mistyped password with 401 as well (§4 re-auth),
+ * and to a client that treated every 401 alike, "your access token aged out" and "the
+ * password you just typed is wrong" are the same event. It would then rotate its
+ * refresh token on every typo — and, if that rotation lost a race, sign the person
+ * out of a session that was never in question. Rotating credentials in response to a
+ * step-up refusal also inverts what step-up is for: proof of a live human, not proof
+ * that the client can mint another token.
+ *
+ * Carried to the caller as `WWW-Authenticate: Bearer` rather than as a new error
+ * code, because that is the field RFC 9110 §11.6.1 already reserves for exactly this
+ * ("the 401 response ... MUST send a WWW-Authenticate header field") and the §7
+ * envelope stays precisely as specified. The API had been omitting it on every 401,
+ * so this is conformance rather than invention.
+ */
+export class TokenRejected extends AppError {
+  constructor(message: string) {
+    super('UNAUTHENTICATED', message);
+    this.name = 'TokenRejected';
+  }
+}

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import jwt from 'jsonwebtoken';
+import { env } from '../../env';
 import { deriveKid } from './signingKeys';
-import { AppError } from '../../http/errors';
+import { AppError, TokenRejected } from '../../http/errors';
 import {
   createRefreshToken,
   hashRefreshToken,
@@ -47,6 +48,37 @@ describe('access tokens', () => {
 
   it('rejects a garbage token', () => {
     expect(() => verifyAccessToken('not-a-jwt')).toThrow(AppError);
+  });
+
+  /*
+   * Every way this function can fail is a `TokenRejected`, and that is a contract
+   * rather than a detail: it is what puts `WWW-Authenticate: Bearer` on the response,
+   * and it is the only thing telling the web client that a 401 is worth a refresh and
+   * a retry rather than a message to the person at the keyboard. A future refactor
+   * that reintroduced a plain `AppError` here would still be a 401 with the same
+   * body, and the only visible symptom would be tabs that quietly stop working after
+   * fifteen minutes — so it is pinned at the level it is decided.
+   */
+  it.each([
+    ['garbage', 'not-a-jwt'],
+    ['an empty string', ''],
+    [
+      'a token signed by somebody else',
+      jwt.sign({ sub: 'user-5' }, 'not-our-secret', { algorithm: 'HS256' }),
+    ],
+    [
+      'one that expired',
+      jwt.sign({ sub: 'user-6' }, env.JWT_ACCESS_SECRET, {
+        algorithm: 'HS256',
+        expiresIn: -60,
+      }),
+    ],
+    [
+      'one signed over a bare string rather than a claims object',
+      jwt.sign('user-7', env.JWT_ACCESS_SECRET, { algorithm: 'HS256' }),
+    ],
+  ])('refuses %s as a rejected bearer token, not a generic 401', (_label, token) => {
+    expect(() => verifyAccessToken(token)).toThrow(TokenRejected);
   });
 });
 

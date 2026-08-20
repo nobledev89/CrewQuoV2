@@ -16,11 +16,12 @@ import type {
   PublicUser,
   RegisterRequest,
 } from '@crewquo/shared';
-import { api } from '@/api/client';
+import { api, setSessionRecovery } from '@/api/client';
 
 /**
  * Client-side auth/session for the web console. Tokens + the active company live
- * in localStorage; on load we refresh once so a reopened tab restarts cleanly.
+ * in localStorage; on load we refresh once so a reopened tab restarts cleanly, and
+ * again whenever the API refuses the access token we sent — see `recover` below.
  * (Mirrors the mobile AuthProvider; a shared api-client extraction is deferred.)
  */
 
@@ -85,6 +86,41 @@ const COMPANY_KEY = 'crewquo.companyId';
 
 const AuthContext = createContext<AuthState | null>(null);
 
+/**
+ * React Strict Mode intentionally mounts effects twice in development. Refresh
+ * tokens rotate on use, so two providers restoring the same saved session must
+ * share one request rather than race the token against itself. The promise lives
+ * at module scope because Strict Mode tears down the first provider instance
+ * before mounting the second one.
+ */
+let refreshFlight: { token: string; promise: ReturnType<typeof api.refresh> } | null = null;
+
+function refreshOnce(token: string): ReturnType<typeof api.refresh> {
+  if (refreshFlight?.token === token) return refreshFlight.promise;
+
+  const promise = api.refresh(token);
+  refreshFlight = { token, promise };
+  const clear = () => {
+    if (refreshFlight?.promise === promise) refreshFlight = null;
+  };
+  void promise.then(clear, clear);
+  return promise;
+}
+
+/**
+ * The stored session, or null.
+ *
+ * localStorage rather than React state on purpose: the recovery below runs from a
+ * closure created once, so reading state would read whatever the session was when the
+ * provider mounted — which, for the one code path whose entire job is to notice that
+ * the token has moved on, is the wrong answer by construction.
+ */
+function stored(): Session | null {
+  if (typeof window === 'undefined') return null;
+  const raw = localStorage.getItem(STORAGE_KEY);
+  return raw ? (JSON.parse(raw) as Session) : null;
+}
+
 function persist(session: Session | null) {
   if (typeof window === 'undefined') return;
   if (session) localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
@@ -105,18 +141,64 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [companyId, setCompanyIdState] = useState<string | null>(null);
 
+  /**
+   * Recover a session the API has just refused, without a reload.
+   *
+   * A tab left open past the fifteen-minute access token used to start failing and
+   * keep failing: the refresh happened once on mount and never again, so the fix was
+   * a page reload the person had to think of themselves. The API now says which 401s
+   * are about the token (`WWW-Authenticate: Bearer`), and this answers those.
+   *
+   * Registered once, outside the render cycle, because the caller is `api/client.ts` —
+   * a plain module with no way to reach a hook.
+   */
+  useEffect(() => {
+    return setSessionRecovery(async (rejected) => {
+      const saved = stored();
+      if (!saved) return null;
+      /*
+       * Somebody already refreshed while this call was in flight, so hand back what
+       * they got rather than rotating again.
+       *
+       * Best-effort, and worth saying so: an access token is a JWT with a
+       * whole-second `iat`/`exp`, so two refreshes inside the same second produce the
+       * *same string* and this comparison cannot see the difference. What actually
+       * keeps a screen's parallel fetches from walking the refresh chain once each —
+       * and eventually losing the race that revokes the family (`access.md` §9) — is
+       * `refreshOnce` below, which dedupes on the refresh token, and that one is 48
+       * random bytes and never repeats.
+       */
+      if (saved.accessToken !== rejected) return saved.accessToken;
+      try {
+        const next = fromAuthResponse(await refreshOnce(saved.refreshToken));
+        persist(next);
+        setSession(next);
+        return next.accessToken;
+      } catch {
+        /*
+         * The refresh token is dead too, so the session really has ended — revoked
+         * from another device, or reuse-detected. Clearing it is what sends the
+         * visitor to sign in; leaving it would retry against a string that will
+         * never work again. `companyId` is left alone deliberately: it is the last
+         * company they were in, and it should still be selected when they return.
+         */
+        persist(null);
+        setSession(null);
+        return null;
+      }
+    });
+  }, []);
+
   // Restore + refresh on mount.
   useEffect(() => {
-    const raw = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY) : null;
+    const saved = stored();
     const savedCompany =
       typeof window !== 'undefined' ? localStorage.getItem(COMPANY_KEY) : null;
-    if (!raw) {
+    if (!saved) {
       setReady(true);
       return;
     }
-    const saved = JSON.parse(raw) as Session;
-    api
-      .refresh(saved.refreshToken)
+    refreshOnce(saved.refreshToken)
       .then((res) => {
         const next = fromAuthResponse(res);
         setSession(next);

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import type { AcceptInviteResponse, MergeOutcome, MembershipRole } from '@crewquo/shared';
 import { asyncHandler } from '../../http/asyncHandler';
 import { getCtx } from '../../http/context';
-import { AppError } from '../../http/errors';
+import { AppError, TokenRejected } from '../../http/errors';
 import { param } from '../../http/params';
 import { requireAuth } from '../../http/middleware/auth';
 import { withTransaction } from '../../db';
@@ -49,7 +49,7 @@ invitesRouter.post(
   asyncHandler(async (req, res) => {
     const ctx = getCtx(req);
     const user = await findUserById(ctx.userId);
-    if (!user) throw new AppError('UNAUTHENTICATED', 'Account no longer exists');
+    if (!user) throw new TokenRejected('Account no longer exists');
 
     const invite = await findInviteRowByToken(param(req, 'token'));
     if (!invite) throw new AppError('NOT_FOUND', 'Invite not found');

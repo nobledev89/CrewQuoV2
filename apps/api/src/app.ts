@@ -170,6 +170,14 @@ export function buildApp(): Express {
     cors({
       origin: (origin, callback) => callback(null, !origin || origins.includes(origin)),
       credentials: false,
+      /*
+       * `WWW-Authenticate` is not one of the seven headers a browser lets script read
+       * by default, so without naming it here the web client sees a bare 401 and
+       * cannot tell an aged-out access token from a mistyped step-up password. The
+       * header itself carries no reason and no realm (see `errorHandler`), so exposing
+       * it discloses nothing a caller holding a 401 does not already have.
+       */
+      exposedHeaders: ['WWW-Authenticate'],
     })
   );
 

@@ -144,7 +144,67 @@ export function refusedFeature(err: unknown): string | null {
   return null;
 }
 
-async function request<T>(method: string, path: string, opts: RequestOptions = {}): Promise<T> {
+/**
+ * How this module gets a newer access token when the API rejects the one it sent.
+ *
+ * The client is a plain module and the session lives in React, so the provider hands
+ * its recovery down rather than the client reaching up for it. Registered by
+ * `AuthProvider`; absent during SSR and in anything that imports `api` without a
+ * provider, in which case a 401 stays a 401.
+ *
+ * Takes the token that was refused so the provider can tell "mine is stale" from
+ * "somebody already replaced it while this call was in flight". Returns the token to
+ * retry with, or `null` when the session cannot be recovered at all.
+ */
+export type SessionRecovery = (rejectedToken: string) => Promise<string | null>;
+
+let recoverSession: SessionRecovery | null = null;
+
+/** Register a recovery and get back the function that unregisters exactly this one. */
+export function setSessionRecovery(recovery: SessionRecovery): () => void {
+  recoverSession = recovery;
+  return () => {
+    // Only if it is still ours. Two route groups mean two providers, and an unmount
+    // that lands after the next one has registered must not leave the client with no
+    // recovery at all.
+    if (recoverSession === recovery) recoverSession = null;
+  };
+}
+
+/**
+ * The one condition under which a failed call is worth sending again: the API
+ * rejected the **bearer token** we sent, and somebody can hand us a newer one.
+ *
+ * Before this, a tab left open past the fifteen-minute access token simply started
+ * failing, and stayed failing until the person reloaded — the session was still
+ * perfectly alive and the client had no path from a 401 back to a working token.
+ *
+ * `WWW-Authenticate` is the discriminator rather than the status alone, because a 401
+ * is also how step-up re-authentication says *"that password was not correct"*
+ * (`access.md` §4). Retrying that would rotate a refresh token over a typo and
+ * re-submit the same wrong password to get the same answer.
+ */
+async function recoveredTokenFor(
+  res: Response,
+  opts: RequestOptions,
+  isRetry: boolean
+): Promise<string | null> {
+  // One retry, never a loop: a 401 on the second attempt is the real answer.
+  if (isRetry || res.status !== 401) return null;
+  // No bearer to be stale. Structurally excludes login, register, refresh and logout
+  // rather than listing their paths, which is a list that would drift.
+  if (!opts.accessToken) return null;
+  if (!res.headers.has('www-authenticate') || !recoverSession) return null;
+  return recoverSession(opts.accessToken);
+}
+
+async function request<T>(
+  method: string,
+  path: string,
+  opts: RequestOptions = {},
+  /** Internal: set on the single retry a recovered session is allowed. */
+  isRetry = false
+): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (opts.accessToken) headers.Authorization = `Bearer ${opts.accessToken}`;
   if (opts.companyId) headers['X-Company-Id'] = opts.companyId;
@@ -166,6 +226,8 @@ async function request<T>(method: string, path: string, opts: RequestOptions = {
   const text = await res.text();
   const json = text ? JSON.parse(text) : undefined;
   if (!res.ok) {
+    const fresh = await recoveredTokenFor(res, opts, isRetry);
+    if (fresh) return request<T>(method, path, { ...opts, accessToken: fresh }, true);
     const err = json?.error ?? {};
     throw new ApiError(
       res.status,
@@ -182,13 +244,18 @@ async function request<T>(method: string, path: string, opts: RequestOptions = {
  * return JSON, and a failure still carries the §7 error envelope — so parse the
  * body as an envelope before deciding it was a transport problem.
  */
-async function download(path: string, opts: RequestOptions): Promise<Blob> {
+async function download(path: string, opts: RequestOptions, isRetry = false): Promise<Blob> {
   const headers: Record<string, string> = {};
   if (opts.accessToken) headers.Authorization = `Bearer ${opts.accessToken}`;
   if (opts.companyId) headers['X-Company-Id'] = opts.companyId;
 
   const res = await fetch(`${API_URL}${path}`, { method: 'GET', headers, cache: 'no-store' });
   if (!res.ok) {
+    // An export is the longest thing a signed-in person waits for, so it is the call
+    // most likely to be the first one made after a token aged out — and the worst one
+    // to answer with "sign in again" after the wait.
+    const fresh = await recoveredTokenFor(res, opts, isRetry);
+    if (fresh) return download(path, { ...opts, accessToken: fresh }, true);
     let code = 'INTERNAL';
     let message = res.statusText;
     try {
