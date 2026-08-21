@@ -1,4 +1,4 @@
-import { useEffect, type ButtonHTMLAttributes, type HTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react';
+import { useEffect, useRef, type ButtonHTMLAttributes, type HTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react';
 
 function cx(...parts: (string | false | undefined)[]): string { return parts.filter(Boolean).join(' '); }
 type ButtonVariant = 'primary' | 'secondary' | 'danger';
@@ -75,10 +75,76 @@ export function SortableTh({ label, sortKey, sort, onSort, numeric, width }: {
 }
 
 /**
+ * Everything inside `panel` that a Tab press can reach, in document order.
+ *
+ * `:not([disabled])` and the visibility check both matter: a disabled footer button is
+ * the *last* element in most of these drawers, so a trap that treated it as the boundary
+ * would put Shift+Tab into a dead end while the form is still incomplete — which is
+ * exactly when a keyboard user is trying to get back to the field they missed.
+ *
+ * Visibility is `getClientRects().length`, not `offsetParent !== null`. The offsetParent
+ * idiom is the more common one and it is wrong here: it returns null for anything
+ * `position: fixed`, which is what this whole panel is, so a fixed child would be
+ * silently dropped from its own trap. Client rects are empty for `display: none` and
+ * non-empty for a fixed element that is actually on screen, which is the question being
+ * asked.
+ */
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function focusableWithin(panel: HTMLElement): HTMLElement[] {
+  return Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((el) => el.getClientRects().length > 0);
+}
+
+/**
  * A right-hand side panel for the work that would otherwise be pinned above a table.
  *
  * Closes on Escape and on a backdrop click, because a panel that can only be dismissed
- * by finding its Cancel button is a modal wearing a drawer's clothes.
+ * by finding its Cancel button is a modal wearing a drawer's clothes — and it holds
+ * focus, which is the behaviour `aria-modal="true"` claims and did not have.
+ *
+ * The attribute was here before the behaviour was, and that combination is worse than
+ * neither: it tells a screen reader that everything outside this panel is inert, while
+ * Tab walked straight out of it into the page behind the backdrop. A promise the
+ * keyboard does not keep is not a smaller version of accessible — the user is told the
+ * boundary exists and then falls through it, with no visible focus ring to say so
+ * because the thing they landed on is under a translucent overlay.
+ *
+ * Three separate defects, all of them in this one shared component and therefore in all
+ * eight drawers at once. None is visible to axe, which reads a static DOM and cannot
+ * press a key:
+ *
+ *   1. **Focus did not enter.** Three of the eight pages put `autoFocus` on their first
+ *      input; the other five opened with focus still on the trigger *behind* the panel,
+ *      so the first Tab went to whatever followed that trigger — a table row, the next
+ *      button in the toolbar — while the panel sat open and unreached.
+ *   2. **Focus was not held.** No trap, so Tab from the last control left the dialog.
+ *   3. **Focus was not returned.** On close the panel unmounted with focus inside it,
+ *      which drops focus to `<body>`. The next Tab starts from the top of the document,
+ *      so closing a drawer sent a keyboard user back to the skip link — from row 40 of
+ *      a table they had to walk to in the first place. This is the one that makes the
+ *      product unusable rather than merely awkward, and the one no scanner reports.
+ *
+ * `autoFocus` is honoured rather than overridden: if it has already put focus inside the
+ * panel by the time this effect runs, that is a deliberate choice by the page and a
+ * better destination than anything generic. Only when nothing inside has focus does the
+ * panel itself take it — the panel, not its close button, so the dialog's name is
+ * announced and the first Tab moves forward into the content instead of starting the
+ * user on "dismiss this".
+ *
+ * **Where the return target comes from, and why not from the obvious place.** The first
+ * version of this read `document.activeElement` in the on-open effect, which is what
+ * every focus-trap tutorial does and is wrong wherever a page also uses `autoFocus`:
+ * React applies `autoFocus` during commit, *before* effects run, so by the time the
+ * effect looked, focus was already on the panel's own first field. The drawer therefore
+ * recorded a node inside itself as the place to return to, and that node is detached by
+ * the time it closes — so focus fell to the document root and the fix silently did
+ * nothing on exactly the three drawers whose pages had been most careful. It passed on
+ * the five that autofocus nothing, which is the worst possible distribution.
+ *
+ * So the target is tracked by a `focusin` listener that runs *while the drawer is
+ * closed* and ignores anything inside a dialog. That is immune to the ordering, because
+ * the trigger's own focus happened long before this render — and it stays correct for
+ * the keyboard user specifically, who by definition had focus on the trigger to press it.
  */
 export function Drawer({ open, title, description, onClose, footer, children }: {
   open: boolean;
@@ -88,9 +154,60 @@ export function Drawer({ open, title, description, onClose, footer, children }: 
   footer?: ReactNode;
   children: ReactNode;
 }) {
+  const panelRef = useRef<HTMLElement | null>(null);
+  const lastOutsideRef = useRef<HTMLElement | null>(null);
+  const returnToRef = useRef<HTMLElement | null>(null);
+
+  // While closed, remember where focus is, so opening has somewhere to give it back to.
+  // The dialog filter is what makes this immune to `autoFocus`: that fires during commit
+  // and its `focusin` arrives before this listener is torn down, so without the filter
+  // the panel's own first field would overwrite the trigger as the return target.
+  useEffect(() => {
+    if (open) return;
+    const onFocusIn = (e: FocusEvent) => {
+      const target = e.target;
+      if (target instanceof HTMLElement && !target.closest('[role="dialog"]')) lastOutsideRef.current = target;
+    };
+    document.addEventListener('focusin', onFocusIn);
+    return () => document.removeEventListener('focusin', onFocusIn);
+  }, [open]);
+
+  // Entry and return, keyed on `open` alone: re-running this when `onClose` changed
+  // identity would return focus mid-interaction, while the panel is still open.
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    returnToRef.current = lastOutsideRef.current;
+    const panel = panelRef.current;
+    if (panel && !panel.contains(document.activeElement)) panel.focus();
+    return () => {
+      const returnTo = returnToRef.current;
+      returnToRef.current = null;
+      // `isConnected` because closing a drawer is often the same action that removes the
+      // row its trigger lived in — deleting a rate card, accepting the invite that
+      // rendered the button. Focusing a detached node throws focus to the document root,
+      // which is the defect this exists to fix, so an unreachable target is left alone.
+      if (returnTo?.isConnected) returnTo.focus();
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { onClose(); return; }
+      if (e.key !== 'Tab') return;
+      const panel = panelRef.current;
+      if (!panel) return;
+      const stops = focusableWithin(panel);
+      // A panel whose only controls are disabled still has to hold focus; the panel
+      // element is the stop of last resort rather than letting Tab leave.
+      if (stops.length === 0) { e.preventDefault(); panel.focus(); return; }
+      const first = stops[0]!;
+      const last = stops[stops.length - 1]!;
+      const active = document.activeElement;
+      if (!panel.contains(active)) { e.preventDefault(); (e.shiftKey ? last : first).focus(); return; }
+      if (e.shiftKey && active === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); }
+    };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [open, onClose]);
@@ -98,8 +215,11 @@ export function Drawer({ open, title, description, onClose, footer, children }: 
   if (!open) return null;
   return (
     <>
+      {/* The backdrop is deliberately a plain div: it is a pointer affordance, and the
+          keyboard path out of the dialog is Escape and the close button. Making it
+          focusable would add a tab stop whose accessible name could only be "" . */}
       <div className="cq-drawer-backdrop" onClick={onClose} />
-      <aside className="cq-drawer" role="dialog" aria-modal="true" aria-label={title}>
+      <aside ref={panelRef} tabIndex={-1} className="cq-drawer" role="dialog" aria-modal="true" aria-label={title}>
         <div className="cq-drawer__header">
           <div>
             <h2 className="cq-h2">{title}</h2>
