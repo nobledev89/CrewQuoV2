@@ -26,6 +26,7 @@ export default [
           allowDefaultProject: [
             'infra/migrations/run.ts',
             'infra/seed/index.ts',
+            'infra/seed/demo.ts',
           ],
         },
         tsconfigRootDir: import.meta.dirname,

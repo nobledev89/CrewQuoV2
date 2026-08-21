@@ -16,7 +16,8 @@
     "type-check": "turbo run type-check",
     "test": "turbo run test",
     "db:migrate": "tsx infra/migrations/run.ts",
-    "db:seed": "tsx infra/seed/index.ts"
+    "db:seed": "tsx infra/seed/index.ts",
+    "db:seed:demo": "tsx infra/seed/demo.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
