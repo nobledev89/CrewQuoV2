@@ -143,6 +143,21 @@ const EnvSchema = z.object({
   NOTIFICATION_FROM_EMAIL: z.string().email().optional(),
 
   /**
+   * Error tracking (`docs/operating-model/observability-data-lifecycle.md` §13.3).
+   *
+   * Optional on the same reasoning as the Resend pair: without a DSN the tracker is
+   * not initialised and says so once at boot, rather than a dev environment quietly
+   * looking like a configured one. `SENTRY_RELEASE` is what makes "how many, since
+   * when" answerable — without it every event belongs to the same nameless build.
+   *
+   * Nothing reaches Sentry unscrubbed even when this is set: `beforeSend` is
+   * `scrubEvent`, and `sendDefaultPii` is off. See `observability/errorTracking.ts`.
+   */
+  SENTRY_DSN: z.string().url().optional(),
+  SENTRY_RELEASE: z.string().optional(),
+  SENTRY_TRACES_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(0),
+
+  /**
    * Comma-separated browser origins allowed to call this API
    * (`docs/operating-model/access.md` §10.4).
    *

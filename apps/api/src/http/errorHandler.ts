@@ -1,5 +1,6 @@
 import type { ErrorRequestHandler, Request, RequestHandler } from 'express';
 import { ZodError } from 'zod';
+import { captureException } from '../observability/errorTracking';
 import { log, routeTemplate } from '../observability/log';
 import { AppError, TokenRejected, type ErrorCode } from './errors';
 import { appErrorForPgError } from './pgErrors';
@@ -43,7 +44,14 @@ function envelope(req: Request, code: ErrorCode, message: string, details?: unkn
  * The field name is in the response the caller already has.
  */
 function logFailure(req: Request, status: number, code: string, err: unknown): void {
-  log(status >= 500 ? 'error' : 'warn', 'request_failed', {
+  log(status >= 500 ? 'error' : 'warn', 'request_failed', requestFields(req, status, code, err));
+}
+
+/** The §7 fields describing one failed request. Shared so the log line and the tracker
+ *  cannot disagree about what a request is called — an operator pivots between them by
+ *  `requestId`, and a pivot only works if both sides spell it the same way. */
+function requestFields(req: Request, status: number, code: string, err: unknown) {
+  return {
     requestId: req.requestId,
     companyId: req.ctx?.companyId ?? undefined,
     userId: req.ctx?.userId ?? undefined,
@@ -52,7 +60,7 @@ function logFailure(req: Request, status: number, code: string, err: unknown): v
     status,
     errorCode: code,
     errorClass: err instanceof Error ? err.constructor.name : typeof err,
-  });
+  };
 }
 
 /** Terminal error middleware: maps AppError / ZodError / unknown to the envelope. */
@@ -98,6 +106,15 @@ export const errorHandler: ErrorRequestHandler = (err, req: Request, res, _next)
   // stack trace: before this, an operator had the trace and no way to learn which
   // tenant hit it, how often, or whether it was the customer who just wrote in.
   logFailure(req, 500, 'INTERNAL', err);
+  /*
+   * Reported to the tracker as well, and only from this branch.
+   *
+   * The three branches above are the API working — a refused permission, a rejected
+   * body, a caller-provokable Postgres error — and sending them would fill the tracker
+   * with the rules holding. What arrives here is only what nothing anticipated, which is
+   * the population "how many, since when" is a useful question about.
+   */
+  captureException(err, requestFields(req, 500, 'INTERNAL', err));
   // The stack itself, on its own line and only here. It is the one payload worth
   // more than the structure, and it is never a customer's data.
   console.error(`[api] unhandled error (request ${req.requestId ?? 'unknown'}):`, err);

@@ -656,8 +656,20 @@ is already relying on it.
    their traffic under somebody else's investigation; and carrying the id into the
    outbox row is **not** done yet — the request-to-job half of §12.4 arrives with
    step 1, which is where a job id exists to correlate to.
-3. **Error tracking** (§13.3), scrubber first and library second, so no
-   unscrubbed event is ever sent.
+3. ~~**Error tracking** (§13.3), scrubber first and library second, so no
+   unscrubbed event is ever sent.~~ **Shipped 2026-08-21** — `packages/shared/src/scrub.ts`
+   (35 tests, no SDK import) plus `apps/api/src/observability/errorTracking.ts`, both in
+   one commit so no release exists with the library and not the policy. Three things this
+   document did not say, all worth having said: the scrubber **rebuilds** the event rather
+   than filtering it, so a field invented by a future SDK version is dropped by code
+   written before it existed; the exception **message** had to go too, because the
+   messages worth reading are the ones that quote data (a Postgres unique violation names
+   the conflicting value), which leaves the `errorCode` tag as the publishable part; and
+   the scrubber being correct is not the same claim as the scrubber being *reached*, so
+   the wiring is proved by initialising the real SDK against a stub transport — removing
+   `beforeSend` puts a secret on the wire and the suite says so. **Still owed:** no event
+   observed against a real project, since a DSN makes Sentry a disclosed subprocessor and
+   that belongs with the legal pages; and the web app is not wired yet.
 4. **The recovery promise** (§13.4): tier, backup schedule, and the rehearsal —
    which is the step, not the paperwork.
 5. **Export**, then **deletion** (§13.1, §13.2), in that order and never the
