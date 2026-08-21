@@ -25,6 +25,7 @@ import {
 import { Shell } from '@/components/Shell';
 import { api, ApiError } from '@/api/client';
 import { useAuth, useSessionCtx } from '@/auth/AuthProvider';
+import { DataExportPanel } from '@/components/DataExportPanel';
 import { useAsyncData } from '@/lib/useAsyncData';
 import { formatDate, titleCase } from '@/lib/format';
 
@@ -123,6 +124,10 @@ function Profile() {
       </Section>
 
       <CreateCompany />
+
+      {/* Unconditional: a personal export needs no company, and it is exactly the person
+          whose last membership was just removed who comes here to take their data. */}
+      <DataExportPanel scope="personal" />
 
       {ctx ? null : (
         <Notice>Select or create a company to use the rest of the workspace.</Notice>

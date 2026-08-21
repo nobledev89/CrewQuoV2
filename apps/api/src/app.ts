@@ -11,6 +11,7 @@ import { sessionsRouter } from './modules/auth/sessions.routes';
 import { mfaRouter } from './modules/auth/mfa.routes';
 import { meRouter } from './modules/me/routes';
 import { companiesRouter } from './modules/companies/routes';
+import { companyExportRouter, meExportRouter } from './modules/data-export/routes';
 import { entitlementsRouter } from './modules/entitlements/routes';
 import { adminRouter } from './modules/admin/routes';
 import {
@@ -211,10 +212,15 @@ export function buildApp(): Express {
   // `/:something` route inside `meRouter` would otherwise swallow this silently.
   app.use('/v1/me/sessions', requireAuth, sessionsRouter);
   app.use('/v1/me/mfa', requireAuth, mfaRouter);
+  // Before `meRouter` for the reason above, and companyless on purpose: a personal
+  // export must still work for somebody whose last membership was just removed, which
+  // is exactly when a person asks for their data.
+  app.use('/v1/me', requireAuth, meExportRouter);
   app.use('/v1/me', requireAuth, meRouter);
   // Additional-company requests (§3.1.1). Companyless by nature — a request
   // exists before its tenant does, so it takes no X-Company-Id.
   app.use('/v1/company-creation-requests', requireAuth, companyCreationRouter);
+  app.use('/v1/companies', requireAuth, companyExportRouter);
   app.use('/v1/companies', requireAuth, companiesRouter);
   app.use('/v1/entitlements', requireAuth, entitlementsRouter);
 

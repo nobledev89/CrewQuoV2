@@ -23,16 +23,20 @@
  */
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import ExcelJS from 'exceljs';
+import JSZip from 'jszip';
 import jwt from 'jsonwebtoken';
 import pg from 'pg';
 import { env } from '../src/env';
 import { pool } from '../src/db';
 import {
+  COMPANY_EXPORT,
+  PERSONAL_EXPORT,
   base32Decode,
   totpCounter,
   totpCounterBytes,
   totpTruncate,
 } from '@crewquo/shared';
+import { COMPANY_QUERIES, PERSONAL_QUERIES } from '../src/modules/data-export/queries';
 import { deriveKid, parseRetiredSecrets } from '../src/modules/auth/signingKeys';
 import { currentAccessKid, signPurposeToken } from '../src/modules/auth/tokens';
 import { readJobHealth, recordJobRun } from '../src/jobs/jobRuns';
@@ -5095,6 +5099,187 @@ async function main(): Promise<void> {
     Boolean(jobService), opsView.json?.services?.map((s: { name: string }) => s.name));
   check('...naming what is lost rather than naming a table',
     !String(jobService?.detail ?? '').includes('job_runs'), jobService);
+
+  // -- Data export (packet 14 step 5, owner decision 13.2) -------------------
+  section('Data export (free for everyone; JSON+CSV; the money boundary holds)');
+  {
+    /*
+     * THE SUBJECT IS THE PROVIDER WHO LOGGED THE PRICED HOURS ABOVE, not a fresh account,
+     * and that is the whole design of this section.
+     *
+     * The first version registered a new user and asserted their bundle carried no
+     * `resolved_rate`. It passed - and it passed with `selectFor` deliberately broken to
+     * `select *`, because a brand-new account has no time logs, so there was no frozen
+     * rate in the database to leak. A test that cannot fail is worse than no test, and
+     * this is the fifth time in this repository that breaking the code on purpose is the
+     * only thing that found it.
+     *
+     * So the subject is `providerUser`, who logged 8h that was approved at a resolved PAY
+     * rate, and the anti-vacuity guards below assert the row and the rate really exist
+     * before anything claims they did not leak.
+     */
+    const subjectUserId = providerUser.userId;
+
+    const { rows: rateRows } = await db.query<{ n: number }>(
+      `select count(*)::int as n from time_logs
+        where logged_by_user_id = $1 and resolved_rate is not null`,
+      [subjectUserId]
+    );
+    check('the export subject really has a priced time log, so the next checks can fail',
+      (rateRows[0]?.n ?? 0) > 0, rateRows[0]);
+
+    /*
+     * EVERY SPEC COLUMN MUST EXIST IN THE SCHEMA.
+     *
+     * The manifest is hand-written against the schema, so it drifts the moment a
+     * migration renames anything - and it already did while this was being built:
+     * `notification_preferences` was specced with a `company_id` and a
+     * `channel_overrides` the table does not have, which reached a live request and came
+     * back as a 500 to somebody asking for their own data. A unit test cannot catch this,
+     * because the schema is not in the unit-test environment. This can.
+     */
+    for (const scopeName of ['PERSONAL', 'COMPANY'] as const) {
+      const spec = scopeName === 'PERSONAL' ? PERSONAL_EXPORT : COMPANY_EXPORT;
+      const queries = scopeName === 'PERSONAL' ? PERSONAL_QUERIES : COMPANY_QUERIES;
+      const missing: string[] = [];
+      for (const table of spec) {
+        const query = queries[table.table]!;
+        // The first identifier in `from` is the real table; the spec's name is for the
+        // reader, so `sessions` is `auth_sessions`.
+        const realTable = query.from.split(/\s+/)[0]!;
+        const { rows } = await db.query<{ column_name: string }>(
+          `select column_name from information_schema.columns where table_name = $1`,
+          [realTable]
+        );
+        const actual = new Set(rows.map((r) => r.column_name));
+        for (const column of table.columns) {
+          // A column supplied by an expression comes from a joined table, so the query
+          // succeeding is what proves it rather than this lookup.
+          if (query.expr?.[column]) continue;
+          if (!actual.has(column)) missing.push(`${scopeName}.${table.table}.${column}`);
+        }
+      }
+      check(`every ${scopeName} export column exists in the database`, missing.length === 0, missing);
+    }
+
+    const personal = await call('GET', '/v1/me/export', { token: providerUser.token, raw: true });
+    check('a person can export their own data', personal.status === 200, personal.status);
+    check('...as a zip', personal.headers.get('content-type') === 'application/zip');
+    check('...offered as a download rather than rendered',
+      (personal.headers.get('content-disposition') ?? '').includes('attachment'));
+    // A whole person's or tenant's history must never sit in a shared cache.
+    check('...and never cached anywhere',
+      (personal.headers.get('cache-control') ?? '').includes('no-store'),
+      personal.headers.get('cache-control'));
+
+    const personalZip = await JSZip.loadAsync(personal.buffer!);
+    const personalNames = Object.keys(personalZip.files);
+    check('...carrying a manifest', personalNames.includes('manifest.json'));
+    check('...with JSON and CSV for every table (owner: never a PDF)',
+      PERSONAL_EXPORT.every(
+        (t) => personalNames.includes(`${t.table}.json`) && personalNames.includes(`${t.table}.csv`)
+      ),
+      personalNames);
+
+    const personalManifest = JSON.parse(await personalZip.file('manifest.json')!.async('string'));
+    check('...naming every table it contains', personalManifest.tables.length === PERSONAL_EXPORT.length);
+    check('...and saying what deletion does, before the button rather than after it',
+      String(personalManifest.notes.join(' ')).includes('without your name on them'));
+
+    // Anti-vacuity, at the bundle rather than at the database: the hours have to actually
+    // be in this file for their absence of a rate to mean anything.
+    const personalLogs = personalManifest.tables.find(
+      (t: { table: string }) => t.table === 'time_logs'
+    );
+    check('the bundle really contains the hours', (personalLogs?.rowCount ?? 0) > 0, personalLogs);
+
+    /*
+     * THE ASSERTION THIS WHOLE SLICE EXISTS FOR.
+     *
+     * A personal export built from "the tables where this person appears" is the obvious
+     * implementation, and it hands every crew member the frozen PAY snapshot - an
+     * inter-company commercial term, not their wage. The row is theirs; the money stapled
+     * to it is not.
+     *
+     * Data files only. Checking the whole zip matches the manifest's own `withheld` list,
+     * which documents these very column names - the same read-prose-as-code trap the
+     * colour literal scan hit on its own first run.
+     */
+    let personalData = '';
+    for (const name of personalNames.filter((n) => n !== 'manifest.json')) {
+      personalData += await personalZip.file(name)!.async('string');
+    }
+    check('a personal export never carries the frozen PAY rate',
+      !personalData.includes('resolved_rate') && !personalData.includes('baseCents'));
+    check('...nor a credential', !personalData.includes('password_hash'));
+    check('...nor the id of the colleague who approved the work',
+      !personalData.includes('reviewed_by_user_id'));
+    check('...and the manifest explains each absence rather than leaving a hole',
+      personalManifest.tables.some((t: { withheld?: unknown[] }) => (t.withheld?.length ?? 0) > 0));
+
+    // The provider company's own export: the same rate, on the side of the boundary
+    // where it is that company's own commercial term.
+    const company = await call('GET', `/v1/companies/${northgate}/export`, {
+      token: providerUser.token,
+      companyId: northgate,
+      raw: true,
+    });
+    check('an owner can export the company', company.status === 200, company.status);
+    const companyZip = await JSZip.loadAsync(company.buffer!);
+    const companyManifest = JSON.parse(await companyZip.file('manifest.json')!.async('string'));
+    check('...with every company table named', companyManifest.tables.length === COMPANY_EXPORT.length);
+    const companyLogs = await companyZip.file('time_logs.json')!.async('string');
+    check('...and the frozen rate IS here, because on this side it is the company own term',
+      companyLogs.includes('resolved_rate'), companyLogs.slice(0, 200));
+    check('...while the counterparty client rate cards stay out of reach',
+      (await companyZip.file('rate_cards.json')!.async('string')).includes(northgate) ||
+        companyManifest.tables.find((t: { table: string }) => t.table === 'rate_cards')?.rowCount === 0);
+
+    // "Free for everyone, including the free crew plan" was the decision, so an
+    // unsubscribed account must not be refused.
+    const crewOnly = await register('exporter-crew', `Export Crew ${RUN}`);
+    const crewExport = await call('GET', '/v1/me/export', { token: crewOnly.token, raw: true });
+    check('export is free: a crew-plan account is not refused its own data',
+      crewExport.status === 200, crewExport.status);
+    const crewCompany = await call('GET', `/v1/companies/${crewOnly.companyId}/export`, {
+      token: crewOnly.token,
+      companyId: crewOnly.companyId!,
+      raw: true,
+    });
+    check('...and neither is its company', crewCompany.status === 200, crewCompany.status);
+
+    const stolen = await call('GET', `/v1/companies/${northgate}/export`, {
+      token: crewOnly.token,
+      companyId: northgate,
+      raw: true,
+    });
+    check('a non-member cannot export another company',
+      stolen.status === 403 || stolen.status === 404, stolen.status);
+
+    const { rows: exportRows } = await db.query<{ scope: string; byte_size: number }>(
+      `select scope, byte_size from data_exports
+        where subject_company_id = $1 or subject_user_id = $2 order by created_at`,
+      [northgate, subjectUserId]
+    );
+    check('each export is recorded as the disclosure it is', exportRows.length >= 2, exportRows.length);
+    check('...with a size, so a later question needs no re-run',
+      exportRows.every((r) => r.byte_size > 0));
+
+    const { rows: auditRows } = await db.query<{ n: number }>(
+      `select count(*)::int as n from audit_logs
+        where company_id = $1 and action = 'company.exported'`,
+      [northgate]
+    );
+    check('a company export is audited', (auditRows[0]?.n ?? 0) === 1, auditRows[0]);
+    const { rows: personalAudit } = await db.query<{ n: number }>(
+      `select count(*)::int as n from audit_logs
+        where actor_user_id = $1 and action = 'company.exported'
+          and company_id <> $2`,
+      [subjectUserId, northgate]
+    );
+    check('...and a personal one is not filed in an employer log',
+      (personalAudit[0]?.n ?? 0) === 0, personalAudit[0]);
+  }
 
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);

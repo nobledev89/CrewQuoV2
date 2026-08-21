@@ -28,6 +28,12 @@ export const AUDIT_ACTIONS = [
   'project.updated',
   'project.deleted',
   'project.exported',
+  // A whole-company export (packet §14 step 5). Audited because it is a disclosure of
+  // the company's record by one of its members, and the other owners are entitled to
+  // know it happened. A *personal* export is not here on purpose: it has no company
+  // whose trail it belongs in, and filing it under whichever company was active would
+  // record somebody's subject-access request as an event in their employer's log.
+  'company.exported',
   'assignment.created',
   'assignment.accepted',
   'assignment.declined',

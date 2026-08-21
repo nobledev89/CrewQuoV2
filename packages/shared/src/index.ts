@@ -22,3 +22,4 @@ export * from './access';
 export * from './jobs';
 export * from './totp';
 export * from './scrub';
+export * from './data-export';

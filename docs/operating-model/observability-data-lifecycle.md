@@ -676,3 +676,19 @@ is already relying on it.
    reverse. Deletion before export means the first person to use the product's
    erasure path had no way to take their records with them, and it is the one
    mistake here that cannot be repaired afterwards.
+   - ~~Export~~ **shipped 2026-08-21.** `GET /v1/me/export`, `GET /v1/companies/:id/export`,
+     `0021_data_exports.sql`, and `packages/shared/src/data-export.ts` as the policy.
+     Four things this document did not say. **The allowlist has to be per column, not
+     per table**: a crew member's time log is theirs and its `resolved_rate` is an
+     inter-company commercial term, so the obvious implementation hands every worker
+     their employer's cost base while looking like compliance. **The bundle must explain
+     its absences** — the manifest carries each withheld column with why, because an
+     unexplained hole in somebody's own data reads as a bug or as evasion. **§7's stored
+     bundle with an expiry clock was not built**, deliberately: its own objection to it
+     ("protected once, at issue") is the argument for generating per request under
+     authorization instead, which also needs no object storage before Phase 7.0. And
+     **a company export is audited while a personal one is not**, since a personal
+     export has no company whose trail it belongs in — filing it under the active
+     company would record a subject-access request as an event in the employer's log.
+   - Deletion is next, and now unblocked: the thing it was not allowed to ship before
+     is done.

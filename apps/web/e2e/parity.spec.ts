@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+import JSZip from 'jszip';
 import { expect, test, type Page } from '@playwright/test';
 import {
   PARITY_PASSWORD,
@@ -1443,4 +1445,56 @@ test.describe('Web core workflows', () => {
     await page.close();
   });
 
+
+  test('a person downloads their own data, and the rate attached to their hours is not in it', async () => {
+    /*
+     * Through the real UI and the real browser download, because the interesting failure
+     * is not in the API: it is a screen that offers the button behind a plan gate, or a
+     * blob handed over without the auth headers. The bundle is then opened and read.
+     */
+    await sub.goto('/profile');
+    const download = await Promise.all([
+      sub.waitForEvent('download'),
+      sub.getByRole('button', { name: 'Download my data' }).click(),
+    ]).then(([d]) => d);
+
+    expect(download.suggestedFilename()).toMatch(/^crewquo-personal-export-\d{4}-\d{2}-\d{2}\.zip$/);
+    const path = await download.path();
+    expect(path).not.toBeNull();
+    const zip = await JSZip.loadAsync(await readFile(path!));
+    const names = Object.keys(zip.files);
+    expect(names).toContain('manifest.json');
+    expect(names).toContain('time_logs.csv');
+
+    const manifest = JSON.parse(await zip.file('manifest.json')!.async('string'));
+    expect(manifest.scope).toBe('PERSONAL');
+    // The bundle has to explain its own absences, because "why is my pay rate not in
+    // here" is the first question a careful reader will have.
+    expect(JSON.stringify(manifest)).toContain('resolved_rate');
+    expect(manifest.notes.join(' ')).toContain('without your name on them');
+
+    // Data files only: the manifest documents the withheld column names on purpose, so
+    // scanning the whole zip would match its own documentation.
+    let data = '';
+    for (const name of names.filter((n) => n !== 'manifest.json')) {
+      data += await zip.file(name)!.async('string');
+    }
+    expect(data).not.toContain('resolved_rate');
+    expect(data).not.toContain('password_hash');
+  });
+
+  test('an owner downloads the company record, where that same rate belongs', async () => {
+    await sub.goto('/settings');
+    const download = await Promise.all([
+      sub.waitForEvent('download'),
+      sub.getByRole('button', { name: 'Download my data' }).click(),
+    ]).then(([d]) => d);
+
+    expect(download.suggestedFilename()).toContain('company-export');
+    const zip = await JSZip.loadAsync(await readFile((await download.path())!));
+    const manifest = JSON.parse(await zip.file('manifest.json')!.async('string'));
+    expect(manifest.scope).toBe('COMPANY');
+    // Same column, other side of the boundary: here it is the company's own term.
+    expect(await zip.file('time_logs.csv')!.async('string')).toContain('resolved_rate');
+  });
 });

@@ -576,6 +576,20 @@ export const api = {
   exportProject: (t: string, c: string, id: string, format: 'pdf' | 'xlsx') =>
     download(`/v1/projects/${id}/export.${format}`, { accessToken: t, companyId: c }),
 
+  /*
+   * Data export (packet §14 step 5). No entitlement argument on either of these, and
+   * that is the owner's decision rather than an omission: §13.2 was answered "free for
+   * everyone, including the free crew plan". A `has('exports')` check here would
+   * reverse it.
+   *
+   * No company on the personal one, deliberately — it must still work for somebody
+   * whose last membership was just removed, which is exactly when a person asks for
+   * their data.
+   */
+  exportMyData: (t: string) => download('/v1/me/export', { accessToken: t }),
+  exportCompanyData: (t: string, c: string) =>
+    download(`/v1/companies/${c}/export`, { accessToken: t, companyId: c }),
+
   // ── Invoices (§3.5) ─────────────────────────────────────────────────────────
   listInvoices: (t: string, c: string) =>
     request<ListResponse<InvoiceView>>('GET', '/v1/invoices', { accessToken: t, companyId: c }),
