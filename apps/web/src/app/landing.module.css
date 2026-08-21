@@ -1,7 +1,7 @@
 .site {
   --ink: #151922;
   --ink-2: #313846;
-  --muted: #697283;
+  --muted: #5c6472;
   --line: #dfe2e7;
   --paper: #ffffff;
   --canvas: #f4f5f7;
@@ -51,7 +51,7 @@
 .avatar { justify-self: end; width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; background: #e8edf8; color: #294266; font-size: 8px; font-weight: 750; }
 .frameBody { min-height: 485px; display: grid; grid-template-columns: 115px 1fr; }
 .frameRail { padding: 20px 9px; border-right: 1px solid var(--line); background: #fbfbfc; }
-.frameRail span { display: block; padding: 7px 8px; border-radius: 5px; color: #727b8b; font-size: 9px; }
+.frameRail span { display: block; padding: 7px 8px; border-radius: 5px; color: var(--muted); font-size: 9px; }
 .frameRail .railActive { background: #eceff3; color: var(--ink); font-weight: 700; }
 .frameContent { min-width: 0; padding: 21px 20px; }
 .projectHeading { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
@@ -139,6 +139,9 @@
 .sustainabilitySection { padding: 112px max(24px, calc((100vw - 1180px) / 2)); background: #eef0f3; }
 .sustainabilityTop { display: grid; grid-template-columns: 1fr 1fr; align-items: end; gap: 90px; }
 .sustainabilityTop > p { margin-bottom: 4px; }
+/* --blue is 4.48:1 on this section's #eef0f3 — the only eyebrow on a grey ground, and
+   the same per-section override .capabilityIntro and .finalCta already use. */
+.sustainabilityTop .eyebrow { color: var(--blue-dark); }
 .sustainabilityBoard { margin-top: 58px; display: grid; grid-template-columns: .85fr 1.15fr; border: 1px solid #cbd0d8; border-radius: 8px; background: #fff; }
 .massColumn, .carbonColumn { padding: 28px; }
 .massColumn { border-right: 1px solid var(--line); }

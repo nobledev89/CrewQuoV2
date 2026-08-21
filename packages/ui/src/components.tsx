@@ -22,7 +22,19 @@ export function Notice({ children }: { children: ReactNode }) { return <div clas
 export function PageHeader({ eyebrow, title, description, actions }: { eyebrow?: string; title: string; description?: string; actions?: ReactNode }) { return <header className="cq-page-header"><div className="cq-page-header__copy">{eyebrow ? <p className="cq-page-header__eyebrow">{eyebrow}</p> : null}<h1 className="cq-h1">{title}</h1>{description ? <p className="cq-page-header__description">{description}</p> : null}</div>{actions ? <div className="cq-page-header__actions">{actions}</div> : null}</header>; }
 export function Section({ title, description, actions, children, className }: { title?: string; description?: string; actions?: ReactNode; children: ReactNode; className?: string }) { return <section className={cx('cq-section', className)}>{title || actions ? <div className="cq-section__header"><div>{title ? <h2 className="cq-h2">{title}</h2> : null}{description ? <p className="cq-section__description">{description}</p> : null}</div>{actions}</div> : null}<div className="cq-section__body">{children}</div></section>; }
 export function EmptyState({ title, children }: { title: string; children: ReactNode }) { return <div className="cq-empty"><p className="cq-empty__title">{title}</p><p className="cq-empty__copy">{children}</p></div>; }
-export function Table({ children, label, compact }: { children: ReactNode; label?: string; compact?: boolean }) { return <div className="cq-table-wrap"><table className={cx('cq-table', compact && 'cq-table--compact')} aria-label={label}>{children}</table></div>; }
+/**
+ * `.cq-table-wrap` scrolls horizontally, which under SC 2.1.1 makes it a control: a
+ * pointer user drags it, and without `tabIndex` a keyboard user cannot reach the columns
+ * that are off-screen at all. `role="region"` with the table's own label is what makes
+ * the stop announce itself as something rather than as an unnamed focusable div.
+ *
+ * The tabbable container is unconditional even though only wide tables overflow. The
+ * automated sweep flagged exactly two routes — /admin/audit and /admin/operations — and
+ * that is a fact about how much data those two happen to show, not about which tables
+ * have the defect. Making it conditional on overflow would mean every table is compliant
+ * until a customer has enough rows, which is the worst possible time to find out.
+ */
+export function Table({ children, label, compact }: { children: ReactNode; label?: string; compact?: boolean }) { return <div className="cq-table-wrap" tabIndex={0} role="region" aria-label={label}><table className={cx('cq-table', compact && 'cq-table--compact')} aria-label={label}>{children}</table></div>; }
 
 export type SortDirection = 'asc' | 'desc';
 export interface SortState { key: string; direction: SortDirection }

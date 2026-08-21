@@ -1,0 +1,312 @@
+import AxeBuilder from '@axe-core/playwright';
+import { expect, test, type Page } from '@playwright/test';
+import { RUN, makeSuperAdmin, provisionCompany, signIn } from './helpers';
+
+// Derived rather than imported from `axe-core`: that package is a transitive dependency
+// of @axe-core/playwright and is not hoisted here, so naming it directly would be an
+// undeclared import that happens to resolve on some installs. Deriving it also cannot
+// drift from the version actually installed.
+type AxeViolation = Awaited<ReturnType<AxeBuilder['analyze']>>['violations'][number];
+
+/**
+ * The WCAG 2.2 AA gate, automated half.
+ *
+ * This replaces the exploratory inventory of 2026-08-20, which ran axe over 8
+ * representative screens and printed what it found. Two things were wrong with that as
+ * a gate rather than as a survey: it covered a fifth of the routes, and it reported
+ * instead of failing — so the next regression would have been printed into a log nobody
+ * reads. Every route the app has is here, and a violation fails the run.
+ *
+ * **What this cannot do, stated because the previous inventory's headline invited the
+ * wrong conclusion.** axe asserts the automatable subset only. It cannot tell you that a
+ * workflow is completable by keyboard, that a drag has a non-drag equivalent, or that a
+ * validation error was announced rather than merely rendered. Those are separate specs
+ * and they are the larger half of the gate. A green run here means "no machine-checkable
+ * violation on any route", which is a real claim and a smaller one than "accessible".
+ *
+ * The token arithmetic is checked separately and offline in `packages/ui/src/contrast.ts`,
+ * because axe can only measure pairings that a page happened to render while it looked —
+ * it missed a 2.87:1 placeholder and a 1.59:1 input border for exactly that reason.
+ *
+ * Prerequisites are the parity spec's: Postgres up, migrated and seeded, API on :4000.
+ *
+ * **Not covered, recorded here rather than left to be discovered:** `/projects/[id]`,
+ * `/portal/[id]` and `/invite/[token]` need a real row to render against. Their parents
+ * are covered. They are owed a case once Phase 7 gives the project sections content worth
+ * scanning — a shell with three empty tabs would pass and prove nothing. `/portal/[id]`
+ * is the one that matters most, because it is the only screen a client company ever sees.
+ */
+
+/** WCAG 2.2 AA and everything it builds on. Level AAA is deliberately not included. */
+const WCAG_22_AA = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'];
+
+const OWNER_CO = `Axe Contracts ${RUN}`;
+
+/** Signed-out routes: reachable with no session, so they are checked with none. */
+const PUBLIC_ROUTES = [
+  '/',
+  '/login',
+  '/register',
+  '/forgot-password',
+  // Both of these render their "this link is no good" state without a valid token, which
+  // is a real state a user reaches and the only one reachable without minting a token.
+  '/reset-password',
+  '/verify-email',
+];
+
+/** Company-scoped routes, as an owner on a paid plan. */
+const WORKSPACE_ROUTES = [
+  '/app',
+  '/projects',
+  '/work',
+  '/review',
+  '/commercial',
+  '/invoices',
+  '/rates/cards',
+  '/rates/roles',
+  '/rates/templates',
+  '/rates/resolve',
+  '/network/providers',
+  '/network/clients',
+  '/network/engagements',
+  '/company/members',
+  '/portal',
+  '/notifications',
+  '/audit',
+  '/settings',
+  '/security',
+  '/profile',
+  '/plan',
+];
+
+/** The internal console. A separate cast, because a super admin is a different account. */
+const ADMIN_ROUTES = [
+  '/admin',
+  '/admin/companies',
+  '/admin/users',
+  '/admin/plans',
+  '/admin/access',
+  '/admin/audit',
+  '/admin/operations',
+  '/admin/reporting',
+  '/admin/settings',
+];
+
+/**
+ * Renders violations so the failure names the fix rather than the count.
+ *
+ * The inventory's most useful output was not "58 nodes" but "in all 58 the foreground is
+ * --cq-text-muted" — one cause, one line to change. A message that omits the colours and
+ * the selectors makes the reader re-run the tool by hand to learn anything, so the
+ * summary carries whatever axe knows about *why*, not just where.
+ */
+function describeViolations(where: string, violations: readonly AxeViolation[]): string {
+  if (violations.length === 0) return '';
+  const lines = violations.map((v) => {
+    /*
+     * Nodes are grouped by their reason, not listed.
+     *
+     * 21 contrast nodes on the landing page were three colour pairs used repeatedly, and
+     * printing 21 lines (or worse, the first 6 of 21) hides that. The single most useful
+     * sentence the 2026-08-20 inventory produced was "in all 58 nodes the foreground is
+     * the same token" — one cause, one line to change — and it only appeared because a
+     * human read the output and noticed. Grouping makes the tool say it.
+     */
+    const byReason = new Map<string, string[]>();
+    for (const n of v.nodes) {
+      const summary = (n.failureSummary ?? 'no summary').replace(/\s+/g, ' ').trim();
+      // Collapse to the colour pair and ratio where axe reports one; that is the fix.
+      const pair = /contrast of ([\d.]+) \(foreground color: (#\w+), background color: (#\w+)/.exec(summary);
+      const reason = pair ? `${pair[2]} on ${pair[3]} = ${pair[1]}:1` : summary;
+      byReason.set(reason, [...(byReason.get(reason) ?? []), n.target.join(' ')]);
+    }
+    const groups = [...byReason.entries()].map(
+      ([reason, targets]) =>
+        `      ${reason}  (${targets.length} node${targets.length === 1 ? '' : 's'})\n` +
+        `        e.g. ${targets.slice(0, 3).join(' | ')}`,
+    );
+    return (
+      `  [${v.impact ?? 'unknown'}] ${v.id}: ${v.help}  — ${v.nodes.length} node(s)\n` +
+      `    ${v.helpUrl}\n${groups.join('\n')}`
+    );
+  });
+  return `${where} has ${violations.length} WCAG 2.2 AA violation(s):\n${lines.join('\n')}`;
+}
+
+async function expectNoViolations(page: Page, where: string): Promise<void> {
+  const results = await new AxeBuilder({ page }).withTags(WCAG_22_AA).analyze();
+  // Asserted on a one-line-per-rule projection rather than on the violation objects
+  // themselves. `toEqual([])` against the raw results prints axe's entire node tree —
+  // every `any`/`all`/`none` check, every tag — which buried the message above under
+  // hundreds of lines of diff and made the first failing run harder to read than the
+  // console.log it replaced.
+  const summary = results.violations.map((v) => `${v.id} × ${v.nodes.length}`);
+  expect(summary, describeViolations(where, results.violations)).toEqual([]);
+}
+
+/**
+ * Waits for the screen to have finished resolving before scanning.
+ *
+ * Scanning mid-load is the way this spec would go quietly useless: a page still showing
+ * "Loading…" has almost no nodes, so it passes, and the screen it was supposed to check
+ * is never looked at. Every workspace screen ends up with either real content or a
+ * deliberate empty/error state, and all three are things to check — a spinner is not.
+ */
+async function settled(page: Page): Promise<void> {
+  await page.waitForLoadState('networkidle');
+  await expect(page.locator('text=/^Loading/').first()).toBeHidden({ timeout: 15_000 }).catch(() => {
+    // A screen with no loading text at all never had one to hide. Not a failure.
+  });
+}
+
+/**
+ * Not serial, unlike the parity spec, and the difference is the point.
+ *
+ * Parity is one story where step 9 depends on step 8, so a failure there makes the rest
+ * meaningless and skipping them is correct. Every case here is an independent route, and
+ * a sweep that stops at the first violation is a sweep that reports one route per run —
+ * which is how a 40-route gate turns into forty sequential fix-and-rerun cycles. The
+ * first run of this spec did exactly that: the landing page failed and 39 routes were
+ * skipped, so the actual state of the app was still unknown.
+ */
+test.describe.configure({ mode: 'default' });
+
+test.describe('WCAG 2.2 AA — automated', () => {
+  test.describe('signed out', () => {
+    for (const route of PUBLIC_ROUTES) {
+      test(`${route} has no violations`, async ({ page }) => {
+        await page.goto(route);
+        await settled(page);
+        await expectNoViolations(page, route);
+      });
+    }
+
+    /**
+     * A form that has been submitted and refused.
+     *
+     * This state is unreachable by navigation and is where accessible forms usually
+     * fail: the error is painted next to the field and never associated with it, so a
+     * screen reader user hears a labelled input with no indication it is invalid and no
+     * route to the message. Checking only the pristine form is checking the easy half.
+     */
+    test('/login shows its refusal accessibly', async ({ page }) => {
+      await page.goto('/login');
+      await page.getByLabel('Email address').fill('nobody@crewquo.test');
+      await page.getByLabel('Password').fill('wrong-password-on-purpose');
+      await page.getByRole('button', { name: 'Sign in' }).click();
+      await expect(page.getByRole('alert')).toBeVisible();
+      await expectNoViolations(page, '/login (credentials refused)');
+    });
+
+    /** Client-side validation, which is a different code path from a server refusal. */
+    test('/register shows its validation accessibly', async ({ page }) => {
+      await page.goto('/register');
+      await page.getByRole('button', { name: 'Create account' }).click();
+      await settled(page);
+      await expectNoViolations(page, '/register (submitted empty)');
+    });
+  });
+
+  test.describe('as a company owner', () => {
+    let page: Page;
+
+    test.beforeAll(async ({ browser }) => {
+      const email = await provisionCompany({
+        handle: `axe-owner-${RUN}`,
+        name: 'Axe Owner',
+        companyName: OWNER_CO,
+        planId: 'business',
+      });
+      page = await (await browser.newContext()).newPage();
+      await signIn(page, email);
+    });
+
+    test.afterAll(async () => {
+      await page.close();
+    });
+
+    for (const route of WORKSPACE_ROUTES) {
+      test(`${route} has no violations`, async () => {
+        await page.goto(route);
+        await settled(page);
+        await expectNoViolations(page, route);
+      });
+    }
+
+    /**
+     * A drawer, checked because it is a focus trap by construction and because §40 puts
+     * side panels at the centre of the information architecture — so whatever is wrong
+     * with one drawer is wrong with the product's main editing surface.
+     */
+    test('a create drawer has no violations while open', async () => {
+      // /rates/roles, not /projects. The first version of this test used /projects and
+      // failed looking for a dialog that is not there: creating a project swaps an inline
+      // <Section> into the page rather than opening a panel. Worth recording, because the
+      // test was wrong about the product and the product is not wrong — but it does mean
+      // "the create surface" is two different patterns depending on the screen.
+      await page.goto('/rates/roles');
+      await settled(page);
+      await page.getByRole('button', { name: 'New role' }).click();
+      await expect(page.getByRole('dialog')).toBeVisible();
+      await expectNoViolations(page, '/rates/roles (create drawer open)');
+    });
+
+    /**
+     * The mobile layout, which is a different DOM and not merely a narrower one: the
+     * sidebar collapses behind a toggle and the tables reflow. A gate that only ever
+     * looks at 1280px has not looked at the layout most tablet-on-site users get.
+     */
+    test('the narrow layout has no violations', async () => {
+      await page.setViewportSize({ width: 390, height: 844 });
+      try {
+        await page.goto('/app');
+        await settled(page);
+        await expectNoViolations(page, '/app (390px)');
+      } finally {
+        // Restored even on failure: the page is shared, so leaving it at 390px would
+        // silently re-run every later route in the mobile layout and attribute any
+        // finding to the wrong viewport.
+        await page.setViewportSize({ width: 1280, height: 720 });
+      }
+    });
+  });
+
+  /**
+   * One sign-in for the whole console, and this one is not an optimisation.
+   *
+   * Super admins hold a mandatory second factor (the 2026-08-19 access decision), and a
+   * TOTP code is consumed by the step that accepts it. Signing in before each of nine
+   * routes means nine codes inside a couple of 30-second windows, so a later sign-in
+   * meets its own spent code, burns the helper's one-window retry, and lands back on
+   * /login — which is what happened to /admin/users on the first full run while its
+   * eight siblings passed. A flake that only appears in the middle of a run is the kind
+   * that gets re-run until it is green and then believed.
+   */
+  test.describe('as a super admin', () => {
+    let page: Page;
+
+    test.beforeAll(async ({ browser }) => {
+      const email = await provisionCompany({
+        handle: `axe-admin-${RUN}`,
+        name: 'Axe Admin',
+        companyName: `Axe Platform ${RUN}`,
+        planId: 'business',
+      });
+      await makeSuperAdmin(email);
+      page = await (await browser.newContext()).newPage();
+      await signIn(page, email);
+    });
+
+    test.afterAll(async () => {
+      await page.close();
+    });
+
+    for (const route of ADMIN_ROUTES) {
+      test(`${route} has no violations`, async () => {
+        await page.goto(route);
+        await settled(page);
+        await expectNoViolations(page, route);
+      });
+    }
+  });
+});
