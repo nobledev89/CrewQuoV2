@@ -50,6 +50,13 @@ describe('the kind catalog', () => {
      * holding your credentials will not still be fine at 8am. So the assertion is
      * not "operator alerts only" any more, it is that the urgent list contains
      * nothing from the delivery loop, the rate negotiation or the invoice flow.
+     *
+     * The closure notices joined that exception on the same reasoning
+     * (`observability-data-lifecycle.md` §6): a deletion notice is the one message
+     * whose entire value is arriving before a deadline, and a seven-day window is
+     * not so long that losing a night of it is free. `closure_cancelled` is
+     * deliberately absent from this list in both scopes — an account that is no
+     * longer being erased is good news, and good news may wait for morning.
      */
     const urgent = NOTIFICATION_KINDS.filter((k) => NOTIFICATION_KIND_SPECS[k].urgency === 'URGENT');
     expect(urgent).toEqual([
@@ -58,15 +65,28 @@ describe('the kind catalog', () => {
       'auth.mfa_enrolled',
       'auth.mfa_removed',
       'auth.mfa_reset_by_operator',
+      'account.closure_scheduled',
+      'account.closure_imminent',
+      'account.closure_completed',
+      'company.closure_scheduled',
     ]);
     expect(urgent.some((k) => /^(work|expense|submission|rate_proposal|invoice)\./.test(k)))
       .toBe(false);
   });
 
-  it('makes only account-security kinds unsilenceable', () => {
-    // The flag exists so a stolen-credential warning cannot be turned off by
-    // accident six months earlier. The moment a *product* kind sets it, users
-    // start silencing the security ones by silencing everything.
+  it('makes only irreversible-account kinds unsilenceable', () => {
+    /*
+     * The flag exists so a stolen-credential warning cannot be turned off by
+     * accident six months earlier. The moment a *product* kind sets it, users start
+     * silencing the security ones by silencing everything — so this list may only
+     * ever grow for the same argument, never for a new one.
+     *
+     * The closure notices are the second admitted set, and the argument is
+     * identical rather than adjacent: a channel switched off last year is not a
+     * preference being respected when the message it silences is the only warning
+     * before an account is erased. Nothing here is about work: the assertion below
+     * is what keeps it that way.
+     */
     const unconditional = NOTIFICATION_KINDS.filter(
       (k) => NOTIFICATION_KIND_SPECS[k].unconditional
     );
@@ -75,7 +95,16 @@ describe('the kind catalog', () => {
       'auth.mfa_enrolled',
       'auth.mfa_removed',
       'auth.mfa_reset_by_operator',
+      'account.closure_scheduled',
+      'account.closure_imminent',
+      'account.closure_cancelled',
+      'account.closure_completed',
+      'company.closure_scheduled',
+      'company.closure_cancelled',
     ]);
+    // Every one of them is about the account itself. A kind from the work loop
+    // reaching this list is the failure the flag's own comment describes.
+    expect(unconditional.every((k) => /^(auth|account|company)\./.test(k))).toBe(true);
   });
 
   it('gives no security kind an Action Centre task', () => {

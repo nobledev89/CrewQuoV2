@@ -7,6 +7,7 @@ import { Shell } from '@/components/Shell';
 import { api, ApiError } from '@/api/client';
 import { useAuth, useSessionCtx } from '@/auth/AuthProvider';
 import { DataExportPanel } from '@/components/DataExportPanel';
+import { AccountClosurePanel } from '@/components/AccountClosurePanel';
 
 /**
  * Company settings — the web surface for `PATCH /v1/companies/:id`.
@@ -216,6 +217,15 @@ function Settings() {
       </Section>
 
       {canEdit ? <DataExportPanel scope="company" /> : null}
+
+      {/*
+        Visible to an admin, actionable only by an owner — the panel reads the role
+        from the server's own answer rather than from this condition. An admin who can
+        see a scheduled closure and stop it is the protection against an owner acting
+        alone or under duress; hiding it from them would leave the people best placed
+        to notice unable to.
+      */}
+      {canEdit ? <AccountClosurePanel scope="company" /> : null}
     </Stack>
   );
 }

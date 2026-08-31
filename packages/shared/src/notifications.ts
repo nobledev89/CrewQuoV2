@@ -40,6 +40,18 @@ export const NOTIFICATION_KINDS = [
   'auth.mfa_enrolled',
   'auth.mfa_removed',
   'auth.mfa_reset_by_operator',
+  /*
+   * Closure (`docs/operating-model/observability-data-lifecycle.md` §6). The
+   * account-scoped ones belong to a *person* like the security kinds above;
+   * `company.closure_*` are the only kinds in this catalog whose recipient list
+   * deliberately includes a **counterparty** — see the specs below.
+   */
+  'account.closure_scheduled',
+  'account.closure_imminent',
+  'account.closure_cancelled',
+  'account.closure_completed',
+  'company.closure_scheduled',
+  'company.closure_cancelled',
 ] as const;
 export const notificationKindSchema = z.enum(NOTIFICATION_KINDS);
 export type NotificationKind = z.infer<typeof notificationKindSchema>;
@@ -139,6 +151,66 @@ export const NOTIFICATION_KIND_SPECS: Readonly<Record<NotificationKind, Notifica
   // to sign in.
   'auth.mfa_reset_by_operator': {
     requiresAction: false, urgency: 'URGENT', defaultChannels: ['EMAIL'], unconditional: true,
+  },
+
+  /*
+   * Closure notices (`observability-data-lifecycle.md` §6).
+   *
+   * **All of them `unconditional`, and this is the second admitted exception to
+   * "only account-security kinds set this".** It is the same argument rather than
+   * a new one: a channel switched off by accident six months ago is not a
+   * preference being respected when the message it silences is the only warning
+   * before an account is erased. A deletion notice is the one message whose entire
+   * value is arriving before a deadline.
+   *
+   * **URGENT, so quiet hours are overridden.** The notifications packet allows
+   * quiet hours to delay an intrusive channel but never to hide a task, and a
+   * seven-day window is not so long that losing a night of it is free — the person
+   * this protects is the one who reads their email once.
+   *
+   * `requiresAction` on the two that can still be stopped, because the Action
+   * Centre item *is* the cancel button. Not on `cancelled`, which asks nothing of
+   * anybody, and not on `completed`, which nobody can act on and which arrives at
+   * an account that no longer exists.
+   */
+  'account.closure_scheduled': {
+    requiresAction: true, urgency: 'URGENT', defaultChannels: ['EMAIL'], unconditional: true,
+  },
+  'account.closure_imminent': {
+    requiresAction: true, urgency: 'URGENT', defaultChannels: ['EMAIL'], unconditional: true,
+  },
+  // NORMAL: an account that is no longer being deleted is good news, and good news
+  // may wait for morning. Still unconditional, because an operator may have
+  // cancelled it and the holder is entitled to know their instruction was stopped.
+  'account.closure_cancelled': {
+    requiresAction: false, urgency: 'NORMAL', defaultChannels: ['EMAIL'], unconditional: true,
+  },
+  /*
+   * The last message this account will ever receive, and the one §6 found by
+   * writing the table rather than the code: it is addressed to a person whose
+   * address is inside the thing that was just deleted. `EMAIL` only — there is no
+   * inbox left to put it in, and the address it goes to was captured at request
+   * time (`deletion_requests.contact_email`, carried to the send by
+   * `notification_deliveries.recipient_email_snapshot`).
+   */
+  'account.closure_completed': {
+    requiresAction: false, urgency: 'URGENT', defaultChannels: ['EMAIL'], unconditional: true,
+  },
+  /*
+   * A company closing itself, told to every owner and admin **and to every
+   * counterparty with a live engagement** (§6).
+   *
+   * The only kinds here whose recipients include another tenant, and the reason is
+   * that their evidence is about to change shape: the alternative is a client
+   * discovering it when a project view goes empty. What they are told is that the
+   * relationship is ending — never the reason, which is the closing company's
+   * business, the same line the access packet drew around an operator's note.
+   */
+  'company.closure_scheduled': {
+    requiresAction: true, urgency: 'URGENT', defaultChannels: ['EMAIL'], unconditional: true,
+  },
+  'company.closure_cancelled': {
+    requiresAction: false, urgency: 'NORMAL', defaultChannels: ['EMAIL'], unconditional: true,
   },
 };
 

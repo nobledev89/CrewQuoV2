@@ -47,6 +47,9 @@ import type {
   CreateRateProposal,
   CreateSubmission,
   CreateTimeLog,
+  CancelDeletion,
+  DeletionRequestView,
+  DeletionStatusResponse,
   DirectRateSchedule,
   EngagementTermsView,
   EngagementView,
@@ -74,6 +77,7 @@ import type {
   ProjectSummary,
   ProjectView,
   ProviderView,
+  RequestDeletion,
   RateCardCreate,
   RateCardTemplateCreate,
   RateCardTemplateUpdate,
@@ -589,6 +593,40 @@ export const api = {
   exportMyData: (t: string) => download('/v1/me/export', { accessToken: t }),
   exportCompanyData: (t: string, c: string) =>
     download(`/v1/companies/${c}/export`, { accessToken: t, companyId: c }),
+
+  /*
+   * Closure (packet §14 step 5, decision §13.1). No entitlement argument for the same
+   * reason as the export above, and one further one: leaving is not a feature, and a
+   * plan gate on closing a company would be a subscription somebody has to keep paying
+   * in order to stop paying it.
+   *
+   * `DELETE` is the cancel. The resource is the *pending closure*, and deleting a
+   * scheduled deletion is what stopping one is; the alternative invents a verb for
+   * something the method already means.
+   */
+  getMyClosure: (t: string) =>
+    request<DeletionStatusResponse>('GET', '/v1/me/closure', { accessToken: t }),
+  requestMyClosure: (t: string, body: RequestDeletion) =>
+    request<{ request: DeletionRequestView }>('POST', '/v1/me/closure', {
+      accessToken: t, body,
+    }),
+  cancelMyClosure: (t: string, body: CancelDeletion = {}) =>
+    request<{ request: DeletionRequestView }>('DELETE', '/v1/me/closure', {
+      accessToken: t, body,
+    }),
+
+  getCompanyClosure: (t: string, c: string) =>
+    request<DeletionStatusResponse>('GET', `/v1/companies/${c}/closure`, {
+      accessToken: t, companyId: c,
+    }),
+  requestCompanyClosure: (t: string, c: string, body: RequestDeletion) =>
+    request<{ request: DeletionRequestView }>('POST', `/v1/companies/${c}/closure`, {
+      accessToken: t, companyId: c, body,
+    }),
+  cancelCompanyClosure: (t: string, c: string, body: CancelDeletion = {}) =>
+    request<{ request: DeletionRequestView }>('DELETE', `/v1/companies/${c}/closure`, {
+      accessToken: t, companyId: c, body,
+    }),
 
   // ── Invoices (§3.5) ─────────────────────────────────────────────────────────
   listInvoices: (t: string, c: string) =>

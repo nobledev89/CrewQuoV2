@@ -83,6 +83,21 @@ export const AUDIT_ACTIONS = [
   // `fx_rate.recorded` / `.deleted` were removed on 2026-08-19 with the exchange
   // rates themselves — a company works in one currency and nothing is converted.
   'project.reporting_currency_set',
+  /*
+   * Closure (`observability-data-lifecycle.md` §13.1). Company scope only, and the
+   * absence of a personal equivalent is the same reasoning as `company.exported`
+   * above: a personal closure has no company whose trail it belongs in, and filing
+   * one under whichever company happened to be active would record somebody's
+   * erasure request as an event in their employer's log. It goes to
+   * `deletion_requests` and `platform_audit_logs` instead.
+   *
+   * None of these is client-visible. That a company is winding down is its own
+   * business; a counterparty learns the relationship is ending from the notice they
+   * are sent, not by reading somebody else's audit trail.
+   */
+  'company.closure_requested',
+  'company.closure_cancelled',
+  'company.closed',
 ] as const;
 export const auditActionSchema = z.enum(AUDIT_ACTIONS);
 export type AuditAction = z.infer<typeof auditActionSchema>;

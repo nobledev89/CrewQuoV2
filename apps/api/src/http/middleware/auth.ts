@@ -54,6 +54,19 @@ export const requireAuth: RequestHandler = async (req, _res, next) => {
       claims.sessionId ? sessionIsLive(claims.sessionId, claims.sub) : Promise.resolve(true),
     ]);
     if (!user) throw new TokenRejected('Account no longer exists');
+    /*
+     * A closed account, refused here rather than left to the next refresh (0022).
+     *
+     * The closure removes every session and every refresh token, so the ordinary
+     * path is already shut. This covers the fifteen minutes of an access token that
+     * was minted moments before the run committed — a token with no `sid`, or a
+     * request already in flight — and it costs nothing, because the user row this
+     * reads is one the middleware already loads on every request.
+     *
+     * Same wording as a deleted account, deliberately: to whoever is holding the
+     * token, the two are the same fact.
+     */
+    if (user.anonymized_at !== null) throw new TokenRejected('Account no longer exists');
     if (!sessionLive) throw new TokenRejected('This session has ended');
 
     const ctx: Ctx = {

@@ -10,10 +10,20 @@ export interface UserRow {
   avatar_url: string | null;
   is_super_admin: boolean;
   email_verified_at: Date | null;
+  /**
+   * Set when a closure ran (0022). The row survives because every preserved
+   * evidence row points at it; this is what refuses everything else.
+   *
+   * On `UserRow` rather than checked by a separate query, so every reader that
+   * already loads a user — the auth middleware, sign-in, step-up — has the answer
+   * in hand and cannot forget to ask for it.
+   */
+  anonymized_at: Date | null;
 }
 
 const COLUMNS =
-  'id, email, password_hash, google_sub, name, avatar_url, is_super_admin, email_verified_at';
+  'id, email, password_hash, google_sub, name, avatar_url, is_super_admin, ' +
+  'email_verified_at, anonymized_at';
 
 export function toPublicUser(row: UserRow): PublicUser {
   return {

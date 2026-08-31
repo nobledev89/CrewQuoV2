@@ -29,7 +29,11 @@ import pg from 'pg';
 import { env } from '../src/env';
 import { pool } from '../src/db';
 import {
+  COMPANY_CLOSURE_PLAN,
+  SCHEDULED_JOBS,
   COMPANY_EXPORT,
+  DELETION_COOLING_OFF_DAYS,
+  PERSONAL_CLOSURE_PLAN,
   PERSONAL_EXPORT,
   base32Decode,
   totpCounter,
@@ -40,6 +44,7 @@ import { COMPANY_QUERIES, PERSONAL_QUERIES } from '../src/modules/data-export/qu
 import { deriveKid, parseRetiredSecrets } from '../src/modules/auth/signingKeys';
 import { currentAccessKid, signPurposeToken } from '../src/modules/auth/tokens';
 import { readJobHealth, recordJobRun } from '../src/jobs/jobRuns';
+import { runClosurePass } from '../src/jobs/closures';
 import { runOutboxBatch } from '../src/modules/delivery/worker';
 import { recoverStaleOutboxClaims } from '../src/modules/delivery/repo';
 import { runNotificationDeliveryBatch } from '../src/modules/notifications/deliveryWorker';
@@ -5066,8 +5071,13 @@ async function main(): Promise<void> {
   // FAILED row just written must not clear it.
   const jobsHealth = await readJobHealth();
   const workersHealth = jobsHealth.find((h) => h.job === 'workers');
+  // Counted against the catalog rather than a literal: the point of the check is
+  // that health covers every registered job, and hard-coding the number turns
+  // adding one into a failing test that says nothing about what is wrong.
   eq('every scheduled job is reported, so a missing one cannot read as healthy',
-    jobsHealth.length, 3);
+    jobsHealth.length, SCHEDULED_JOBS.length);
+  eq('...including the closure pass, whose silence is the hardest to notice',
+    jobsHealth.some((h) => h.job === 'closures'), true);
   check('a job that has just succeeded is not overdue', workersHealth?.overdue === false,
     workersHealth);
   // The FAILED row was written after the SUCCEEDED one, so this proves health is
@@ -5279,6 +5289,581 @@ async function main(): Promise<void> {
     );
     check('...and a personal one is not filed in an employer log',
       (personalAudit[0]?.n ?? 0) === 0, personalAudit[0]);
+  }
+
+  section('Closure (§13.1: anonymise the person, preserve the record)');
+  {
+    /*
+     * THE SUBJECT IS A CREW MEMBER OF THE CORE-LOOP PROVIDER, and every part of that
+     * sentence is load-bearing.
+     *
+     * `providerUser` cannot be the subject: they own Northgate, so the sole-owner
+     * precondition refuses them — which is itself asserted further down. And a fresh
+     * account with no history is exactly the vacuous subject the export section was
+     * caught on: "his hours still price correctly" passes trivially when he has none.
+     * So Sam is invited into Northgate as a MEMBER, logs 4h that is approved at the
+     * frozen PAY rate, and the assertions below have something real to preserve.
+     */
+    /*
+     * Northgate is a claimed placeholder and so sits on the free `crew` plan, whose
+     * `internal_seats` limit is one — its owner. Inviting a second person is a 402
+     * until it has a plan with room, which is the entitlement system working rather
+     * than anything to do with closure. Raised here rather than earlier because every
+     * assertion that depended on Northgate being a crew-plan company has already run.
+     */
+    await subscribe(northgate, 'pro');
+
+    const samEmail = `sam+${RUN}@verify.crewquo.test`;
+    const samInvite = await call('POST', '/v1/members/invite', {
+      token: providerUser.token,
+      companyId: northgate,
+      body: { email: samEmail, role: 'MEMBER' },
+    });
+    eq('a crew member is invited to the provider company', samInvite.status, 201);
+    const sam = await register('sam', undefined, samEmail);
+    await call('POST', `/v1/invites/${samInvite.json.inviteToken}/accept`, { token: sam.token });
+
+    const samLog = await call('POST', '/v1/time-logs', {
+      token: sam.token,
+      companyId: northgate,
+      body: {
+        projectId,
+        roleId,
+        shiftType: 'WEEKDAY_DAY',
+        workDate: '2026-07-21',
+        hoursRegular: 4,
+        hoursOt: 0,
+      },
+    });
+    eq('the crew member logs 4h', samLog.status, 201);
+    const samLogId = samLog.json.timeLog.id as string;
+    const samSubmit = await call('POST', `/v1/time-logs/${samLogId}/submit`, {
+      token: sam.token, companyId: northgate,
+    });
+    eq('...frozen at 4h × 5000', samSubmit.json.timeLog.resolvedRate?.costCents, 20000);
+    await call('POST', `/v1/time-logs/${samLogId}/approve`, {
+      token: owner.token, companyId: meridian,
+    });
+
+    // A pending invite addressed to Sam, from a company he never joined. The closure
+    // has to revoke it: the address is released, and whoever registers it next must
+    // not inherit a seat somebody else was offered.
+    const strayInvite = await call('POST', '/v1/members/invite', {
+      token: owner.token,
+      companyId: meridian,
+      body: { email: samEmail, role: 'MEMBER' },
+    });
+    eq('a second company also has a pending invite out to that address', strayInvite.status, 201);
+
+    // Something to prune that is keyed on the address rather than the account.
+    await db.query(
+      `insert into auth_attempts (scope, identity_key, source_key, succeeded)
+       values ('LOGIN', $1, 'verify-e2e-source', false)`,
+      [samEmail.toLowerCase()]
+    );
+
+    const summaryBefore = await call('GET', `/v1/projects/${projectId}/summary`, {
+      token: owner.token, companyId: meridian,
+    });
+
+    // ── 1. The frictions, before anything is scheduled ─────────────────────
+    const wrongName = await call('POST', '/v1/me/closure', {
+      token: sam.token,
+      body: { confirm: 'not-my-address@example.com', password: 'Verify-passw0rd!' },
+    });
+    eq('a mistyped confirmation is refused', wrongName.status, 422);
+
+    const wrongPassword = await call('POST', '/v1/me/closure', {
+      token: sam.token,
+      body: { confirm: samEmail, password: 'not-the-password' },
+    });
+    // Being signed in is not proof that the person signed in is the one asking.
+    eq('being signed in is not enough — the password is re-entered', wrongPassword.status, 401);
+
+    const requested = await call('POST', '/v1/me/closure', {
+      token: sam.token,
+      body: { confirm: samEmail, password: 'Verify-passw0rd!' },
+    });
+    eq('a person may close their own account', requested.status, 201);
+    const samRequestId = requested.json.request.id as string;
+
+    const duplicate = await call('POST', '/v1/me/closure', {
+      token: sam.token,
+      body: { confirm: samEmail, password: 'Verify-passw0rd!' },
+    });
+    // The partial unique index is the concurrency control, not a preceding read.
+    eq('two clicks are one request', duplicate.status, 409);
+
+    const status = await call('GET', '/v1/me/closure', { token: sam.token });
+    eq('the pending closure is readable', status.json.request?.id, samRequestId);
+    check('...and cancellable', status.json.request?.cancellable === true);
+    check(
+      `...with the deadline ${DELETION_COOLING_OFF_DAYS} days out`,
+      new Date(status.json.request.scheduledFor).getTime() - Date.now() >
+        (DELETION_COOLING_OFF_DAYS - 1) * 86_400_000
+    );
+    check('...and the promise that cannot be kept in full is on the screen',
+      (status.json.promises ?? []).some((line: string) =>
+        line.includes('The hours you logged remain, without your name on them')),
+      status.json.promises);
+
+    // ── 2. The safety property: nobody told, nothing deleted ───────────────
+    /*
+     * The single most important check in this section.
+     *
+     * `REQUESTED` means the notice has not been dispatched — the outbox handler that
+     * sends it is what advances the state. So a request that reaches its deadline
+     * without the notice going out must NOT run: a dead-lettered email would
+     * otherwise erase an account in silence on the seventh day, with the cooling-off
+     * period having protected nobody.
+     *
+     * Asserted by backdating the deadline *without* draining the outbox, which is
+     * exactly the shape of a mail provider that was down for a week.
+     */
+    await db.query(
+      `update deletion_requests set scheduled_for = now() - interval '1 minute' where id = $1`,
+      [samRequestId]
+    );
+    const silentPass = await runClosurePass();
+    eq('a request nobody was warned about is not executed', silentPass.claimed, 0);
+    const { rows: untouched } = await db.query<{ status: string; anonymized_at: Date | null }>(
+      `select d.status, u.anonymized_at from deletion_requests d
+         join users u on u.id = d.subject_user_id where d.id = $1`,
+      [samRequestId]
+    );
+    eq('...and stays REQUESTED', untouched[0]?.status, 'REQUESTED');
+    check('...with the account untouched', untouched[0]?.anonymized_at === null);
+
+    // ── 3. Told, then stopped. Nothing was deleted ─────────────────────────
+    await drainWorkers();
+    const { rows: scheduled } = await db.query<{ status: string }>(
+      `select status from deletion_requests where id = $1`, [samRequestId]
+    );
+    eq('dispatching the notice is what schedules the closure', scheduled[0]?.status, 'SCHEDULED');
+
+    const { rows: notice } = await db.query<{ kind: string; urgency: string; requires_action: boolean }>(
+      `select kind, urgency, requires_action from notifications
+        where recipient_user_id = $1 and kind = 'account.closure_scheduled'`,
+      [sam.userId]
+    );
+    eq('the holder is told immediately', notice.length, 1);
+    // §6: a deletion notice is the one message whose entire value is arriving before
+    // a deadline, so it overrides quiet hours and carries the cancel action.
+    eq('...urgently, so quiet hours cannot hide it', notice[0]?.urgency, 'URGENT');
+    check('...as something they can still act on', notice[0]?.requires_action === true);
+
+    const cancelled = await call('DELETE', '/v1/me/closure', { token: sam.token });
+    eq('the holder can stop it', cancelled.status, 200);
+    const { rows: afterCancel } = await db.query<{ status: string; contact_email: string | null }>(
+      `select status, contact_email from deletion_requests where id = $1`, [samRequestId]
+    );
+    eq('...and it is cancelled', afterCancel[0]?.status, 'CANCELLED');
+    // The address was captured for a notice that will now never be sent, and a
+    // permanent record of a deletion has no business keeping one.
+    check('...releasing the address it was holding', afterCancel[0]?.contact_email === null);
+
+    const { rows: stillThere } = await db.query<{ n: number }>(
+      `select count(*)::int as n from memberships where user_id = $1`, [sam.userId]
+    );
+    check('nothing was deleted by a cancelled closure', (stillThere[0]?.n ?? 0) > 0);
+
+    // ── 4. The one-day-out warning goes exactly once ───────────────────────
+    const again = await call('POST', '/v1/me/closure', {
+      token: sam.token,
+      body: { confirm: samEmail, password: 'Verify-passw0rd!', reason: 'Leaving the trade' },
+    });
+    eq('a cancelled closure does not block a new one', again.status, 201);
+    const liveRequestId = again.json.request.id as string;
+    await drainWorkers();
+
+    await db.query(
+      `update deletion_requests set scheduled_for = now() + interval '2 hours' where id = $1`,
+      [liveRequestId]
+    );
+    await runClosurePass();
+    await drainWorkers();
+    const { rows: imminent } = await db.query<{ n: number }>(
+      `select count(*)::int as n from notifications
+        where recipient_user_id = $1 and kind = 'account.closure_imminent'`,
+      [sam.userId]
+    );
+    eq('the last reminder is sent a day out', imminent[0]?.n, 1);
+
+    // Run the pass twice more: an hourly job inside a 24-hour lead would otherwise
+    // send twenty-four identical warnings. The guard is the recorded send.
+    await runClosurePass();
+    await runClosurePass();
+    await drainWorkers();
+    const { rows: imminentAgain } = await db.query<{ n: number }>(
+      `select count(*)::int as n from notifications
+        where recipient_user_id = $1 and kind = 'account.closure_imminent'`,
+      [sam.userId]
+    );
+    eq('...and only once, however often the job runs', imminentAgain[0]?.n, 1);
+
+    // ── 5. Erased, and not (§12.11) ────────────────────────────────────────
+    await db.query(
+      `update deletion_requests set scheduled_for = now() - interval '1 minute' where id = $1`,
+      [liveRequestId]
+    );
+    const run = await runClosurePass();
+    eq('the due closure runs', run.completed, 1);
+    eq('...and nothing failed', run.failed, 0);
+
+    const { rows: closed } = await db.query<{
+      email: string; name: string; password_hash: string | null; google_sub: string | null;
+      is_super_admin: boolean; anonymized_at: Date | null;
+    }>(
+      `select email, name, password_hash, google_sub, is_super_admin, anonymized_at
+         from users where id = $1`,
+      [sam.userId]
+    );
+    check('the account is anonymised', closed[0]?.anonymized_at !== null);
+    check('...to a tombstone that cannot be delivered to',
+      // `.invalid` is reserved by RFC 2606, so a stray send cannot reach a real inbox.
+      (closed[0]?.email ?? '').endsWith('@closed.crewquo.invalid'), closed[0]?.email);
+    check('...carrying nothing of the old address',
+      !closed[0]!.email.includes('sam+') && !closed[0]!.email.includes('verify.crewquo.test'),
+      closed[0]?.email);
+    eq('...attributed to a withdrawn person rather than to nobody',
+      closed[0]?.name, 'Withdrawn person');
+    check('...with no credential left', closed[0]?.password_hash === null && closed[0]?.google_sub === null);
+    check('...and no platform-staff bit', closed[0]?.is_super_admin === false);
+
+    /*
+     * Before the sign-in probe below, and that ordering is the assertion rather than
+     * tidiness. A failed sign-in records an `auth_attempts` row keyed on the address
+     * it was tried against, so asking this question after probing the old address
+     * counts the probe's own row and reports the closure as leaky whatever it did.
+     *
+     * What it guards: `auth_attempts.identity_key` holds the address rather than the
+     * account (0016 — it is deliberately not a foreign key), so the step that clears
+     * it has to run before `users` is anonymised. Get that order wrong and the delete
+     * matches nothing, reports zero rows, and the run reports success while a real
+     * address stays behind.
+     */
+    const { rows: attempts } = await db.query<{ n: number }>(
+      `select count(*)::int as n from auth_attempts where identity_key = $1`,
+      [samEmail.toLowerCase()]
+    );
+    eq('sign-in attempts against the old address are gone', attempts[0]?.n, 0);
+
+    const signIn = await call('POST', '/v1/auth/login', {
+      body: { email: samEmail, password: 'Verify-passw0rd!' },
+    });
+    eq('the account cannot sign in', signIn.status, 401);
+    // Never "that account was closed": the address has been released and may belong
+    // to somebody else by now, so confirming a closure on it would turn the erasure
+    // into a disclosure.
+    check('...without confirming that a closure happened on that address',
+      !/clos|delet|anonym/i.test(String(signIn.json?.error?.message ?? '')),
+      signIn.json?.error?.message);
+
+    const staleToken = await call('GET', '/v1/me', { token: sam.token });
+    eq('an access token minted before the run stops working at once', staleToken.status, 401);
+
+    for (const [table, column] of [
+      ['memberships', 'user_id'],
+      ['auth_sessions', 'user_id'],
+      ['refresh_tokens', 'user_id'],
+      ['notification_preferences', 'user_id'],
+      ['push_tokens', 'user_id'],
+    ] as const) {
+      const { rows } = await db.query<{ n: number }>(
+        `select count(*)::int as n from ${table} where ${column} = $1`, [sam.userId]
+      );
+      eq(`${table} is emptied`, rows[0]?.n, 0);
+    }
+
+    const { rows: invites } = await db.query<{ n: number }>(
+      `select count(*)::int as n from invites where lower(email) = $1 and status = 'PENDING'`,
+      [samEmail.toLowerCase()]
+    );
+    eq('a pending invite to the released address is revoked', invites[0]?.n, 0);
+
+    /*
+     * THE ASSERTION THAT EITHER PROVES §13.1'S ANSWER OR EXPOSES IT (§12.11).
+     *
+     * The hours still price and total exactly as before on the hiring company's
+     * approved project, and the invoice does not move by a cent.
+     */
+    const { rows: preservedLog } = await db.query<{ resolved_rate: any; logged_by_user_id: string }>(
+      `select resolved_rate, logged_by_user_id from time_logs where id = $1`, [samLogId]
+    );
+    eq('the hours survive', preservedLog.length, 1);
+    eq('...still attributed to the withdrawn person', preservedLog[0]?.logged_by_user_id, sam.userId);
+    eq('...at the rate they were frozen at', preservedLog[0]?.resolved_rate?.costCents, 20000);
+
+    const summaryAfter = await call('GET', `/v1/projects/${projectId}/summary`, {
+      token: owner.token, companyId: meridian,
+    });
+    eq('the hiring company\u2019s labour cost does not move by a cent',
+      summaryAfter.json.summary.laborCostCents, summaryBefore.json.summary.laborCostCents);
+    eq('...nor the bill', summaryAfter.json.summary.billCents, summaryBefore.json.summary.billCents);
+    eq('...nor the margin', summaryAfter.json.summary.marginCents, summaryBefore.json.summary.marginCents);
+
+    // ── 6. Recorded, with counts (§12.12) ──────────────────────────────────
+    const { rows: platformAudit } = await db.query<{ changes: any; description: string }>(
+      `select changes, description from platform_audit_logs
+        where action = 'account.closed' and entity_id = $1`,
+      [sam.userId]
+    );
+    eq('the closure is in the platform trail', platformAudit.length, 1);
+    check('...with what was preserved as a count',
+      (platformAudit[0]?.changes?.counts?.preserved?.time_logs ?? 0) >= 1,
+      platformAudit[0]?.changes?.counts?.preserved);
+    check('...and what was removed',
+      (platformAudit[0]?.changes?.counts?.removed?.memberships ?? 0) >= 1,
+      platformAudit[0]?.changes?.counts?.removed);
+    // Counts, never contents: a payload describing what was deleted, sitting in a
+    // permanent record, would be a copy of the thing somebody asked to have removed.
+    check('...and never a row of the data itself',
+      !JSON.stringify(platformAudit[0]?.changes ?? {}).includes(samEmail));
+
+    const { rows: record } = await db.query<{ status: string; contact_email: string | null; counts: any }>(
+      `select status, contact_email, counts from deletion_requests where id = $1`, [liveRequestId]
+    );
+    eq('the request is COMPLETED', record[0]?.status, 'COMPLETED');
+    check('...and has released the address it was holding', record[0]?.contact_email === null);
+
+    // ── 7. The farewell reaches an address that no longer exists ───────────
+    const { rows: farewell } = await db.query<{ recipient_email_snapshot: string | null; status: string }>(
+      `select d.recipient_email_snapshot, d.status
+         from notification_deliveries d join notifications n on n.id = d.notification_id
+        where n.kind = 'account.closure_completed' and n.recipient_user_id = $1`,
+      [sam.userId]
+    );
+    eq('the closure is confirmed by email', farewell.length, 1);
+    /*
+     * §6's finding, and the reason this column exists: `notification_deliveries`
+     * resolves an address by joining `users` at send time, and by now that join
+     * returns the tombstone. Without the snapshot the last message the product owes
+     * anybody would be addressed to nowhere.
+     */
+    eq('...to the address captured before the run', farewell[0]?.recipient_email_snapshot, samEmail);
+
+    await drainWorkers();
+    const { rows: afterSend } = await db.query<{ recipient_email_snapshot: string | null; status: string }>(
+      `select d.recipient_email_snapshot, d.status
+         from notification_deliveries d join notifications n on n.id = d.notification_id
+        where n.kind = 'account.closure_completed' and n.recipient_user_id = $1`,
+      [sam.userId]
+    );
+    check('...and the address is released once the delivery is terminal',
+      afterSend[0]?.recipient_email_snapshot === null,
+      { snapshot: afterSend[0]?.recipient_email_snapshot, status: afterSend[0]?.status });
+
+    // The consequence of not retaining a hash of the old address, stated in the
+    // policy and asserted here rather than left as a claim.
+    const reregister = await call('POST', '/v1/auth/register', {
+      body: { email: samEmail, password: 'Different-passw0rd!', name: 'Somebody else' },
+    });
+    check('the released address can be registered again', reregister.status === 201, reregister.status);
+
+    // ── 8. An office has to be handed over first ───────────────────────────
+    const soleOwner = await call('POST', '/v1/me/closure', {
+      token: providerUser.token,
+      body: { confirm: `provider+${RUN}@verify.crewquo.test`, password: 'Verify-passw0rd!' },
+    });
+    eq('the only owner of a company cannot simply leave', soleOwner.status, 409);
+    check('...and is told which company to hand over',
+      String(soleOwner.json?.error?.message ?? '').includes('Northgate'),
+      soleOwner.json?.error?.message);
+  }
+
+  section('Closure of a company (settle or hand over; the counterparty is told)');
+  {
+    // ── 1. A company with a live engagement may ask, and is told to settle ─
+    const asked = await call('POST', `/v1/companies/${northgate}/closure`, {
+      token: providerUser.token,
+      companyId: northgate,
+      body: { confirm: `Northgate Electrical ${RUN}`, password: 'Verify-passw0rd!' },
+    });
+    /*
+     * ACCEPTED DESPITE A LIVE ENGAGEMENT, and that ordering is the finding rather
+     * than laxity. §6 requires every counterparty with a live engagement to be told
+     * when a company starts closing itself, precisely so they can settle or hand
+     * over — so refusing the request while an engagement is live would mean that
+     * notice could never be sent, and the customer would be told "end your
+     * engagements" with no way to tell the other side why.
+     */
+    eq('a company with live engagements may still schedule a closure', asked.status, 201);
+    const northgateRequest = asked.json.request.id as string;
+
+    const wrongCompanyName = await call('POST', `/v1/companies/${meridian}/closure`, {
+      token: owner.token,
+      companyId: meridian,
+      body: { confirm: 'Not The Company', password: 'Verify-passw0rd!' },
+    });
+    eq('a mistyped company name is refused', wrongCompanyName.status, 422);
+
+    await drainWorkers();
+
+    const { rows: insiderNotice } = await db.query<{ n: number }>(
+      `select count(*)::int as n from notifications
+        where kind = 'company.closure_scheduled' and recipient_user_id = $1
+          and company_id = $2`,
+      [providerUser.userId, northgate]
+    );
+    eq('every owner and admin of the closing company is told', insiderNotice[0]?.n, 1);
+
+    const { rows: counterparty } = await db.query<{ body: string; company_id: string | null }>(
+      `select body, company_id from notifications
+        where kind = 'company.closure_scheduled' and recipient_user_id = $1`,
+      [owner.userId]
+    );
+    eq('the counterparty with a live engagement is told too', counterparty.length, 1);
+    // §6: what they are told is that the relationship is ending — never the reason,
+    // which is the closing company's business. The reason was supplied on the
+    // request and must not appear.
+    check('...that the relationship is ending, and their records stay theirs',
+      /remain yours|stay exactly as they are/i.test(counterparty[0]?.body ?? ''),
+      counterparty[0]?.body);
+    check('...in their own inbox rather than a tenant they do not belong to',
+      counterparty[0]?.company_id === null);
+
+    const trail = await call('GET', '/v1/audit-logs', {
+      token: providerUser.token, companyId: northgate,
+    });
+    const closureRow = trail.json.data.find((r: any) => r.action === 'company.closure_requested');
+    check('the request is on the company\u2019s own trail', Boolean(closureRow));
+    check('...and is never client-visible', closureRow?.visibleToClient === false);
+
+    // ── 2. The run waits, visibly, rather than never happening ─────────────
+    await db.query(
+      `update deletion_requests set scheduled_for = now() - interval '1 minute' where id = $1`,
+      [northgateRequest]
+    );
+    const blockedPass = await runClosurePass();
+    eq('a due closure with a live engagement is blocked, not run', blockedPass.blocked, 1);
+    eq('...and is not counted as a failure', blockedPass.failed, 0);
+
+    const { rows: blocked } = await db.query<{ status: string; blocked_reason: string | null }>(
+      `select status, blocked_reason from deletion_requests where id = $1`, [northgateRequest]
+    );
+    eq('...returning to SCHEDULED so it can run once settled', blocked[0]?.status, 'SCHEDULED');
+    check('...with a reason the owner can act on',
+      /engagement/i.test(blocked[0]?.blocked_reason ?? ''), blocked[0]?.blocked_reason);
+
+    const { rows: notClosed } = await db.query<{ closed_at: Date | null; name: string }>(
+      `select closed_at, name from companies where id = $1`, [northgate]
+    );
+    check('nothing was closed', notClosed[0]?.closed_at === null);
+
+    const visible = await call('GET', `/v1/companies/${northgate}/closure`, {
+      token: providerUser.token, companyId: northgate,
+    });
+    check('the block is on the owner\u2019s own screen, not only in a log',
+      /engagement/i.test(visible.json.request?.blockedReason ?? ''),
+      visible.json.request?.blockedReason);
+
+    const stopped = await call('DELETE', `/v1/companies/${northgate}/closure`, {
+      token: providerUser.token, companyId: northgate,
+    });
+    eq('the closure is stopped', stopped.status, 200);
+    await drainWorkers();
+    const { rows: told } = await db.query<{ n: number }>(
+      `select count(*)::int as n from notifications
+        where kind = 'company.closure_cancelled' and recipient_user_id = $1`,
+      [owner.userId]
+    );
+    eq('the counterparty is told it is continuing', told[0]?.n, 1);
+
+    // ── 3. Denied (§12.10) ─────────────────────────────────────────────────
+    const closer = await register('closer', `Wind Down Ltd ${RUN}`);
+    const closerCompany = closer.companyId!;
+    await subscribe(closerCompany, 'pro');
+
+    const adminEmail = `winddown-admin+${RUN}@verify.crewquo.test`;
+    const adminInvite = await call('POST', '/v1/members/invite', {
+      token: closer.token, companyId: closerCompany, body: { email: adminEmail, role: 'ADMIN' },
+    });
+    const adminUser = await register('winddown-admin', undefined, adminEmail);
+    await call('POST', `/v1/invites/${adminInvite.json.inviteToken}/accept`, {
+      token: adminUser.token,
+    });
+
+    const adminAttempt = await call('POST', `/v1/companies/${closerCompany}/closure`, {
+      token: adminUser.token,
+      companyId: closerCompany,
+      body: { confirm: `Wind Down Ltd ${RUN}`, password: 'Verify-passw0rd!' },
+    });
+    // An admin can be appointed in a minute and does not own the subscription, the
+    // liability or the relationships this ends.
+    eq('an ADMIN cannot close a company', adminAttempt.status, 403);
+
+    const adminSees = await call('GET', `/v1/companies/${closerCompany}/closure`, {
+      token: adminUser.token, companyId: closerCompany,
+    });
+    // Deliberately not the same check twice: an admin who can see a scheduled closure
+    // and stop it is the protection against an owner acting alone or under duress.
+    eq('...but can see one, and stop it', adminSees.status, 200);
+
+    // ── 4. A settled company closes, and keeps its name ────────────────────
+    const closeIt = await call('POST', `/v1/companies/${closerCompany}/closure`, {
+      token: closer.token,
+      companyId: closerCompany,
+      body: { confirm: `Wind Down Ltd ${RUN}`, password: 'Verify-passw0rd!' },
+    });
+    eq('an owner closes a settled company', closeIt.status, 201);
+    const closerRequest = closeIt.json.request.id as string;
+    await drainWorkers();
+    await db.query(
+      `update deletion_requests set scheduled_for = now() - interval '1 minute' where id = $1`,
+      [closerRequest]
+    );
+    const companyRun = await runClosurePass();
+    eq('the closure runs', companyRun.completed, 1);
+
+    const { rows: closedCompany } = await db.query<{ closed_at: Date | null; name: string }>(
+      `select closed_at, name from companies where id = $1`, [closerCompany]
+    );
+    check('the company is closed', closedCompany[0]?.closed_at !== null);
+    /*
+     * §10, and the reason a company is *closed* rather than anonymised: its name is
+     * the counterparty's record of who they traded with. Renaming it would buy a
+     * legal person's privacy with the falsification of somebody else's books.
+     */
+    eq('...keeping the name its counterparties traded with', closedCompany[0]?.name,
+      `Wind Down Ltd ${RUN}`);
+
+    const { rows: seats } = await db.query<{ n: number }>(
+      `select count(*)::int as n from memberships where company_id = $1`, [closerCompany]
+    );
+    eq('nobody can act as it any more', seats[0]?.n, 0);
+
+    const { rows: sub } = await db.query<{ status: string }>(
+      `select status from company_subscriptions where company_id = $1`, [closerCompany]
+    );
+    eq('the subscription is cancelled rather than deleted', sub[0]?.status, 'CANCELED');
+
+    const afterClose = await call('GET', `/v1/companies/${closerCompany}`, {
+      token: closer.token, companyId: closerCompany,
+    });
+    eq('and the former owner has no way back in', afterClose.status, 403);
+
+    // ── 5. The plan is exhaustive against the real schema ──────────────────
+    /*
+     * The same class of check the export section learned to make. The plans are
+     * hand-written table lists, so they drift the moment a migration renames
+     * anything — and a step naming a table that no longer exists fails at run time,
+     * inside the one transaction nobody wants to see roll back.
+     */
+    for (const [scopeName, plan] of [
+      ['PERSONAL', PERSONAL_CLOSURE_PLAN],
+      ['COMPANY', COMPANY_CLOSURE_PLAN],
+    ] as const) {
+      const missing: string[] = [];
+      for (const step of plan) {
+        const { rows } = await db.query<{ n: number }>(
+          `select count(*)::int as n from information_schema.tables where table_name = $1`,
+          [step.table]
+        );
+        if ((rows[0]?.n ?? 0) === 0) missing.push(`${scopeName}.${step.table}`);
+      }
+      check(`every ${scopeName} closure step names a table that exists`,
+        missing.length === 0, missing);
+    }
   }
 
   // ── Result ────────────────────────────────────────────────────────────────

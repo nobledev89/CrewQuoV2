@@ -12,6 +12,7 @@ import { mfaRouter } from './modules/auth/mfa.routes';
 import { meRouter } from './modules/me/routes';
 import { companiesRouter } from './modules/companies/routes';
 import { companyExportRouter, meExportRouter } from './modules/data-export/routes';
+import { companyClosureRouter, meClosureRouter } from './modules/deletion/routes';
 import { entitlementsRouter } from './modules/entitlements/routes';
 import { adminRouter } from './modules/admin/routes';
 import {
@@ -216,11 +217,16 @@ export function buildApp(): Express {
   // export must still work for somebody whose last membership was just removed, which
   // is exactly when a person asks for their data.
   app.use('/v1/me', requireAuth, meExportRouter);
+  // Companyless for the same reason, and it matters more here: a person closing
+  // their account may have just been removed from their last company, and that is
+  // frequently the reason they are closing it.
+  app.use('/v1/me', requireAuth, meClosureRouter);
   app.use('/v1/me', requireAuth, meRouter);
   // Additional-company requests (§3.1.1). Companyless by nature — a request
   // exists before its tenant does, so it takes no X-Company-Id.
   app.use('/v1/company-creation-requests', requireAuth, companyCreationRouter);
   app.use('/v1/companies', requireAuth, companyExportRouter);
+  app.use('/v1/companies', requireAuth, companyClosureRouter);
   app.use('/v1/companies', requireAuth, companiesRouter);
   app.use('/v1/entitlements', requireAuth, entitlementsRouter);
 

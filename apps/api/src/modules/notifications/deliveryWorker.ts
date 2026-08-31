@@ -63,7 +63,19 @@ async function claimDue(limit: number): Promise<DueRow[]> {
       where d.id = picked.id and n.id = d.notification_id
      returning d.id, d.notification_id, d.channel, d.attempts,
                n.title, n.body, n.action_url, n.recipient_user_id,
-               (select u.email from users u where u.id = n.recipient_user_id) as recipient_email,
+               /*
+                * The live row, unless a snapshot was captured for this delivery.
+                *
+                * The join is right for every kind but one: a person who changes their
+                * address should get the next notification at the new one. The exception
+                * is the notice that their account is gone, whose address was inside the
+                * thing that was deleted — see 0022 and dispatch.ts. The coalesce is the
+                * whole mechanism, and the snapshot column is null on every other row.
+                */
+               coalesce(
+                 d.recipient_email_snapshot,
+                 (select u.email from users u where u.id = n.recipient_user_id)
+               ) as recipient_email,
                (select u.name  from users u where u.id = n.recipient_user_id) as recipient_name,
                coalesce((select p.digest from notification_preferences p
                           where p.user_id = n.recipient_user_id), 'IMMEDIATE') as digest`,
@@ -71,12 +83,23 @@ async function claimDue(limit: number): Promise<DueRow[]> {
   );
 }
 
+/**
+ * Every terminal branch below clears `recipient_email_snapshot`, and it is the same
+ * line three times on purpose rather than a helper hiding it.
+ *
+ * The snapshot exists so a closure notice can reach an address the anonymisation
+ * removed (0022). Once the delivery is sent, skipped or out of attempts there is
+ * nothing left to send, and keeping the address of somebody who asked to be
+ * forgotten against a replay nobody will run is the erasure being quietly
+ * declined. A dead-lettered closure mail therefore costs an operator the address —
+ * the right way round: they can still see *that* it failed.
+ */
 async function record(id: string, outcome: ChannelOutcome, attempts: number): Promise<void> {
   if (outcome.status === 'sent') {
     await query(
       `update notification_deliveries
           set status = 'SENT', sent_at = now(), provider_message_id = $2,
-              error = null, updated_at = now()
+              error = null, recipient_email_snapshot = null, updated_at = now()
         where id = $1`,
       [id, outcome.providerMessageId]
     );
@@ -85,7 +108,9 @@ async function record(id: string, outcome: ChannelOutcome, attempts: number): Pr
   if (outcome.status === 'skipped') {
     await query(
       `update notification_deliveries
-          set status = 'SKIPPED', skip_reason = $2, updated_at = now() where id = $1`,
+          set status = 'SKIPPED', skip_reason = $2, recipient_email_snapshot = null,
+              updated_at = now()
+        where id = $1`,
       [id, outcome.reason]
     );
     return;
@@ -98,6 +123,8 @@ async function record(id: string, outcome: ChannelOutcome, attempts: number): Pr
         set status = $2, error = $3,
             deliver_after = case when $4::int is null then deliver_after
                                  else now() + ($4 || ' seconds')::interval end,
+            recipient_email_snapshot = case when $2 = 'FAILED' then null
+                                            else recipient_email_snapshot end,
             updated_at = now()
       where id = $1`,
     [id, next.status === 'PENDING' ? 'PENDING' : 'FAILED', outcome.error.slice(0, 4000),

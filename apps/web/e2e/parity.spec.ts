@@ -669,11 +669,16 @@ test.describe('Web core workflows', () => {
     const page = await freshPage(browser);
     await signIn(page, email);
 
-    // An account with no membership never reaches a page's own content — the
-    // shell shows the companyless empty state instead. That is the real first
-    // creation surface, and it is on the same allowance as every other one.
+    /*
+     * `/profile` renders without a company (Shell's `accountLevelScreen`), so the first
+     * creation surface is the page's own section rather than the shell's companyless
+     * prompt. That is the better one to assert against and not only because it is what
+     * ships: the shell's form was a bare name-and-currency box, while this section is
+     * the one that knows about the allowance — which is what this test is about.
+     */
     await page.goto('/profile');
-    await expect(page.getByRole('heading', { name: 'Create your company' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Start your company' })).toBeVisible();
+    await page.getByRole('button', { name: 'New company' }).click();
     await page.getByLabel('Company name').fill(FIRST_CO);
     await page.getByRole('button', { name: 'Create company' }).click();
     await expect(page.getByRole('heading', { name: 'Profile' })).toBeVisible();
@@ -706,6 +711,7 @@ test.describe('Web core workflows', () => {
     await signIn(page, email);
 
     await page.goto('/profile');
+    await page.getByRole('button', { name: 'New company' }).click();
     await page.getByLabel('Company name').fill(`Duplicate Co ${RUN}`);
     await page.getByRole('button', { name: 'Create company' }).click();
     await expect(page.getByRole('heading', { name: 'Profile' })).toBeVisible();
@@ -1496,5 +1502,115 @@ test.describe('Web core workflows', () => {
     expect(manifest.scope).toBe('COMPANY');
     // Same column, other side of the boundary: here it is the company's own term.
     expect(await zip.file('time_logs.csv')!.async('string')).toContain('resolved_rate');
+  });
+
+  /*
+   * Closure, through the browser (packet §14 step 5, decision §13.1).
+   *
+   * `verify-e2e` already proves the state machine, the cooling-off window, the
+   * anonymisation and every precondition against live Postgres. What it cannot prove
+   * is the thing §13.1 was most explicit about, because it is a property of a *screen*:
+   * the promise the product cannot keep in full has to be readable **before** the
+   * button, and the decision named the exact way that gets lost — "a confirmation
+   * dialog that says *this cannot be undone* and nothing else".
+   *
+   * A test that only checked the API would pass with that sentence deleted from the UI.
+   */
+  test('a person is told what closing cannot undo before the button, then schedules and stops it', async ({
+    browser,
+  }) => {
+    /*
+     * A companyless throwaway account, for two reasons. A person who is the sole owner
+     * of a company is refused a personal closure — correctly — so the core-loop cast
+     * cannot demonstrate the accepted path; and scheduling a closure on `sub` would
+     * leave a live deletion request on an account the rest of this serial suite is
+     * still using.
+     *
+     * It is also the guard for a defect this test found: `/profile` was behind the
+     * shell's create-a-company gate, so a person with no company — the person the
+     * export and closure panels were both written for, and who is companyless because
+     * their last membership was just removed — was answered with "Create your company"
+     * when they came to take their data out and leave. Registering companyless is what
+     * makes this test notice that; a fixture with a company would pass either way.
+     */
+    const leaver = await freshPage(browser);
+    const leaverEmail = await registerHeadless({ handle: 'leaver', name: 'Lee Leaver' });
+    await verifyEmail(leaverEmail);
+    await signIn(leaver, leaverEmail);
+    await leaver.goto('/profile');
+
+    const panel = leaver.locator('section.cq-section', {
+      has: leaver.getByRole('heading', { name: 'Close your account' }),
+    });
+
+    /*
+     * Before the button, and asserted as such: the promise is visible while the only
+     * control on the panel is still the one that opens the form.
+     */
+    await expect(panel).toContainText('without your name on them');
+    await expect(panel).toContainText('Download your data first');
+    const open = panel.getByRole('button', { name: 'Close my account' });
+    await expect(open).toBeEnabled();
+
+    await open.click();
+
+    // The typed confirmation is the friction that matters, so it is proved by getting
+    // it wrong: a plausible near-miss rather than gibberish.
+    await panel.getByLabel('Type your email address to confirm').fill('lee@example.com');
+    await panel.getByLabel('Confirm your password').fill(PARITY_PASSWORD);
+    await panel.getByRole('button', { name: 'Schedule my account to close' }).click();
+    await expect(panel).toContainText(/Type .* exactly as it appears/i);
+
+    // Nothing was scheduled by the refusal — the form is still the form.
+    await expect(panel).not.toContainText('scheduled to close on');
+
+    await panel.getByLabel('Type your email address to confirm').fill(leaverEmail);
+    await panel.getByRole('button', { name: 'Schedule my account to close' }).click();
+
+    /*
+     * The deadline as a full instant rather than a date. It is the answer to "how long
+     * do I have to change my mind", and "some time on the 7th" is not an answer.
+     */
+    await expect(panel).toContainText('is scheduled to close on');
+    await expect(panel).toContainText('You asked for this.');
+    await expect(panel).toContainText('puts everything back exactly as it was');
+
+    await panel.getByRole('button', { name: 'Stop the closure' }).click();
+
+    // Back to the pre-request state, which is the visible half of "nothing was
+    // removed": the promise list is on screen again because there is no pending row.
+    await expect(panel).toContainText('without your name on them');
+    await expect(panel.getByRole('button', { name: 'Close my account' })).toBeVisible();
+  });
+
+  test('a company with a live engagement is still allowed to start, and says who is told', async () => {
+    /*
+     * The asymmetry the panel exists to get right, and the one an implementer would
+     * most plausibly "fix" the wrong way.
+     *
+     * A person's blocks are hard refusals, so their button is disabled. A company's are
+     * *not* refusals: the request is accepted precisely so the counterparty notice can
+     * go out, and the run waits until the engagement is settled. Disabling the button
+     * here would leave an owner unable to start the only process that tells the other
+     * side to settle — which is why this asserts the button is enabled *while* the
+     * blocks are on screen.
+     */
+    await sub.goto('/settings');
+    const panel = sub.locator('section.cq-section', {
+      has: sub.getByRole('heading', { name: 'Close this company' }),
+    });
+
+    await expect(panel).toContainText('remain theirs');
+    await expect(panel).toContainText('Live engagements must be ended first');
+    await expect(panel).toContainText('so they can settle or hand over');
+    // The blocks, in the wording that says they are not a refusal.
+    await expect(panel).toContainText('You can still schedule it now');
+    await expect(panel).toContainText(/engagement/i);
+    await expect(panel.getByRole('button', { name: 'Close this company' })).toBeEnabled();
+
+    // Opening it asks for the company name, not the email: the subject of a company
+    // closure is the company, and typing your own address would confirm the wrong thing.
+    await panel.getByRole('button', { name: 'Close this company' }).click();
+    await expect(panel.getByLabel('Type the company name to confirm')).toBeVisible();
   });
 });

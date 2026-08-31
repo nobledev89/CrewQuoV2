@@ -68,6 +68,18 @@ export interface LogFields {
   succeeded?: number;
   failed?: number;
   deadLettered?: number;
+
+  /**
+   * The closure request a line is about (0022).
+   *
+   * Deliberately its own narrow field rather than a general `entityId`, which is
+   * what a generic one becomes: a column that eventually holds a project name, a
+   * company name and then an email, each added by somebody who only needed one
+   * more thing in the log. This is an opaque platform identifier of the same class
+   * as `companyId` — an id, never a subject — and the whole point of a closure
+   * being traceable in logs is that the diagnosis needs no personal data at all.
+   */
+  deletionRequestId?: string;
 }
 
 /**

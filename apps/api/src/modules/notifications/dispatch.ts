@@ -73,6 +73,21 @@ export interface DispatchInput {
   /** The outbox topic + aggregate this came from, for the dedupe key. */
   topic: string;
   aggregateId: string;
+  /**
+   * An email address to use instead of joining `users` at send time.
+   *
+   * **Set by exactly one caller, and it exists because of §6's finding**
+   * (`observability-data-lifecycle.md`): the "your account is closed" notice is
+   * addressed to somebody whose address was inside the thing that was just
+   * deleted. Every other kind resolves its recipient from the live row, which is
+   * correct — a person who changes their email should get the next notification at
+   * the new one. This one cannot, because by the time the delivery worker runs, the
+   * live row says `withdrawn-…@closed.crewquo.invalid`.
+   *
+   * The column it lands in is cleared the moment the delivery is terminal, so the
+   * address lives exactly as long as the send needs it. See 0022.
+   */
+  recipientEmailSnapshot?: string | null;
 }
 
 /**
@@ -85,7 +100,24 @@ export interface DispatchInput {
  * written. That is the durable-delivery packet's "consumers must be idempotent
  * before acknowledging", as two unique indexes rather than two promises.
  */
-export async function dispatchNotification(input: DispatchInput): Promise<{ written: number }> {
+export async function dispatchNotification(
+  input: DispatchInput,
+  /**
+   * The caller's transaction, where there is one.
+   *
+   * Added for the closure-completed notice, which is written **inside the run that
+   * anonymised the account** rather than through the outbox — the only notification
+   * in the product with that shape, and for a specific reason: every other kind is
+   * enqueued so a worker can resolve its recipients later, and this one's recipient
+   * has stopped existing by the time a worker would look. Writing it in the same
+   * transaction also means an account is never anonymised without its farewell
+   * queued, and never sent one for a closure that rolled back.
+   *
+   * It costs nothing elsewhere: with no runner every query takes the pool exactly
+   * as before.
+   */
+  runner?: Queryable
+): Promise<{ written: number }> {
   const spec = NOTIFICATION_KIND_SPECS[input.kind];
   let written = 0;
 
@@ -102,11 +134,11 @@ export async function dispatchNotification(input: DispatchInput): Promise<{ writ
       requiresAction: spec.requiresAction,
       urgency: spec.urgency,
       dedupeKey: notificationDedupeKey(input.topic, input.aggregateId, recipientUserId),
-    });
+    }, runner);
     if (!created) continue; // already delivered on an earlier attempt
     written += 1;
 
-    const prefs = await getNotificationPreferences(recipientUserId);
+    const prefs = await getNotificationPreferences(recipientUserId, runner);
     const channels = resolveChannels(input.kind, prefs.channels);
     if (channels.length === 0) continue;
 
@@ -125,10 +157,12 @@ export async function dispatchNotification(input: DispatchInput): Promise<{ writ
         urgency: spec.urgency,
       });
       await query(
-        `insert into notification_deliveries (notification_id, channel, deliver_after)
-         values ($1, $2, now() + ($3 || ' minutes')::interval)
+        `insert into notification_deliveries
+           (notification_id, channel, deliver_after, recipient_email_snapshot)
+         values ($1, $2, now() + ($3 || ' minutes')::interval, $4)
          on conflict (notification_id, channel) do nothing`,
-        [id, channel, String(delayMinutes)]
+        [id, channel, String(delayMinutes), input.recipientEmailSnapshot ?? null],
+        runner
       );
     }
   }

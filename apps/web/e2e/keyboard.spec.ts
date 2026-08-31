@@ -296,7 +296,17 @@ test.describe('Keyboard and announcement acceptance', () => {
     await page.goto('/app');
     await expect(page.locator('.cq-account__name')).toBeVisible();
 
-    await page.getByRole('link', { name: 'Roles' }).click();
+    /*
+     * Scoped to the nav, because `getByRole`'s `name` matches a *substring* of the
+     * accessible name. `/app` shows a "Get started" checklist to a company with no
+     * rates yet, whose first row links to the same route and is named "1. Add the roles
+     * you hire" — which contains "roles". That row renders when its data resolves, so
+     * an unscoped locator is a race: two matches and a strict-mode violation if the
+     * checklist wins, one match if the click does. The nav link is what this case is
+     * about, so it says so.
+     */
+    const primaryNav = page.getByRole('complementary', { name: 'Primary navigation' });
+    await primaryNav.getByRole('link', { name: 'Roles' }).click();
     await expect(page).toHaveURL(/\/rates\/roles/);
 
     const announcer = page.locator('[role="alert"][aria-live]');

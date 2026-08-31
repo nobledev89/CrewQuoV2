@@ -71,9 +71,9 @@ export default function LandingPage() {
                   <span className={styles.status}>On track</span>
                 </div>
                 <div className={styles.frameMetrics}>
-                  <FrameMetric label="Contract value" value="£42,800" meta="Approved" />
-                  <FrameMetric label="Actual cost" value="£28,460" meta="66.5% of revenue" />
-                  <FrameMetric label="Gross margin" value="£14,340" meta="33.5%" positive />
+                  <FrameMetric label="Contract value" value="$42,800" meta="Approved" />
+                  <FrameMetric label="Actual cost" value="$28,460" meta="66.5% of revenue" />
+                  <FrameMetric label="Gross margin" value="$14,340" meta="33.5%" positive />
                   <FrameMetric label="Crew today" value="18" meta="3 providers" />
                 </div>
                 <div className={styles.frameSplit}>
@@ -143,14 +143,14 @@ export default function LandingPage() {
           </div>
           <div className={styles.financeView}>
             <div className={styles.financeHeader}><div><span>PROJECT PERFORMANCE</span><strong>Harbour House · Cost control</strong></div><span>Updated today, 16:42</span></div>
-            <div className={styles.financeTotals}><FrameMetric label="Budget" value="£31,200" meta="Cost plan" /><FrameMetric label="Actual" value="£28,460" meta="Approved + committed" /><FrameMetric label="Remaining" value="£2,740" meta="8.8%" positive /></div>
+            <div className={styles.financeTotals}><FrameMetric label="Budget" value="$31,200" meta="Cost plan" /><FrameMetric label="Actual" value="$28,460" meta="Approved + committed" /><FrameMetric label="Remaining" value="$2,740" meta="8.8%" positive /></div>
             <table className={styles.financeTable}>
               <thead><tr><th>Category</th><th>Budget</th><th>Actual</th><th>Variance</th></tr></thead>
               <tbody>
-                <tr><td>Labour</td><td>£16,400</td><td>£17,240</td><td className={styles.over}>+£840</td></tr>
-                <tr><td>Subcontractors</td><td>£8,600</td><td>£7,980</td><td className={styles.under}>−£620</td></tr>
-                <tr><td>Vehicles & mileage</td><td>£3,800</td><td>£2,940</td><td className={styles.under}>−£860</td></tr>
-                <tr><td>Waste & materials</td><td>£2,400</td><td>£300</td><td className={styles.under}>−£2,100</td></tr>
+                <tr><td>Labour</td><td>$16,400</td><td>$17,240</td><td className={styles.over}>+$840</td></tr>
+                <tr><td>Subcontractors</td><td>$8,600</td><td>$7,980</td><td className={styles.under}>−$620</td></tr>
+                <tr><td>Vehicles & mileage</td><td>$3,800</td><td>$2,940</td><td className={styles.under}>−$860</td></tr>
+                <tr><td>Waste & materials</td><td>$2,400</td><td>$300</td><td className={styles.under}>−$2,100</td></tr>
               </tbody>
             </table>
           </div>

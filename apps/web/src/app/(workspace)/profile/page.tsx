@@ -26,6 +26,7 @@ import { Shell } from '@/components/Shell';
 import { api, ApiError } from '@/api/client';
 import { useAuth, useSessionCtx } from '@/auth/AuthProvider';
 import { DataExportPanel } from '@/components/DataExportPanel';
+import { AccountClosurePanel } from '@/components/AccountClosurePanel';
 import { useAsyncData } from '@/lib/useAsyncData';
 import { formatDate, titleCase } from '@/lib/format';
 
@@ -128,6 +129,11 @@ function Profile() {
       {/* Unconditional: a personal export needs no company, and it is exactly the person
           whose last membership was just removed who comes here to take their data. */}
       <DataExportPanel scope="personal" />
+
+      {/* Closure comes after the export, on the screen as well as in the build order.
+          Afterwards there is no account to download from, and putting the button above
+          the copy would invert the one ordering the packet was explicit about. */}
+      <AccountClosurePanel scope="personal" />
 
       {ctx ? null : (
         <Notice>Select or create a company to use the rest of the workspace.</Notice>

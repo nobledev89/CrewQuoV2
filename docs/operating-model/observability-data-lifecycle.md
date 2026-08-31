@@ -6,8 +6,10 @@ readiness, the scheduler that runs the deferred work, and the other half of the
 same question: what a customer may take out, what happens when they ask to be
 gone, and what the platform promises about losing data it has already accepted.
 **Phase:** 6 · **Status:** **adopted** — §13's questions were put to the owner on
-2026-08-20 and every recommendation was taken; §14 steps 1 and 2 are shipped
-· **Last updated:** 2026-08-20
+2026-08-20 and every recommendation was taken; §14 steps 1, 2, 3 and 5 (export
+**and** deletion) are shipped, leaving step 4 — the recovery promise, whose
+rehearsal is the step and not the paperwork
+· **Last updated:** 2026-08-31
 **Plan refs:** §10 (deployment), §19.5 (this packet's shape), §41.7 / §962
 (data classification + retention), §787 and §91 (the observability line —
 "Sentry across all three apps; structured request logging; `/healthz`"),
@@ -690,5 +692,25 @@ is already relying on it.
      **a company export is audited while a personal one is not**, since a personal
      export has no company whose trail it belongs in — filing it under the active
      company would record a subject-access request as an event in the employer's log.
-   - Deletion is next, and now unblocked: the thing it was not allowed to ship before
-     is done.
+   - ~~Deletion~~ **shipped 2026-08-31.** `0022_account_closure.sql`,
+     `packages/shared/src/deletion.ts` as the policy, `apps/api/src/modules/deletion/*`,
+     an hourly closure pass, and a panel on `/profile` and `/settings`. §13.1 as
+     decided, with the settle-or-hand-over precondition for a company checked **twice**
+     — at request and again at run, because seven days is long enough for somebody to
+     become sole owner or for a client to open an engagement in good faith.
+     Four things this document did not say. **`REQUESTED → SCHEDULED` must be reached
+     by the notice being *sent*, not by the clock**: the executor claims `SCHEDULED`
+     only, so a dead-lettered warning becomes a closure that visibly did not happen
+     rather than one that happened in silence on the seventh day — and the company arm
+     shipped without that transition at all, which the acceptance script caught as a
+     closure that could never run. **A cooling-off window is measured in days, not
+     hours** — seven, because the person who most needs it reads their email on Sunday.
+     **The contact address has to be captured before the run and released after the
+     send**, since by then the live row is a tombstone; §6 predicted this, and it makes
+     the farewell the only notification in the product written inside its own subject's
+     transaction. And **"before the button" is a property of a screen**, so it needs a
+     browser case: the promise this decision committed the product to saying is served
+     from the API precisely so a redesign cannot quietly delete it, and the panel was
+     reachable only to people who still had a company until the gate in front of
+     `/profile` came off — which is to say, not to the person whose last membership was
+     just removed, who is the one most likely to be standing there.

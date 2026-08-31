@@ -66,6 +66,18 @@ async function bootWith(vars: Record<string, string | undefined>) {
   return { mod, Sentry };
 }
 
+/*
+ * A longer timeout than the 5s default, and it is the import rather than the test
+ * that needs it.
+ *
+ * Every case here calls `bootWith`, which does `vi.resetModules()` and then imports
+ * `@sentry/node` again — a cold transform of the whole SDK, once per case. Alone that
+ * takes about a second; inside the full suite, with three packages transforming in
+ * parallel, it has been observed at over seven. The failure that produces is a
+ * timeout on whichever case happens to run first, which reads as "the scrubber
+ * broke" while saying nothing about the scrubber at all — and a suite that fails
+ * intermittently is one nobody can use to tell a real regression from noise.
+ */
 describe('error tracking', () => {
   it('is skipped, with a reason, when no DSN is configured', async () => {
     const { mod } = await bootWith({ SENTRY_DSN: undefined });
@@ -163,4 +175,4 @@ describe('error tracking', () => {
     expect(wire).not.toContain('"vars"');
     expect(wire).not.toContain(SECRET);
   });
-});
+}, { timeout: 30_000 });

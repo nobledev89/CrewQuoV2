@@ -3,6 +3,9 @@ import type { DeliveryHandler } from '../delivery/worker';
 import type { OutboxEvent } from '../delivery/repo';
 import { dispatchNotification, managerRecipients } from './dispatch';
 import { resolveActionsForSubject } from './repo';
+import { findCompanyById } from '../companies/repo';
+import { companyDecisionMakers, counterpartyRecipients } from '../deletion/preconditions';
+import { markImminentNoticeSent, markNoticeDispatched } from '../deletion/repo';
 
 /**
  * The outbox consumers that turn domain events into inbox rows — the first real
@@ -274,6 +277,242 @@ async function onAuthSecurityEvent(event: OutboxEvent): Promise<void> {
 }
 
 /**
+ * Closure notices (`observability-data-lifecycle.md` §6), and the one handler in
+ * this file that **changes domain state as well as notifying.**
+ *
+ * `REQUESTED → SCHEDULED` happens here, after the notice has been written, and that
+ * is a safety property rather than a convenience: the executor claims `SCHEDULED`
+ * rows only, so an account whose warning never went out is an account that is never
+ * erased. A permanently dead-lettered notice becomes a closure that visibly did not
+ * happen instead of one that happened in silence on the seventh day.
+ *
+ * The ordering inside is deliberate — dispatch, then advance. A handler that died
+ * between the two runs again and re-dispatches into the same dedupe key, which is a
+ * no-op. The other order would advance the state on a notice that was never written.
+ */
+async function onAccountClosureScheduled(event: OutboxEvent): Promise<void> {
+  const recipientUserId = required(event.payload, 'recipientUserId');
+  const requestId = required(event.payload, 'requestId');
+  const scheduledFor = optional(event.payload, 'scheduledFor');
+
+  await dispatchNotification({
+    kind: 'account.closure_scheduled',
+    // No company. This is an event about a person's account, which may span several
+    // tenants or none; hanging it on one would claim it happened inside that tenant.
+    companyId: null,
+    recipientUserIds: [recipientUserId],
+    title: 'Your CrewQuo account is scheduled to close',
+    body:
+      'We will close your account' +
+      (scheduledFor ? ` on ${scheduledFor.slice(0, 10)}` : ' shortly') +
+      '. Your name, email address and sign-in will be removed, and the hours you ' +
+      'logged will remain on the projects they belong to without your name on them. ' +
+      'If you did not ask for this, cancel it now and change your password: somebody ' +
+      'else has your sign-in. You can cancel at any point until it runs.',
+    subjectType: 'DELETION_REQUEST',
+    subjectId: requestId,
+    actionUrl: '/profile',
+    topic: event.topic,
+    aggregateId: event.aggregateId,
+  });
+
+  await markNoticeDispatched(requestId);
+}
+
+/** The one-day-out warning. Same recipient, same cancel action, less time. */
+async function onAccountClosureImminent(event: OutboxEvent): Promise<void> {
+  const recipientUserId = required(event.payload, 'recipientUserId');
+  const requestId = required(event.payload, 'requestId');
+
+  await dispatchNotification({
+    kind: 'account.closure_imminent',
+    companyId: null,
+    recipientUserIds: [recipientUserId],
+    title: 'Your CrewQuo account closes tomorrow',
+    body:
+      'This is the last reminder. Tomorrow your name, email address and sign-in are ' +
+      'removed and you will not be able to sign in again. Download your data first if ' +
+      'you want a copy — afterwards there is no account to download it from. Cancel ' +
+      'any time before it runs.',
+    subjectType: 'DELETION_REQUEST',
+    subjectId: requestId,
+    actionUrl: '/profile',
+    topic: event.topic,
+    aggregateId: event.aggregateId,
+  });
+
+  await markImminentNoticeSent(requestId);
+}
+
+/**
+ * A closure was stopped.
+ *
+ * Sent even when the holder cancelled it themselves, because the interesting case is
+ * the one where they did not: an operator, or another owner. The task it closes
+ * matters as much as the message — leaving a cancelled closure sitting in the Action
+ * Centre with a live "cancel" button is an inbox that lies.
+ */
+async function onAccountClosureCancelled(event: OutboxEvent): Promise<void> {
+  const requestId = required(event.payload, 'requestId');
+  await resolveActionsForSubject({ subjectType: 'DELETION_REQUEST', subjectId: requestId });
+
+  const recipientUserId = optional(event.payload, 'recipientUserId');
+  if (!recipientUserId) return; // the task closure above still stands
+
+  await dispatchNotification({
+    kind: 'account.closure_cancelled',
+    companyId: null,
+    recipientUserIds: [recipientUserId],
+    title: 'Your CrewQuo account will no longer be closed',
+    body:
+      'The scheduled closure of your account was cancelled and nothing was removed. ' +
+      'Everything is exactly as it was. If you did not cancel it, somebody else has ' +
+      'access to your account — change your password now.',
+    subjectType: 'DELETION_REQUEST',
+    subjectId: requestId,
+    actionUrl: '/profile',
+    topic: event.topic,
+    aggregateId: event.aggregateId,
+  });
+}
+
+/**
+ * A company closing itself, told to two audiences with **two different bodies** —
+ * and that split is §6's rule rather than a nicety.
+ *
+ * Its own owners and admins get the deadline and the cancel action. Every
+ * counterparty with a live engagement gets told that the relationship is ending, so
+ * they can settle or hand over — and **never the reason**, which is the closing
+ * company's business, the same line the access packet drew around an operator's
+ * internal note. The alternative to telling them at all is a client discovering it
+ * when a project view goes empty.
+ */
+async function onCompanyClosureScheduled(event: OutboxEvent): Promise<void> {
+  const companyId = required(event.payload, 'companyId');
+  const requestId = required(event.payload, 'requestId');
+  const scheduledFor = optional(event.payload, 'scheduledFor');
+  const on = scheduledFor ? ` on ${scheduledFor.slice(0, 10)}` : ' shortly';
+
+  const [insiders, counterparties, company] = await Promise.all([
+    companyDecisionMakers(companyId),
+    counterpartyRecipients(companyId),
+    findCompanyById(companyId),
+  ]);
+  const name = company?.name ?? 'A company you work with';
+
+  await dispatchNotification({
+    kind: 'company.closure_scheduled',
+    companyId,
+    recipientUserIds: insiders,
+    title: `${name} is scheduled to close`,
+    body:
+      `An owner asked to close this company${on}. Everyone will lose access and the ` +
+      'subscription will be cancelled. Live engagements must be ended and issued ' +
+      'invoices settled first, and your counterparties have been told the ' +
+      'relationship is ending. Any owner or admin can cancel this until it runs.',
+    subjectType: 'DELETION_REQUEST',
+    subjectId: requestId,
+    actionUrl: '/settings',
+    topic: event.topic,
+    aggregateId: event.aggregateId,
+  });
+
+  /*
+   * A second dispatch rather than one recipient list, because the two audiences are
+   * told different things — and because the dedupe key is per recipient, so somebody
+   * who is both an admin here and a manager at a counterparty (rare, and real) gets
+   * the insider message once and the counterparty message once, rather than one of
+   * them silently swallowing the other.
+   */
+  await dispatchNotification({
+    kind: 'company.closure_scheduled',
+    // The counterparty's own inbox, not the closing company's: they are not members
+    // of it, and an inbox row hung on a tenant they do not belong to is unreadable.
+    companyId: null,
+    recipientUserIds: counterparties,
+    title: `${name} is ending its work with you`,
+    body:
+      `${name} is closing its CrewQuo account${on}. Your projects, hours and invoices ` +
+      'stay exactly as they are and remain yours. What ends is the working ' +
+      'relationship: settle any open invoices and end the engagement before that ' +
+      'date, or hand the work to another company.',
+    subjectType: 'DELETION_REQUEST',
+    /*
+     * The real request id, not a suffixed one — for two reasons that both bite.
+     *
+     * `notifications.subject_id` is a `uuid` column, so `<id>:counterparty` is not a
+     * value it can hold: the insert fails, the handler throws after the insiders have
+     * already been told, and the outbox retries that half for ever. And the subject is
+     * what `resolveActionsForSubject` closes the task by, so a suffix nothing else
+     * spells would leave every counterparty's URGENT action item open after the
+     * closure was cancelled.
+     *
+     * Nothing is lost by sharing it: the dedupe key is built from the topic, the
+     * aggregate and the recipient, and the aggregate below still carries the suffix.
+     */
+    subjectId: requestId,
+    topic: event.topic,
+    // A distinct aggregate, so the two dispatches cannot collide on a dedupe key for
+    // a person who is in both audiences.
+    aggregateId: `${event.aggregateId}:counterparty`,
+  });
+
+  /*
+   * `REQUESTED → SCHEDULED`, exactly as the personal arm does it and for the same
+   * reason: the executor claims `SCHEDULED` only, so a company whose notice never
+   * went out is one that is never closed rather than one closed in silence.
+   *
+   * Last, after **both** audiences have been written. Advancing between the two
+   * dispatches would let a company be closed on the seventh day while the
+   * counterparties who were promised the chance to settle or hand over had been told
+   * nothing — which is the notice this state exists to guarantee.
+   */
+  await markNoticeDispatched(requestId);
+}
+
+/** The company closure was stopped; both audiences hear so, and the task closes. */
+async function onCompanyClosureCancelled(event: OutboxEvent): Promise<void> {
+  const companyId = required(event.payload, 'companyId');
+  const requestId = required(event.payload, 'requestId');
+  await resolveActionsForSubject({ subjectType: 'DELETION_REQUEST', subjectId: requestId });
+
+  const [insiders, counterparties, company] = await Promise.all([
+    companyDecisionMakers(companyId),
+    counterpartyRecipients(companyId),
+    findCompanyById(companyId),
+  ]);
+  const name = company?.name ?? 'A company you work with';
+
+  await dispatchNotification({
+    kind: 'company.closure_cancelled',
+    companyId,
+    recipientUserIds: insiders,
+    title: `${name} will no longer close`,
+    body: 'The scheduled closure was cancelled and nothing was removed.',
+    subjectType: 'DELETION_REQUEST',
+    subjectId: requestId,
+    actionUrl: '/settings',
+    topic: event.topic,
+    aggregateId: event.aggregateId,
+  });
+
+  await dispatchNotification({
+    kind: 'company.closure_cancelled',
+    companyId: null,
+    recipientUserIds: counterparties,
+    title: `${name} is continuing to work with you`,
+    body:
+      `${name} cancelled the closure of its account. Nothing changed, and the ` +
+      'engagement continues as before.',
+    subjectType: 'DELETION_REQUEST',
+    // The real request id, for the reasons given on the scheduled notice above.
+    subjectId: requestId,
+    topic: event.topic,
+    aggregateId: `${event.aggregateId}:counterparty`,
+  });
+}
+
+/**
  * The registered consumers. A topic with no handler here is simply not claimed by
  * this worker — `claimOutboxEvents` filters on the registered topic list, so an
  * unconsumed event waits rather than being marked delivered by a worker that did
@@ -298,4 +537,16 @@ export const NOTIFICATION_HANDLERS: ReadonlyMap<string, DeliveryHandler> = new M
   ['auth.mfa_enrolled', onAuthSecurityEvent],
   ['auth.mfa_removed', onAuthSecurityEvent],
   ['auth.mfa_reset_by_operator', onAuthSecurityEvent],
+  /*
+   * `account.closure_completed` is deliberately absent, and its absence is the design
+   * rather than an omission. That notice is written inside the transaction that
+   * anonymised the account (`deletion/execute.ts`), because every other kind is
+   * enqueued so a worker can resolve its recipients later and this one's recipient has
+   * stopped existing by the time a worker would look.
+   */
+  ['account.closure_scheduled', onAccountClosureScheduled],
+  ['account.closure_imminent', onAccountClosureImminent],
+  ['account.closure_cancelled', onAccountClosureCancelled],
+  ['company.closure_scheduled', onCompanyClosureScheduled],
+  ['company.closure_cancelled', onCompanyClosureCancelled],
 ]);

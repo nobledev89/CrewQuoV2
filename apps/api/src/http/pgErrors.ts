@@ -34,6 +34,27 @@ export function isPgError(err: unknown): err is PgErrorShape {
   );
 }
 
+/**
+ * A unique violation, optionally from one named constraint.
+ *
+ * For the callers who use an index *as* their concurrency control rather than
+ * pre-checking — a partial unique index on (subject, non-terminal status) is what
+ * makes two clicks one closure request, the same shape
+ * `company_creation_requests_one_open_per_user` uses. Those callers need to turn one
+ * specific collision into one specific sentence, which the generic mapping above
+ * cannot: "That record already exists" is not an answer to "close my account".
+ *
+ * **`constraintContains` is not optional in spirit.** Catching every `23505` and
+ * reporting it as the collision you were expecting is how an unrelated uniqueness
+ * bug gets reported to a customer as "a closure is already scheduled", and then
+ * never found.
+ */
+export function isUniqueViolation(err: unknown, constraintContains?: string): boolean {
+  if (!isPgError(err) || err.code !== '23505') return false;
+  if (constraintContains === undefined) return true;
+  return (err.constraint ?? '').includes(constraintContains);
+}
+
 /** Returns an AppError for the SQLSTATEs a caller can provoke, else null. */
 export function appErrorForPgError(err: unknown): AppError | null {
   if (!isPgError(err)) return null;

@@ -18,7 +18,7 @@
  * absence, or it is the same gap with a cron file added.
  */
 
-export const SCHEDULED_JOBS = ['workers', 'audit-retention', 'auth-retention'] as const;
+export const SCHEDULED_JOBS = ['workers', 'audit-retention', 'auth-retention', 'closures'] as const;
 export type ScheduledJob = (typeof SCHEDULED_JOBS)[number];
 
 export interface JobSchedule {
@@ -71,6 +71,28 @@ export const JOB_SCHEDULES: Readonly<Record<ScheduledJob, JobSchedule>> = {
     intervalSeconds: 24 * 60 * 60,
     overdueAfterSeconds: 36 * 60 * 60,
     describes: 'sign-in attempt counters and old session rows are not being pruned',
+  },
+
+  /*
+   * Account and company closures (0022), and the deadline is tighter than
+   * retention's for a reason worth stating.
+   *
+   * Hourly rather than daily because a closure has an *instant* somebody was
+   * emailed. Running it a day late is survivable; sending the "closes tomorrow"
+   * warning a day late is not, because a one-day notice that arrives on the day is
+   * an announcement rather than a warning.
+   *
+   * Four hours to overdue — four missed intervals, the same rule the others follow.
+   * And this is the job whose silence is hardest to notice from outside: every other
+   * pass fails by leaving work undone until a customer complains, while this one
+   * fails by telling somebody their account would close on the 28th and then not
+   * closing it. The person who would notice has stopped signing in. The switch is
+   * the only thing that would ever say so.
+   */
+  closures: {
+    intervalSeconds: 60 * 60,
+    overdueAfterSeconds: 4 * 60 * 60,
+    describes: 'scheduled account and company closures are not running, and people were given a date',
   },
 };
 

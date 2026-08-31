@@ -41,12 +41,32 @@
 name: Scheduled jobs
 
 on:
-  schedule:
+  # PAUSED 2026-08-27, and this is a pause rather than a decision. Every
+  # scheduled run was failing and mailing the failure, so the triggers below are
+  # commented out; none of the reasoning for them changed. Restore by deleting
+  # the leading `# ` from `schedule:` and from the three `- cron:` lines.
+  #
+  # WHAT IS TRUE WHILE THIS IS PAUSED: nothing calls the caller. The outbox does
+  # not drain, so no notification is delivered by any channel; audit and auth
+  # retention do not run; due closures and their one-day-out warnings do not go
+  # out. Every job in packages/shared/src/jobs.ts goes overdue on its own
+  # deadline and the platform health surface will say so — that alarm is now
+  # reporting the truth, not a fault. `workflow_dispatch` still works and is the
+  # way to run a pass by hand in the meantime.
+  # schedule:
     # Every 5 minutes: drain the outbox and send notification deliveries.
-    - cron: '*/5 * * * *'
+    # - cron: '*/5 * * * *'
     # Daily at 03:17 UTC: retention. Not on the hour, because every cron on the
     # platform fires on the hour and the queue is longest there.
-    - cron: '17 3 * * *'
+    # - cron: '17 3 * * *'
+    # Hourly at :23 — account and company closures, plus their one-day-out warning.
+    #
+    # Hourly rather than daily because a closure has an instant somebody was
+    # emailed. Running it a day late is survivable; sending "your account closes
+    # tomorrow" a day late is not, because a one-day notice that arrives on the day
+    # is an announcement rather than a warning. Off the hour for the same reason as
+    # retention.
+    # - cron: '23 * * * *'
   # Manual runs matter more than usual here: they are also how somebody resets
   # the 60-day inactivity clock, and how an operator clears an overdue alarm
   # without waiting for the next window.
@@ -57,7 +77,7 @@ on:
         required: true
         default: workers
         type: choice
-        options: [workers, retention]
+        options: [workers, retention, closures]
 
 # One pass at a time. Overlapping runs would double-claim outbox leases — the
 # lease makes that safe rather than corrupting, but it wastes a runner and makes
@@ -133,4 +153,19 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           NODE_ENV: production
           CREWQUO_PROCESS: job
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
+
+      # Closures, and the notices they owe. This step needs the mail credentials for
+      # the same reason the outbox drain does: the one-day-out warning and the
+      # "your account is closed" farewell are both emails, and the second one goes to
+      # an address that no longer exists anywhere but on the delivery row.
+      - name: Run due account and company closures
+        if: github.event.schedule == '23 * * * *' || inputs.job == 'closures'
+        run: pnpm --filter @crewquo/api run-closures
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NODE_ENV: production
+          CREWQUO_PROCESS: job
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          NOTIFICATION_FROM_EMAIL: ${{ secrets.NOTIFICATION_FROM_EMAIL }}
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}

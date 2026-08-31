@@ -289,13 +289,30 @@ export function Shell({ children }: { children: ReactNode }) {
    * Screens that are about the account rather than about a company, and therefore
    * render without one.
    *
-   * `/profile` deliberately stays behind the gate: the companyless prompt *is* the
-   * create-a-company action, which is the thing that screen is for. Security is
-   * different — a person with no company still has devices signed in, and being
-   * told to create a company before they can sign a lost phone out would make the
-   * one action that matters unreachable at the one moment it matters.
+   * Security is here because a person with no company still has devices signed in,
+   * and being told to create a company before they can sign a lost phone out would
+   * make the one action that matters unreachable at the one moment it matters.
+   *
+   * **`/profile` was behind the gate and is not any more**, and the reversal is worth
+   * stating because the original reason was sound when it was written: the companyless
+   * prompt *was* the create-a-company action, which was the only thing the screen had
+   * to offer somebody with no company.
+   *
+   * That stopped being true twice. The profile page grew its own `CreateCompany`
+   * section — which is the *better* version of the prompt, since it honours the
+   * §3.1.1 allowance rules the bare form does not — and then it grew the personal data
+   * export and the account closure panel. Both of those exist for one person in
+   * particular: the one whose last membership was just removed, which is frequently
+   * the reason they are closing the account. The API is companyless for exactly that
+   * reason and says so at its mount point. Leaving the gate in front of them meant a
+   * person with no company was answered with "create your company" when they asked to
+   * take their data out and leave — a promise the routes keep and the shell quietly
+   * did not.
    */
-  const accountLevelScreen = pathname === '/security' || pathname.startsWith('/security/');
+  const accountLevelScreen =
+    pathname === '/profile' ||
+    pathname === '/security' ||
+    pathname.startsWith('/security/');
 
   /**
    * Staff with no company get the platform group alone. Showing them the workspace

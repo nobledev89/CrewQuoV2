@@ -156,7 +156,19 @@ export async function login(
   const hash = user?.password_hash ?? (await DECOY_PASSWORD_HASH);
   const ok = await verifyPassword(input.password, hash);
 
-  if (!user || !user.password_hash || !ok) {
+  /*
+   * A closed account cannot sign in, and it is refused **with the same sentence as
+   * a wrong password** (0022).
+   *
+   * The anonymisation already makes this practically impossible — the password hash
+   * is null and the address is a tombstone nobody knows — so this branch is
+   * defence in depth against a future path that leaves one of those behind. What it
+   * must not do is say "that account was closed": the address has been released and
+   * may belong to somebody else by now, and confirming that a closure happened on it
+   * would turn the erasure into a disclosure. Same reasoning as the decoy hash above,
+   * one door further in.
+   */
+  if (!user || !user.password_hash || !ok || user.anonymized_at !== null) {
     throw new AppError('UNAUTHENTICATED', 'Invalid email or password');
   }
 
@@ -227,7 +239,8 @@ export async function loginWithGoogle(
                   email_verified_at = coalesce(email_verified_at, case when $3 then now() else null end),
                   updated_at = now()
             where id = $4
-            returning id, email, password_hash, google_sub, name, avatar_url, is_super_admin, email_verified_at`,
+            returning id, email, password_hash, google_sub, name, avatar_url, is_super_admin,
+                      email_verified_at, anonymized_at`,
           [identity.googleSub, identity.avatarUrl, identity.emailVerified, byEmail.id]
         );
         return rows.rows[0]!;
