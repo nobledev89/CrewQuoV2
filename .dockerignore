@@ -1,0 +1,50 @@
+# Build context hygiene, and the first line is the one that matters.
+#
+# `node_modules` must never enter the context: pnpm's store is a tree of symlinks
+# into a content-addressed store with platform-specific binaries, so a Windows
+# host's copy is not merely large but wrong inside a Linux image — and the
+# Dockerfile installs its own. It is also the difference between a context measured
+# in megabytes and one measured in gigabytes.
+node_modules
+**/node_modules
+
+# Secrets. `.env` holds a live database URL and a real Resend key; a build context
+# is readable by anything that can run a build, and a file copied into a layer stays
+# in that layer even if a later step deletes it. Environment reaches the container
+# through docker-compose at run time instead.
+.env
+.env.*
+!.env.example
+
+# Build output and caches — regenerated inside the image, and stale copies here
+# would silently shadow a fresh build.
+.next
+dist
+.turbo
+build
+
+# Test and tooling artifacts, none of which the API needs to run.
+test-results
+playwright-report
+blob-report
+coverage
+apps/web/test-results
+apps/web/playwright-report
+
+# Local scratch that has no business in an image.
+.tmp
+.tmp-db-query.cjs
+.web-preview.log
+outputs
+
+# VCS and editor state. `.git` in particular is both large and pointless here.
+.git
+.gitignore
+.github
+.vscode
+.idea
+
+# Documentation. Excluded because it changes constantly and would bust the build
+# cache on every edit while contributing nothing to a running API.
+*.md
+docs

@@ -10,9 +10,33 @@ The full specification lives in **[`CREWQUO_V2_PLAN.md`](./CREWQUO_V2_PLAN.md)**
 
 ## Prerequisites
 
-- Node 20+
+- Node 20+ (the containers and CI both run 22; `.nvmrc` says 20 and the two should be reconciled)
 - pnpm 10+ (`corepack enable`)
-- Docker (for local Postgres) — or any Postgres 13+ you point `DATABASE_URL` at
+- Docker Desktop — Postgres **and** the API run in containers
+
+## All data is local until CrewQuo is production ready
+
+**Owner decision, 2026-08-31.** There is no hosted database holding customer-shaped
+rows and there is not meant to be one yet. Concretely, and each of these is a thing
+somebody could otherwise do in good faith and undo the decision:
+
+- **[`render.yaml`](./render.yaml) is a blueprint for later and is deliberately not
+  applied.** It declares paid plans, so applying it provisions real infrastructure —
+  that is the decision it records, not an instruction to run it now.
+- **The GitHub Actions schedule in
+  [`scheduled-jobs.yml`](./.github/workflows/scheduled-jobs.yml) stays paused.** Its
+  `cron:` triggers are commented out. It is the one thing in the repo that would run
+  against a remote `DATABASE_URL`, so restoring it means creating exactly the hosted
+  database this decision defers. Run a pass by hand instead — see the commands below.
+- **Postgres keeps its data in a local Docker volume** (`crewquo_pgdata`), on this
+  machine, and nothing replicates it anywhere.
+
+**The one deliberate exception, stated rather than buried:** `RESEND_API_KEY` in
+`.env` is a live key, so mail the app sends really is delivered, which means
+recipient addresses and notification bodies do leave the machine. That was chosen
+knowingly (owner, 2026-08-31) because a mail path nobody has watched deliver is a
+mail path nobody has tested. Unset the key to make the adapter record `SKIPPED` with
+a reason and send nothing.
 
 ## Getting started
 
@@ -20,20 +44,83 @@ The full specification lives in **[`CREWQUO_V2_PLAN.md`](./CREWQUO_V2_PLAN.md)**
 # 1. Install dependencies
 pnpm install
 
-# 2. Configure environment
+# 2. Configure environment (required — the compose file reads this file)
 cp .env.example .env          # then edit if needed
 
-# 3. Start local Postgres
-docker compose -f infra/docker-compose.yml up -d
+# 3. Start the local stack: Postgres + the API, both in Docker
+docker compose --env-file .env -f infra/docker-compose.yml up -d --build
 
-# 4. Run database migrations
-pnpm db:migrate
+# 4. Migrate and seed, from the host, against the container
+pnpm db:migrate && pnpm db:seed
 
-# 5. Start the API (http://localhost:4000)
-pnpm --filter @crewquo/api dev
-# health check:
-#   curl http://localhost:4000/healthz   ->  {"status":"ok","db":"up",...}
+# 5. Check the API came up (http://localhost:4000)
+curl http://localhost:4000/healthz     # -> {"status":"ok","db":"up",...}
+
+# 6. Start the web app — on the host, and always on port 3000
+pnpm --filter @crewquo/web dev
 ```
+
+### The web app should always be running, and always on port 3000
+
+Treat `pnpm --filter @crewquo/web dev` as something you leave up while you work, on
+`http://localhost:3000` and nowhere else. The port is not a preference:
+
+- the API builds its **CORS allowlist** from `APP_BASE_URL`, which is
+  `http://localhost:3000`, so a browser on another port gets opaque CORS failures
+  rather than an error that names the real problem;
+- **every link in an outbound email** — verification, password reset, the account
+  closure notices — is written against that origin, so a link opens the instance on
+  3000 or nothing at all;
+- **Playwright's `baseURL` is 3000** with `reuseExistingServer`, so a drifted port
+  means the suite quietly drives a different server than the one you just started.
+
+`next dev` treats `-p 3000` as a *preference*: when the port is taken it prints one
+warning and moves to 3001, which leaves an app that loads and is at the wrong
+address. So `predev` and `prestart` run
+[`require-port-3000.mjs`](./apps/web/scripts/require-port-3000.mjs), which refuses to
+start and tells you what is holding the port. If it refuses because your own dev
+server is already up, that is the guard working — you do not need a second one.
+
+Both scripts also pass `-H 127.0.0.1`. The stack is loopback-only on purpose while
+data is local, and it avoids the IPv6 shadowing that makes a bare port look bound but
+unreachable.
+
+### Working on the API
+
+`apps/api/src`, `apps/api/scripts` and `packages/shared/src` are bind-mounted
+read-only into the container, so your edits are visible to it immediately — but
+**there is no hot reload, and that is a platform limit rather than an oversight.**
+Docker Desktop on Windows does not deliver filesystem events across a bind mount, and
+`tsx watch` uses Node's `fs.watch` with no polling fallback, so the watcher starts and
+then never fires. That was measured, not assumed. Running plain `tsx` instead is
+deliberate: a watch that silently does not watch is worse than none, because it invites
+you to trust an edit that never loaded.
+
+So the loop is a restart, which the mounts make cheap — a few seconds, no rebuild:
+
+```bash
+docker compose --env-file .env -f infra/docker-compose.yml restart api        # after a source or .env edit
+docker compose --env-file .env -f infra/docker-compose.yml logs -f api        # follow it
+docker compose --env-file .env -f infra/docker-compose.yml up -d --build api  # after a dependency change
+```
+
+Rebuild the image only when `package.json` or the lockfile changes; a source edit is
+already inside the container.
+
+`node_modules` is deliberately **not** mounted. The image installs its own for Linux,
+and mounting a Windows pnpm tree over it would replace a working symlink farm with
+paths that do not exist in the container.
+
+**If the restart loop gets in the way, run the API on the host instead:**
+
+```bash
+docker compose --env-file .env -f infra/docker-compose.yml stop api
+pnpm --filter @crewquo/api dev     # tsx watch, on the host, where file events work
+```
+
+That costs nothing in data locality. Postgres is the only thing in this stack that
+stores anything, and it is still the container — where the API process runs is a
+development-comfort choice, not a data one.
 
 ## Useful commands
 
@@ -45,7 +132,10 @@ pnpm --filter @crewquo/api dev
 | `pnpm test` | Run unit tests |
 | `pnpm db:migrate` | Apply pending SQL migrations |
 | `pnpm db:seed` | Run the seed script |
-| `pnpm --filter @crewquo/web dev` | Run the web console (http://localhost:3000) |
+| `pnpm --filter @crewquo/web dev` | Run the web console — **always** http://localhost:3000, guarded; leave it running |
+| `docker compose --env-file .env -f infra/docker-compose.yml up -d` | Start the local stack (Postgres + API) |
+| `docker compose --env-file .env -f infra/docker-compose.yml logs -f api` | Follow the API log |
+| `docker compose --env-file .env -f infra/docker-compose.yml down` | Stop the stack (the data volume survives) |
 | `pnpm --filter @crewquo/api purge-audit` | Delete audit rows past their retention window |
 | `pnpm --filter @crewquo/api purge-auth` | Prune rate-limit counters and long-expired sessions |
 | `pnpm --filter @crewquo/api work` | Drain the outbox and the notification queue (`-- --loop` locally) |
@@ -116,9 +206,9 @@ Then add the environment variables the blueprint would have set:
 Both secrets are mandatory in production: `apps/api/src/env.ts` only falls back to
 insecure defaults outside production, so the service refuses to boot without them.
 
-### The scheduler (required — nothing works without it)
+### The scheduler (required in production — currently PAUSED, and run by hand)
 
-Three jobs are one-shot and run from outside the API, so that a dead job is
+Four jobs are one-shot and run from outside the API, so that a dead job is
 restarted by a scheduler rather than silently stopping with one process:
 
 | Command | Cadence | What stops without it |
@@ -126,7 +216,30 @@ restarted by a scheduler rather than silently stopping with one process:
 | `pnpm --filter @crewquo/api work` | every 5 min | **every notification, on every channel** — the outbox never drains |
 | `pnpm --filter @crewquo/api purge-audit` | daily | audit retention, which is a sold entitlement |
 | `pnpm --filter @crewquo/api purge-auth` | daily | sign-in counters, old session rows, job-run history |
+| `pnpm --filter @crewquo/api run-closures` | hourly | due account/company closures **and their one-day-out warning**, so a cooling-off window never ends |
 
+> **⚠️ The hosted schedule is paused, and while data is local it stays paused.** The
+> `cron:` triggers in
+> [`scheduled-jobs.yml`](.github/workflows/scheduled-jobs.yml) are commented out.
+> That workflow is the only thing in the repo that runs against a remote
+> `DATABASE_URL`, so switching it on means standing up the hosted database the
+> data-locality decision above defers — it is not a one-line uncomment.
+>
+> **Run the passes against your local stack instead.** They are ordinary commands and
+> need nothing but `.env`:
+>
+> ```bash
+> pnpm --filter @crewquo/api work            # or: -- --loop, to keep draining
+> pnpm --filter @crewquo/api run-closures
+> pnpm --filter @crewquo/api purge-audit
+> pnpm --filter @crewquo/api purge-auth
+> ```
+>
+> Nothing is silently broken meanwhile: `job_runs` and the **Scheduled jobs** row on
+> `/v1/admin/operations` will report every job as overdue, which is the dead man's
+> switch telling the truth rather than misfiring.
+
+When the schedule is eventually restored,
 [`.github/workflows/scheduled-jobs.yml`](.github/workflows/scheduled-jobs.yml)
 runs them ([the host decision and its costs](docs/operating-model/observability-data-lifecycle.md)).
 It needs these **repository secrets** (Settings → Secrets and variables →

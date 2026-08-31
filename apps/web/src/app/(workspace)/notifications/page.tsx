@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   NotificationDigest,
   NotificationPreferences,
@@ -205,14 +205,49 @@ function Preferences() {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  /**
+   * Whether the editable fields have been filled from the server yet.
+   *
+   * A ref rather than state because nothing renders differently for it, and because
+   * it must be readable inside `load` without putting `load` back in its own
+   * dependency list.
+   */
+  const seeded = useRef(false);
+
   const load = useCallback(async () => {
     if (!ctx) return;
     try {
       const { preferences } = await api.notificationPreferences(ctx.accessToken);
       setPrefs(preferences);
-      setStart(preferences.quietHoursStart ?? '');
-      setEnd(preferences.quietHoursEnd ?? '');
-      setDigest(preferences.digest);
+      /*
+       * **Seeded once, and never re-seeded over somebody's typing.**
+       *
+       * Honest about its provenance: this was written while chasing an intermittent
+       * failure of the "quiet hours are set" browser case, and it did **not** turn out
+       * to be the cause — the case failed twice and then passed twice with this code
+       * both present and reverted, so that flake is still unexplained. What is kept
+       * here is the mechanism the search turned up, which is real on its own terms and
+       * is the same one the profile page's `loading && !data` comment describes from
+       * the other direction.
+       *
+       * `ctx` comes from `useSessionCtx`, which memoizes on the session object, and
+       * `refreshUser()` mints a new session — so this effect re-runs at moments
+       * nobody chose, including while a form is half filled in. The old version
+       * answered that by overwriting `start`/`end`/`digest` with the stored values.
+       * Losing the text would have been bad enough; what actually happened is worse,
+       * because `save` sends the *state*, so the next click submitted the values the
+       * server already had and saving appeared to silently do nothing.
+       *
+       * `prefs` above is still refreshed every time, so the "Quiet from …" summary
+       * keeps telling the truth about what is stored. Only the inputs are left
+       * alone, because they belong to whoever is typing in them.
+       */
+      if (!seeded.current) {
+        seeded.current = true;
+        setStart(preferences.quietHoursStart ?? '');
+        setEnd(preferences.quietHoursEnd ?? '');
+        setDigest(preferences.digest);
+      }
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not load your preferences');
     }

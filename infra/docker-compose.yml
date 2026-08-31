@@ -1,3 +1,20 @@
+# The local stack. Postgres and the API, both in containers, on this machine only.
+#
+# THE DATA DECISION THIS FILE IMPLEMENTS (owner, 2026-08-31): until CrewQuo is
+# production ready, all data is local. There is no hosted database holding
+# customer-shaped rows, nothing is provisioned on Render, and the GitHub Actions
+# schedule stays paused rather than being pointed at a remote instance — see
+# PROGRESS.md under §14 step 1, and render.yaml, which is a blueprint for later and
+# is deliberately not applied.
+#
+#   docker compose --env-file .env -f infra/docker-compose.yml up -d
+#   pnpm db:migrate && pnpm db:seed        # from the host, against the container
+#   pnpm --filter @crewquo/web dev         # the web app stays on the host
+#
+# WHY THE WEB APP IS NOT HERE. Next.js hot reload through a Windows bind mount is
+# markedly slower than on the host, and unlike the API the web app stores nothing —
+# so containerising it would cost the dev loop and buy no data locality. Postgres is
+# the only thing in this stack that holds anything.
 services:
   postgres:
     image: postgres:16
@@ -19,6 +36,70 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  api:
+    build:
+      # The repo root, because the API's dependency on `@crewquo/shared` is a
+      # workspace link and the lockfile describes all five projects. See
+      # apps/api/Dockerfile for why every manifest is copied.
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    container_name: crewquo-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        # Not `service_started`. env.ts parses DATABASE_URL at import and the first
+        # query happens immediately, so an API that starts before Postgres accepts
+        # connections is an API that crash-loops for the first few seconds and fills
+        # the log with failures that are not failures.
+        condition: service_healthy
+    # The repo-root .env, loaded wholesale — and this is the second attempt, because
+    # the first one was wrong in a way worth keeping a note about.
+    #
+    # Listing each optional key as `SENTRY_DSN: ${SENTRY_DSN:-}` looks equivalent and
+    # is not: it sets the variable to an EMPTY STRING, and an empty string is a
+    # present value. `env.ts` types that key as `z.string().url().optional()`, where
+    # `.optional()` tolerates *absent* and `.url()` rejects `''` — so the API refused
+    # to boot with `{ SENTRY_DSN: [ 'Invalid url' ] }` over a key nobody had set.
+    # `NOTIFICATION_FROM_EMAIL` is `.email().optional()` and was one unset key away
+    # from the same crash. `env_file` passes through exactly what the file contains
+    # and omits what it does not, which is the distinction the schema is making.
+    env_file:
+      - ../.env
+    environment:
+      # Overrides, applied after env_file — `environment` wins, which is what makes
+      # this work at all.
+      #
+      # THE ONE VALUE THAT MUST DIFFER FROM .env. The host's DATABASE_URL says
+      # 127.0.0.1:15432 because that is where the published port lands *on the host*;
+      # inside this network the database is `postgres:5432`. Reusing the host string
+      # here would have the API dial its own loopback and find nothing.
+      DATABASE_URL: postgres://crewquo:crewquo@postgres:5432/crewquo
+      NODE_ENV: development
+      PORT: 4000
+    ports:
+      # Same address the host process used, so nothing else has to change: the web
+      # app's NEXT_PUBLIC_API_URL, `verify:e2e` and the Playwright suite all keep
+      # talking to 127.0.0.1:4000 and cannot tell the difference.
+      - "127.0.0.1:4000:4000"
+    volumes:
+      # Source only, never node_modules. The image installed its own for this
+      # platform; mounting the host's Windows tree over it would replace a working
+      # symlink farm with one pointing at paths that do not exist in the container.
+      # These three are every directory `tsx watch` needs to see a change in.
+      - ../apps/api/src:/repo/apps/api/src:ro
+      - ../apps/api/scripts:/repo/apps/api/scripts:ro
+      - ../packages/shared/src:/repo/packages/shared/src:ro
+    healthcheck:
+      # `/healthz` reports the database as well as the process, which is the whole
+      # point: a container that is up while its database is unreachable is the state
+      # most worth distinguishing, and the one a port check calls healthy.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4000/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      # Generous, because a cold `tsx watch` compiles the whole API on first boot.
+      start_period: 40s
 
 volumes:
   crewquo_pgdata:
