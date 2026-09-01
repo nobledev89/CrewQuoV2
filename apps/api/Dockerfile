@@ -11,10 +11,10 @@
 # judged. `engines` allows >=20.9.0, so both are legal and the two files disagree —
 # worth reconciling, but the version that gates a merge is the one to match here.
 #
-# WHY THERE IS NO BUILD STEP. `@crewquo/shared` is consumed as *source*: its
-# `main` is `./src/index.ts` and `tsx` runs TypeScript directly, so there is no
-# `dist` to produce and no stale artifact to get out of step with the source beside
-# it. That is also why the mounts in docker-compose.yml are source directories.
+# WHY LOCAL DOCKER DOES NOT USE THE PRODUCTION BUILD. This image is the local
+# restart-without-rebuild loop: source directories are bind-mounted and `tsx`
+# reads them when the container restarts. Production runs the `dist` artifacts
+# emitted by `pnpm --filter @crewquo/api build`.
 FROM node:22-bookworm-slim
 
 # Postgres client libraries are not needed — `pg` is pure JavaScript — but a shell
@@ -54,7 +54,7 @@ COPY apps/api apps/api
 
 EXPOSE 4000
 
-# `start` (plain `tsx`), NOT `dev` (`tsx watch`) — and this is the second answer,
+# `start:source` (plain `tsx`), NOT `dev` (`tsx watch`) — and this is the second answer,
 # because the first one was a promise the platform does not keep.
 #
 # `tsx watch` uses Node's `fs.watch`; tsx 4.23 depends on `esbuild` alone and bundles
@@ -70,4 +70,4 @@ EXPOSE 4000
 # this setup actually offers. For tight iteration, running the API on the host against
 # the containerised Postgres is still available and costs nothing in data locality —
 # Postgres is the only thing here that stores anything.
-CMD ["pnpm", "--filter", "@crewquo/api", "start"]
+CMD ["pnpm", "--filter", "@crewquo/api", "start:source"]

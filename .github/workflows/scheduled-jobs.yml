@@ -104,6 +104,10 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # Scheduled processes run the same compiled artifacts as the web service;
+      # none of the production entry points executes TypeScript through `tsx`.
+      - run: pnpm --filter @crewquo/api build
+
       # A missing secret otherwise surfaces as a zod field dump from env.ts,
       # several hundred lines into an install log, on a run nobody is watching.
       # This says the one thing that is actionable.

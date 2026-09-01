@@ -44,11 +44,10 @@ services:
     # request: /healthz is what the platform's own monitoring reads, and a
     # service that has to wake up to answer it reports unhealthy while it does.
     plan: starter
-    # --prod=false is load-bearing. NODE_ENV=production below applies at build
-    # time too, and pnpm then skips devDependencies — which is where tsx lives.
-    # startCommand runs the API through tsx, so a prod-only install would leave
-    # the service failing with "tsx: not found".
-    buildCommand: corepack enable && pnpm install --frozen-lockfile --prod=false
+    # Build tooling is a dev dependency. Install the locked workspace and emit
+    # JavaScript before startup; runtime traffic never executes source through
+    # `tsx`.
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @crewquo/api build
     # Migrations run here rather than in a preDeployCommand, which needs a paid
     # instance. They are forward-only and tracked in schema_migrations, so
     # re-running on every boot is a no-op ("No new migrations to apply"), and a
@@ -112,4 +111,13 @@ services:
       - key: RESEND_API_KEY
         sync: false
       - key: NOTIFICATION_FROM_EMAIL
+        sync: false
+
+      # Paddle remains optional while the database checkout switch is off. Render
+      # prompts for these rather than creating plausible-looking placeholders.
+      - key: PADDLE_ENVIRONMENT
+        value: production
+      - key: PADDLE_API_KEY
+        sync: false
+      - key: PADDLE_WEBHOOK_SECRET
         sync: false

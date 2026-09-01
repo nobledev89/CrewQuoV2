@@ -1,11 +1,24 @@
 import { config } from 'dotenv';
+import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 
 // Load the single repo-root .env regardless of the process working directory.
 const here = dirname(fileURLToPath(import.meta.url)); // apps/api/src
-config({ path: resolve(here, '../../../.env') });
+// In source, `import.meta.url` belongs to this file. In a tsup artifact it belongs
+// to the entry bundle (`dist/index.js`, `dist/jobs/*.js`, ...), so one fixed number
+// of `..` segments cannot identify the root for every production process. pnpm
+// also runs a filtered script with `apps/api` as cwd. Probe the small set of
+// supported layouts and load the first real file; hosted deployments inject the
+// same values directly and need no file at all.
+const envCandidates = [
+  resolve(process.cwd(), '.env'),
+  resolve(process.cwd(), '../../.env'),
+  resolve(here, '../../../.env'),
+  resolve(here, '../../../../.env'),
+];
+config({ path: envCandidates.find((candidate) => existsSync(candidate)) ?? envCandidates[0] });
 
 const isProd = process.env.NODE_ENV === 'production';
 // vitest sets NODE_ENV=test. Unit tests import modules that pull in this file
@@ -141,6 +154,14 @@ const EnvSchema = z.object({
   // send, so a dev environment is never mistaken for a working one.
   RESEND_API_KEY: z.string().optional(),
   NOTIFICATION_FROM_EMAIL: z.string().email().optional(),
+
+  // Paddle Billing. All three are intentionally optional so development and
+  // read-only deployments boot with checkout unavailable instead of inventing
+  // credentials. The platform checkout flag is a second, operator-controlled
+  // kill switch; both configuration and that flag must be present to sell.
+  PADDLE_API_KEY: z.string().min(1).optional(),
+  PADDLE_WEBHOOK_SECRET: z.string().min(1).optional(),
+  PADDLE_ENVIRONMENT: z.enum(['sandbox', 'production']).default('sandbox'),
 
   /**
    * Error tracking (`docs/operating-model/observability-data-lifecycle.md` §13.3).
