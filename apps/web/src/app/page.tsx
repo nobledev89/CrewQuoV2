@@ -33,6 +33,7 @@ export default function LandingPage() {
             <a href="#operations">Operations</a>
             <a href="#sustainability">Sustainability</a>
             <a href="#reporting">Reporting</a>
+            <Link href="/pricing">Pricing</Link>
           </nav>
           <Link className={styles.signIn} href="/login">Open workspace <span aria-hidden="true">↗</span></Link>
         </div>
@@ -241,7 +242,11 @@ export default function LandingPage() {
 
       <footer className={styles.footer}>
         <Link className={styles.brand} href="/" translate="no"><span className={styles.brandMark} aria-hidden="true">CQ</span><span>CrewQuo</span></Link>
-        <p>Professional contractor operations software.</p>
+        <nav aria-label="Legal navigation">
+          <Link href="/pricing">Pricing</Link>
+          <Link href="/terms">Terms</Link>
+          <Link href="/privacy">Privacy</Link>
+        </nav>
         <p>© 2026 CrewQuo</p>
       </footer>
     </div>

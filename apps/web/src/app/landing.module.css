@@ -216,6 +216,8 @@
 .footer { min-height: 100px; padding: 0 max(24px, calc((100vw - 1320px) / 2)); display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 24px; border-top: 1px solid var(--line); }
 .footer p { margin: 0; color: var(--muted); font-size: 11px; }
 .footer p:last-child { justify-self: end; }
+.footer nav { display: flex; gap: 22px; color: var(--muted); font-size: 11px; }
+.footer nav a { text-underline-offset: 3px; }
 
 @media (max-width: 1100px) {
   .hero { grid-template-columns: 1fr; }
@@ -276,6 +278,7 @@
   .trustSection dl div { grid-template-columns: 1fr; gap: 7px; }
   .footer { padding: 25px 16px; grid-template-columns: 1fr; text-align: center; }
   .footer .brand, .footer p:last-child { justify-self: center; }
+  .footer nav { justify-content: center; }
 }
 
 @media (prefers-reduced-motion: reduce) {

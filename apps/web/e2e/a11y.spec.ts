@@ -45,6 +45,9 @@ const OWNER_CO = `Axe Contracts ${RUN}`;
 /** Signed-out routes: reachable with no session, so they are checked with none. */
 const PUBLIC_ROUTES = [
   '/',
+  '/pricing',
+  '/terms',
+  '/privacy',
   '/login',
   '/register',
   '/forgot-password',
