@@ -21,6 +21,7 @@ heading is an unasked question, which is the failure mode §19.5 exists to preve
 | Observability & data lifecycle — request/tenant/job correlation, the scheduler, error tracking, what a customer may export, what deletion does to a cross-tenant record, and the recovery promise | [observability-data-lifecycle.md](./observability-data-lifecycle.md) | 6 |
 | Notifications & the Action Centre — the durable per-recipient projection, channels, quiet hours, delivery evidence | [notifications.md](./notifications.md) | Phase 6 |
 | Time & time zones — company/project IANA zones, instant-vs-date, DST, date-bound rules | [time.md](./time.md) | Phase 6 |
+| Project evidence — locations, the storage layer, evidence, documents, the site diary, the capability model and the offline contract | [project-evidence.md](./project-evidence.md) | Phase 7 — `draft` |
 
 Earlier domains (identity, rates, the delivery loop, portal/audit, invoices) were
 built before the §19.5 decision was adopted on 2026-08-18 and have no packet. They
@@ -94,3 +95,26 @@ column at a time, added by somebody who never knew it had been removed on purpos
 The §3 pinning states and the row-lock concurrency rule survived the reversal
 unchanged, which is a fair sign they were about the domain rather than about the
 mechanism.
+
+`project-evidence.md` is the first packet written for a phase that has not
+started, which is the earliest §19.5 has ever been applied and the point of the
+rule. Phase 7 opens the first new *class* of storage since Phase 0 — bytes — and
+three of its findings would each have been a migration to undo. The API cannot
+sniff a content type it never receives, so `READY` belongs to the worker that
+downloads the object rather than to the request that completes it. `storage_gb`
+cannot reuse `withinLimit` without changing what `projected` means, and a caller
+taking the default would charge one gigabyte per upload. And
+`evidence_uploads_per_month` is the product's first *windowed* meter, which needs
+a month boundary, which needs the company IANA zone `time.md` already settled.
+
+Its §13 is open, and two of the seven are the packet doing the job the money
+packet did. **Whose gigabyte is it** — §22.1 charges the uploader's company, which
+bills a free subcontractor's plan for the hiring company's evidence pack. And
+**what a free plan may capture**, which is the settled rule from
+`commercial-agreements.md` with the sides swapped: proposing a rate is free
+because the Crew plan exists so a subcontractor can work for nothing, and a
+subcontractor who cannot photograph the floor cannot do the work either.
+
+Its §14 is deliberately shaped so the phase does not stall on any of that. The
+capability layer, project locations and the offline contract need no answer from
+anybody, and each is a dependency of something later.
