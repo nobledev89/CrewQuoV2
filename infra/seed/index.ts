@@ -17,6 +17,7 @@ const FEATURES: Array<[key: string, name: string, category: string]> = [
   ['client_portal', 'Client portal', 'portal'],
   ['client_portal_notes', 'Client portal notes', 'portal'],
   ['project_evidence', 'Photos & evidence', 'evidence'],
+  ['project_documents', 'Project documents', 'evidence'],
   ['invoicing', 'Invoicing', 'billing'],
   ['audit_visibility', 'Audit trail visibility', 'portal'],
   ['api_access', 'API access', 'platform'],
@@ -90,7 +91,14 @@ const PLANS: PlanSeed[] = [
     operatesDownstream: true,
     sortOrder: 1,
     trialDays: 14,
-    features: ['rate_cards', 'holiday_rates', 'exports', 'client_portal', 'project_evidence'],
+    features: [
+      'rate_cards',
+      'holiday_rates',
+      'exports',
+      'client_portal',
+      'project_evidence',
+      'project_documents',
+    ],
     limits: { active_subcontractors: 5, internal_seats: 2, clients: null, audit_retention_days: 30 },
     prices: [
       { currency: 'USD', interval: 'MONTH', amountCents: 4700 },
@@ -113,6 +121,7 @@ const PLANS: PlanSeed[] = [
       'invoicing',
       'audit_visibility',
       'project_evidence',
+      'project_documents',
     ],
     limits: { active_subcontractors: 30, internal_seats: 8, clients: null, audit_retention_days: 90 },
     prices: [
@@ -139,6 +148,7 @@ const PLANS: PlanSeed[] = [
       'sso',
       'white_label',
       'project_evidence',
+      'project_documents',
     ],
     limits: {
       active_subcontractors: 150,

@@ -43,6 +43,14 @@ export const NOTIFICATION_KINDS = [
   'evidence.batch_uploaded',
   'evidence.published',
   'file.scan_failed',
+  /*
+   * Project documents (§24, 0031). `document.expiring` is the kind Phase 12 will
+   * escalate; the durable item lands here, because `notifications.md` requires that
+   * of every kind — email is never the only copy of a task, and a lapsing insurance
+   * certificate is exactly the task nobody may be allowed to miss.
+   */
+  'document.superseded',
+  'document.expiring',
   'delivery.dead_lettered',
   // Account security (`docs/operating-model/access.md` §6). The first kinds in
   // this catalog that belong to a *person* rather than to a company, which is why
@@ -135,6 +143,18 @@ export const NOTIFICATION_KIND_SPECS: Readonly<Record<NotificationKind, Notifica
   // re-taken or re-uploaded — but the action lives in the batch they are already
   // looking at, not in a task somebody has to close.
   'file.scan_failed': { requiresAction: false, urgency: 'NORMAL', defaultChannels: ['EMAIL'] },
+
+  // A version landed and the old one is now history. News, not a task: nobody owes
+  // anything, they just need to know which copy is current.
+  'document.superseded': { requiresAction: false, urgency: 'NORMAL', defaultChannels: ['EMAIL'] },
+  /*
+   * The one evidence-or-document kind that DOES require action, and the only one in
+   * the phase. An expiring RAMS or insurance certificate is a thing somebody must
+   * do — re-issue it — and the Action Centre item closes when a newer version
+   * supersedes it. Still `NORMAL`: a lapsing certificate is not worth waking
+   * somebody at 3am, and the ladder starts 90 days out precisely so it never has to.
+   */
+  'document.expiring': { requiresAction: true, urgency: 'NORMAL', defaultChannels: ['EMAIL'] },
 
   // The only URGENT kind among the *product* events, and deliberately an operator
   // one. A customer event is never urgent enough to wake somebody: their work will

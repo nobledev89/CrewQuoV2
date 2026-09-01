@@ -6,6 +6,7 @@ import { NOTIFICATION_HANDLERS } from '../modules/notifications/handlers';
 import { recordJobRun } from './jobRuns';
 import { BILLING_INBOX_HANDLERS } from '../modules/billing/reconcile';
 import { runStorageBatch } from '../modules/storage/worker';
+import { runDocumentExpiryBatch } from '../modules/documents/expiry';
 
 /**
  * The process that actually drains the durable substrate.
@@ -75,6 +76,17 @@ async function pass(): Promise<{ claimed: number; succeeded: number; failed: num
       `[workers] files scanned=${storage.scanned} ready=${storage.ready} ` +
         `failed=${storage.failed} derivatives=${storage.derivatives} expired=${storage.expired}`
     );
+  }
+
+  /*
+   * Document expiry (0031). Runs BEFORE the outbox drain rather than after, so a
+   * document that crossed a rung overnight is noticed and delivered in the same
+   * pass — otherwise every warning is a full scheduler interval late, which for a
+   * once-a-day scheduler means the 7-day warning arrives on day 6.
+   */
+  const expiry = await runDocumentExpiryBatch();
+  if (expiry.onLadder > 0) {
+    console.log(`[workers] documents scanned=${expiry.scanned} onLadder=${expiry.onLadder}`);
   }
 
   const outbox = await runOutboxBatch({ workerId: WORKER_ID, handlers: NOTIFICATION_HANDLERS });

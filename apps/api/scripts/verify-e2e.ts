@@ -47,6 +47,7 @@ import {
 import sharpModule from 'sharp';
 import { COMPANY_QUERIES, PERSONAL_QUERIES } from '../src/modules/data-export/queries';
 import { runStorageBatch } from '../src/modules/storage/worker';
+import { runDocumentExpiryBatch } from '../src/modules/documents/expiry';
 import { storageBytesForCompany } from '../src/modules/storage/repo';
 
 /**
@@ -7958,10 +7959,15 @@ async function main(): Promise<void> {
       where kind = 'evidence.published' and company_id = $1`,
     [evClientCompany]
   );
+  const { rows: evPublishOutbox } = await db.query<{ status: string; attempts: number; last_error: string | null }>(
+    `select status, attempts, last_error from delivery_outbox
+      where topic = 'evidence.published' and company_id = $1
+      order by created_at desc limit 1`,
+    [evClientCompany]
+  );
   check('the client is told that evidence was shared with them',
-    Number(evClientNoticeAfter[0]?.n) > Number(evClientNotice[0]?.n) ||
-      Number(evClientNoticeAfter[0]?.n) >= 1,
-    { before: evClientNotice[0], after: evClientNoticeAfter[0] });
+    Number(evClientNoticeAfter[0]?.n) >= 1,
+    { before: evClientNotice[0], after: evClientNoticeAfter[0], outbox: evPublishOutbox[0] });
 
   // ── 14. Un-publishing hides, and does not claim to withdraw ─────────────
   const evHide = await call('POST', `/v1/projects/${evProject}/evidence/publish`, {
@@ -8169,6 +8175,563 @@ async function main(): Promise<void> {
   );
   eq('a photograph outlives the person who took it, attributed to a tombstoned identity',
     evFk[0]?.delete_rule, 'SET NULL');
+
+  // ── Project documents (§24) — Phase 7 build order step 5 ──────────────────
+  section('Project documents — the chain, the scope and the expiry ladder');
+
+  // Reuses the evidence fixture: the same owner, subcontractor, rival and client
+  // on the same project, so the scope rules are proved against a project that
+  // genuinely has two competing trades and a client on it.
+  const dcOwnerCtx = { token: evOwner.token, companyId: evCompany };
+  const dcSubCtx = evSubCtx;
+  const dcOutsider = await register('dcoutsider', `Unrelated Ltd ${RUN}`);
+
+  /** The bytes behind a document, for the file-download assertions. */
+  async function ramsFileOf(documentId: string): Promise<string> {
+    const { rows } = await db.query<{ file_id: string }>(
+      `select file_id from project_documents where id = $1`,
+      [documentId]
+    );
+    return rows[0]?.file_id as string;
+  }
+
+  async function uploadDoc(
+    who: { token: string; companyId: string },
+    filename: string,
+    body: Buffer = Buffer.from('%PDF-1.4 test document', 'ascii')
+  ): Promise<string> {
+    const presigned = await call('POST', '/v1/files/presign', {
+      token: who.token,
+      companyId: who.companyId,
+      body: {
+        kind: 'DOCUMENT',
+        filename,
+        contentType: 'application/pdf',
+        byteSize: body.byteLength,
+        projectId: evProject,
+        clientId: randomUUID(),
+      },
+    });
+    if (presigned.status !== 201) {
+      throw new Error(`presign ${filename}: ${presigned.status} ${JSON.stringify(presigned.json)}`);
+    }
+    await fetch(presigned.json.uploadUrl as string, {
+      method: 'PUT',
+      headers: presigned.json.requiredHeaders as Record<string, string>,
+      body,
+    });
+    await call('POST', `/v1/files/${presigned.json.fileId}/complete`, {
+      token: who.token,
+      companyId: who.companyId,
+      body: { checksumSha256: createHash('sha256').update(body).digest('hex') },
+    });
+
+    /*
+     * Documents require READY, unlike evidence, so the helper drains the scanner
+     * rather than leaving the caller to. A batch is bounded and this script shares
+     * a database with the browser suite, so it loops until *this* file is through
+     * rather than assuming one pass is enough — the same reasoning `drainWorkers`
+     * records about the outbox.
+     */
+    for (let pass = 0; pass < 6; pass += 1) {
+      const { rows } = await db.query<{ status: string }>(
+        `select status from stored_files where id = $1`,
+        [presigned.json.fileId]
+      );
+      if (rows[0]?.status === 'READY') break;
+      await runStorageBatch();
+    }
+    return presigned.json.fileId as string;
+  }
+
+  // ── 1. Empty, then a document that is still being scanned ────────────────
+  const dcEmpty = await call('GET', `/v1/projects/${evProject}/documents`, { ...dcOwnerCtx });
+  eq('a project with no documents says so', dcEmpty.status, 200);
+  eq('...with an empty list', dcEmpty.json.documents, []);
+
+  const dcPendingPresign = await call('POST', '/v1/files/presign', {
+    ...dcOwnerCtx,
+    body: {
+      kind: 'DOCUMENT',
+      filename: 'not-yet.pdf',
+      contentType: 'application/pdf',
+      byteSize: 22,
+      projectId: evProject,
+    },
+  });
+  const dcEarly = await call('POST', `/v1/projects/${evProject}/documents`, {
+    ...dcOwnerCtx,
+    body: { fileId: dcPendingPresign.json.fileId, category: 'RAMS', title: 'Site RAMS' },
+  });
+  eq('a document cannot be filed against bytes nobody has checked yet', dcEarly.status, 409);
+
+  // ── 2. Filing, and the dates that must not invert ────────────────────────
+  const dcRamsV1File = await uploadDoc(dcOwnerCtx, 'site-rams-v1.pdf');
+  const dcBadDates = await call('POST', `/v1/projects/${evProject}/documents`, {
+    ...dcOwnerCtx,
+    body: {
+      fileId: dcRamsV1File,
+      category: 'RAMS',
+      title: 'Site RAMS',
+      issuedOn: '2026-09-01',
+      expiresOn: '2026-08-01',
+    },
+  });
+  eq('a document that expires before it was issued is a typo, not a record', dcBadDates.status, 422);
+
+  const dcRamsV1 = await call('POST', `/v1/projects/${evProject}/documents`, {
+    ...dcOwnerCtx,
+    body: {
+      fileId: dcRamsV1File,
+      category: 'RAMS',
+      title: 'Site RAMS',
+      reference: 'RAMS-2026-014',
+      issuedOn: '2026-08-01',
+      expiresOn: '2027-08-01',
+      locationId: evFloorId,
+      clientId: randomUUID(),
+    },
+  });
+  eq('the project owner files a site RAMS', dcRamsV1.status, 201);
+  eq('...as version 1', dcRamsV1.json.document.version, 1);
+  eq('...superseded by nothing', dcRamsV1.json.document.supersededById, null);
+  eq('...and project-wide, because the owner did not file it against anybody',
+    dcRamsV1.json.document.providerCompanyId, null);
+  const dcRamsV1Id = dcRamsV1.json.document.id as string;
+
+  // ── 3. The chain: re-issue, and the fork that must not happen ───────────
+  const dcRamsV2File = await uploadDoc(dcOwnerCtx, 'site-rams-v2.pdf', Buffer.from('%PDF-1.4 rev B', 'ascii'));
+  const dcSameFile = await call('POST', `/v1/documents/${dcRamsV1Id}/versions`, {
+    ...dcOwnerCtx,
+    body: { fileId: dcRamsV1File },
+  });
+  eq('a new version pointing at the same bytes changes nothing and is refused',
+    dcSameFile.status, 409);
+  eq('...by name', dcSameFile.json?.error?.details?.reason, 'FILE_REUSED');
+
+  const dcRamsV2 = await call('POST', `/v1/documents/${dcRamsV1Id}/versions`, {
+    ...dcOwnerCtx,
+    body: { fileId: dcRamsV2File, issuedOn: '2026-09-01', expiresOn: '2027-09-01' },
+  });
+  eq('the RAMS is re-issued', dcRamsV2.status, 201);
+  eq('...as version 2', dcRamsV2.json.document.version, 2);
+  eq('...pointing back at the version it replaced', dcRamsV2.json.document.supersedesId, dcRamsV1Id);
+  eq('...inheriting the category nobody retyped', dcRamsV2.json.document.category, 'RAMS');
+  eq('...and the reference printed on it', dcRamsV2.json.document.reference, 'RAMS-2026-014');
+  const dcRamsV2Id = dcRamsV2.json.document.id as string;
+
+  const dcFork = await call('POST', `/v1/documents/${dcRamsV1Id}/versions`, {
+    ...dcOwnerCtx,
+    body: { fileId: await uploadDoc(dcOwnerCtx, 'rival-rams.pdf', Buffer.from('%PDF-1.4 fork', 'ascii')) },
+  });
+  eq('a second re-issue of the SAME version is refused rather than forking the chain',
+    dcFork.status, 409);
+  eq('...naming the reason a person can act on', dcFork.json?.error?.details?.reason,
+    'ALREADY_SUPERSEDED');
+
+  /*
+   * The database is the arbiter, not the route. Two genuinely concurrent
+   * re-issues of one version both pass the API check; only one row may exist.
+   */
+  const dcRaceA = uploadDoc(dcOwnerCtx, 'race-a.pdf', Buffer.from('%PDF-1.4 race a', 'ascii'));
+  const dcRaceB = uploadDoc(dcOwnerCtx, 'race-b.pdf', Buffer.from('%PDF-1.4 race bb', 'ascii'));
+  const [dcRaceFileA, dcRaceFileB] = await Promise.all([dcRaceA, dcRaceB]);
+  const [dcRacedA, dcRacedB] = await Promise.all([
+    call('POST', `/v1/documents/${dcRamsV2Id}/versions`, { ...dcOwnerCtx, body: { fileId: dcRaceFileA } }),
+    call('POST', `/v1/documents/${dcRamsV2Id}/versions`, { ...dcOwnerCtx, body: { fileId: dcRaceFileB } }),
+  ]);
+  const dcRaceWins = [dcRacedA.status, dcRacedB.status].filter((s) => s === 201).length;
+  eq('two simultaneous re-issues of one version: exactly one wins', dcRaceWins, 1);
+  const { rows: dcSuccessors } = await db.query<{ n: string }>(
+    `select count(*)::int as n from project_documents
+      where supersedes_id = $1 and deleted_at is null`,
+    [dcRamsV2Id]
+  );
+  eq('...leaving exactly one successor, so "which is current" still has an answer',
+    Number(dcSuccessors[0]?.n), 1);
+  const dcRamsV3Id = (dcRacedA.status === 201 ? dcRacedA : dcRacedB).json.document.id as string;
+
+  // ── 4. Superseded versions are hidden, and the history is not ───────────
+  const dcCurrent = await call('GET', `/v1/projects/${evProject}/documents`, { ...dcOwnerCtx });
+  const dcCurrentIds = (dcCurrent.json.documents as { id: string }[]).map((d) => d.id);
+  check('only the current version is listed by default',
+    dcCurrentIds.includes(dcRamsV3Id) && !dcCurrentIds.includes(dcRamsV1Id) &&
+      !dcCurrentIds.includes(dcRamsV2Id),
+    dcCurrentIds);
+  const dcWithHistory = await call(
+    'GET',
+    `/v1/projects/${evProject}/documents?includeSuperseded=true`,
+    { ...dcOwnerCtx }
+  );
+  const dcHistoryIds = (dcWithHistory.json.documents as { id: string }[]).map((d) => d.id);
+  check('...and asking for the history returns every version, none deleted',
+    dcHistoryIds.includes(dcRamsV1Id) && dcHistoryIds.includes(dcRamsV2Id),
+    dcHistoryIds);
+
+  const dcChain = await call('GET', `/v1/documents/${dcRamsV1Id}/versions`, { ...dcOwnerCtx });
+  eq('the chain is readable from the OLDEST version somebody is holding',
+    (dcChain.json.versions as { id: string }[]).map((v) => v.id),
+    [dcRamsV1Id, dcRamsV2Id, dcRamsV3Id]);
+  const dcChainFromTip = await call('GET', `/v1/documents/${dcRamsV3Id}/versions`, { ...dcOwnerCtx });
+  eq('...and from the newest, which is the one a screen is usually showing',
+    (dcChainFromTip.json.versions as { id: string }[]).map((v) => v.id),
+    [dcRamsV1Id, dcRamsV2Id, dcRamsV3Id]);
+
+  eq('v1 knows what replaced it, derived rather than stored',
+    (dcChain.json.versions as { id: string; supersededById: string }[])[0]?.supersededById,
+    dcRamsV2Id);
+
+  // Retracting a bad version restores its predecessor, with nothing to back-fill.
+  await call('DELETE', `/v1/documents/${dcRamsV3Id}`, { ...dcOwnerCtx });
+  const dcAfterRetract = await call('GET', `/v1/documents/${dcRamsV2Id}`, { ...dcOwnerCtx });
+  eq('retracting a wrongly-issued version makes its predecessor current again',
+    dcAfterRetract.json.document.supersededById, null);
+  const dcReissueAfter = await call('POST', `/v1/documents/${dcRamsV2Id}/versions`, {
+    ...dcOwnerCtx,
+    body: { fileId: await uploadDoc(dcOwnerCtx, 'rams-v3-correct.pdf', Buffer.from('%PDF-1.4 correct', 'ascii')) },
+  });
+  eq('...and the slot it freed accepts a correct one', dcReissueAfter.status, 201);
+  const dcRamsCurrentId = dcReissueAfter.json.document.id as string;
+
+  // ── 5. There is no route that replaces the bytes in place ──────────────
+  const dcSwapBytes = await call('PATCH', `/v1/documents/${dcRamsCurrentId}`, {
+    ...dcOwnerCtx,
+    body: { fileId: dcRamsV1File },
+  });
+  eq('the metadata route refuses a fileId, so bytes can never be swapped in place',
+    dcSwapBytes.status, 422);
+
+  // ── 6. Scope: whose document is it, and who may read it ────────────────
+  const dcSubInsuranceFile = await uploadDoc(dcSubCtx, 'ade-insurance.pdf', Buffer.from('%PDF-1.4 insurance', 'ascii'));
+  const dcSubInsurance = await call('POST', `/v1/projects/${evProject}/documents`, {
+    ...dcSubCtx,
+    body: {
+      fileId: dcSubInsuranceFile,
+      category: 'INSURANCE',
+      title: 'Public liability',
+      expiresOn: '2027-01-31',
+    },
+  });
+  eq('a subcontractor files its own insurance on the hiring company\'s project',
+    dcSubInsurance.status, 201);
+  eq('...and it is filed AGAINST that subcontractor by default, not project-wide',
+    dcSubInsurance.json.document.providerCompanyId, evSubCompany);
+  const dcSubInsuranceId = dcSubInsurance.json.document.id as string;
+
+  const dcRivalList = await call('GET', `/v1/projects/${evProject}/documents`, {
+    token: evSub2.token,
+    companyId: evSub2Company,
+  });
+  const dcRivalIds = (dcRivalList.json.documents as { id: string }[]).map((d) => d.id);
+  check('a rival on the same project sees the site RAMS, which it has to follow',
+    dcRivalIds.includes(dcRamsCurrentId), dcRivalIds);
+  check('...and does NOT see a competitor\'s insurance certificate',
+    !dcRivalIds.includes(dcSubInsuranceId), dcRivalIds);
+  const dcRivalRead = await call('GET', `/v1/documents/${dcSubInsuranceId}`, {
+    token: evSub2.token,
+    companyId: evSub2Company,
+  });
+  eq('...nor can it read one by id', dcRivalRead.status, 404);
+  const dcRivalFile = await call('GET', `/v1/files/${dcSubInsuranceFile}/download`, {
+    token: evSub2.token,
+    companyId: evSub2Company,
+  });
+  eq('...nor reach its bytes through the file route', dcRivalFile.status, 404);
+  const dcRivalRams = await call('GET', `/v1/files/${await ramsFileOf(dcRamsCurrentId)}/download`, {
+    token: evSub2.token,
+    companyId: evSub2Company,
+  });
+  eq('...while a project-wide document IS downloadable by everyone on the project',
+    dcRivalRams.status, 200);
+
+  const dcOutsiderRams = await call('GET', `/v1/files/${await ramsFileOf(dcRamsCurrentId)}/download`, {
+    token: dcOutsider.token,
+    companyId: dcOutsider.companyId!,
+  });
+  eq('...and not by a company that is not on the project at all', dcOutsiderRams.status, 404);
+
+  const dcSubFilesAgainstRival = await call('POST', `/v1/projects/${evProject}/documents`, {
+    ...dcSubCtx,
+    body: {
+      fileId: await uploadDoc(dcSubCtx, 'mischief.pdf', Buffer.from('%PDF-1.4 mischief', 'ascii')),
+      category: 'INSURANCE',
+      title: 'Not mine to file',
+      providerCompanyId: evSub2Company,
+    },
+  });
+  eq('a subcontractor cannot file a document against a competitor', dcSubFilesAgainstRival.status, 403);
+
+  // ── 7. Disclosure to the client is the owner's lever ──────────────────
+  const dcSubPublishes = await call('PATCH', `/v1/documents/${dcSubInsuranceId}`, {
+    ...dcSubCtx,
+    body: { clientVisible: true },
+  });
+  eq('a subcontractor cannot share a document with the hiring company\'s client',
+    dcSubPublishes.status, 403);
+
+  const dcPublish = await call('PATCH', `/v1/documents/${dcRamsCurrentId}`, {
+    ...dcOwnerCtx,
+    body: { clientVisible: true },
+  });
+  eq('the project owner shares the RAMS with its client', dcPublish.status, 200);
+
+  const dcPortal = await call('GET', `/v1/portal/projects/${evProject}/documents`, {
+    token: evClientUser.token,
+    companyId: evClientCompany,
+  });
+  eq('the client reads what was shared', dcPortal.status, 200);
+  eq('...exactly one document', dcPortal.json.documents.length, 1);
+  const dcPortalPayload = JSON.stringify(dcPortal.json);
+  eq('...and it is the current one',
+    (dcPortal.json.documents as { id: string }[]).map((d) => d.id), [dcRamsCurrentId]);
+  check('...with no superseded version listed beside it to read by mistake',
+    !dcPortalPayload.includes(dcRamsV1Id) && !dcPortalPayload.includes(dcRamsV2Id),
+    dcPortalPayload.slice(0, 400));
+  check('...and no chain id the client has no route to resolve',
+    !dcPortalPayload.includes('supersedesId') && !dcPortalPayload.includes('supersededById'),
+    dcPortalPayload.slice(0, 400));
+  check('...and nothing about which subcontractor filed what',
+    !dcPortalPayload.includes(evSubCompany) && !dcPortalPayload.includes(evSub.userId));
+  check('...and no rate, margin or snapshot anywhere in it',
+    !/resolvedRate|payRate|marginCents|amountCents/i.test(dcPortalPayload));
+
+  const dcClientDownload = await call('GET', `/v1/files/${await ramsFileOf(dcRamsCurrentId)}/download`, {
+    token: evClientUser.token,
+    companyId: evClientCompany,
+  });
+  eq('a shared document is downloadable by the client', dcClientDownload.status, 200);
+  const dcClientHidden = await call('GET', `/v1/files/${dcSubInsuranceFile}/download`, {
+    token: evClientUser.token,
+    companyId: evClientCompany,
+  });
+  eq('...and an unshared one is not', dcClientHidden.status, 404);
+
+  /*
+   * A new version does NOT inherit `client_visible`. Re-publishing new bytes
+   * automatically, because the previous version happened to be shared, discloses a
+   * document nobody looked at.
+   */
+  const dcRamsV4 = await call('POST', `/v1/documents/${dcRamsCurrentId}/versions`, {
+    ...dcOwnerCtx,
+    body: { fileId: await uploadDoc(dcOwnerCtx, 'rams-v4.pdf', Buffer.from('%PDF-1.4 four', 'ascii')) },
+  });
+  eq('a new version of a shared document is created', dcRamsV4.status, 201);
+  eq('...and is NOT shared with the client just because its predecessor was',
+    dcRamsV4.json.document.clientVisible, false);
+  const dcPortalAfter = await call('GET', `/v1/portal/projects/${evProject}/documents`, {
+    token: evClientUser.token,
+    companyId: evClientCompany,
+  });
+  eq('...so the client now sees nothing rather than the wrong copy',
+    dcPortalAfter.json.documents.length, 0);
+
+  // ── 8. Supersession is audited and notified as its own act ────────────
+  await drainWorkers();
+  const { rows: dcSupersedeAudit } = await db.query<{ n: string }>(
+    `select count(*)::int as n from audit_logs
+      where company_id = $1 and action = 'document.superseded'`,
+    [evCompany]
+  );
+  check('re-issuing is a distinct action in the trail, not an update',
+    Number(dcSupersedeAudit[0]?.n) >= 1, dcSupersedeAudit[0]);
+  /*
+   * The notification is asserted on the SUBCONTRACTOR's renewal further down
+   * rather than here, and the reason is worth the line: the owner re-issuing their
+   * own RAMS is the only manager of their own company, and nobody is notified
+   * about their own action — so zero notifications is the correct answer, not a
+   * bug. A test that expected one here would have been green only by accident, on
+   * a fixture with a second admin in it.
+   */
+  const { rows: dcSupersedePayload } = await db.query<{ payload: any }>(
+    `select payload from delivery_outbox where topic = 'document.superseded'
+     order by created_at desc limit 1`
+  );
+  check('...while the event itself carries no title and no reference',
+    !JSON.stringify(dcSupersedePayload[0]?.payload ?? {}).match(/Site RAMS|RAMS-2026-014/),
+    dcSupersedePayload[0]?.payload);
+
+  // ── 9. The expiry ladder, and whose calendar decides ──────────────────
+  //
+  // Backdated so the certificate is exactly 30 days from lapsing in the project
+  // owner's own zone, which is the only clock any of this is allowed to use.
+  await db.query(
+    `update project_documents
+        set expires_on = ((now() at time zone (
+              select coalesce(time_zone, 'UTC') from companies where id = $2
+            ))::date + interval '30 days')::date
+      where id = $1`,
+    [dcSubInsuranceId, evCompany]
+  );
+  const dcExpiryPass = await runDocumentExpiryBatch();
+  check('the expiry scan finds a document a month from lapsing', dcExpiryPass.onLadder >= 1,
+    dcExpiryPass);
+  const { rows: dcRung } = await db.query<{ payload: any; idempotency_key: string }>(
+    `select payload, idempotency_key from delivery_outbox
+      where topic = 'document.expiring' and aggregate_id = $1`,
+    [dcSubInsuranceId]
+  );
+  eq('...and puts it on the 30-day rung, not the 90-day one it passed months ago',
+    dcRung[0]?.payload?.threshold, 30);
+  eq('...counting the days from the project owner\'s calendar', dcRung[0]?.payload?.daysRemaining, 30);
+  check('...keyed on the document and the rung, so the rung fires once',
+    dcRung[0]?.idempotency_key === `document.expiring:${dcSubInsuranceId}:30`,
+    dcRung[0]?.idempotency_key);
+
+  // Running it again must not produce a second event for the same rung.
+  await runDocumentExpiryBatch();
+  const { rows: dcRungCount } = await db.query<{ n: string }>(
+    `select count(*)::int as n from delivery_outbox
+      where topic = 'document.expiring' and aggregate_id = $1`,
+    [dcSubInsuranceId]
+  );
+  eq('a second scan on the same day enqueues nothing new', Number(dcRungCount[0]?.n), 1);
+
+  await drainWorkers();
+  const { rows: dcExpiryNotices } = await db.query<{ company_id: string; title: string }>(
+    `select company_id, title from notifications
+      where kind = 'document.expiring' and subject_id = $1`,
+    [dcSubInsuranceId]
+  );
+  check('both the hiring company and the subcontractor are told it is lapsing',
+    new Set(dcExpiryNotices.map((r) => r.company_id)).size === 2,
+    dcExpiryNotices.map((r) => r.company_id));
+  check('...in words built from the category and the number, never the title',
+    dcExpiryNotices.every((r) => /Insurance expires in 30 days/.test(r.title)),
+    dcExpiryNotices.map((r) => r.title));
+  const { rows: dcExpiryAction } = await db.query<{ requires_action: boolean }>(
+    `select requires_action from notifications
+      where kind = 'document.expiring' and subject_id = $1 limit 1`,
+    [dcSubInsuranceId]
+  );
+  eq('...and it is a task, because somebody has to re-issue it',
+    dcExpiryAction[0]?.requires_action, true);
+
+  // A lapsed document reaches rung 0 rather than going quiet after 7 days.
+  await db.query(
+    `update project_documents
+        set expires_on = ((now() at time zone (
+              select coalesce(time_zone, 'UTC') from companies where id = $2
+            ))::date - interval '2 days')::date
+      where id = $1`,
+    [dcSubInsuranceId, evCompany]
+  );
+  await runDocumentExpiryBatch();
+  const { rows: dcLapsed } = await db.query<{ payload: any }>(
+    `select payload from delivery_outbox
+      where topic = 'document.expiring' and aggregate_id = $1 and idempotency_key like '%:0'`,
+    [dcSubInsuranceId]
+  );
+  eq('a lapsed document reaches rung 0 rather than going silent after the 7-day step',
+    dcLapsed[0]?.payload?.threshold, 0);
+  eq('...reporting the days as negative, which a screen renders differently',
+    dcLapsed[0]?.payload?.daysRemaining, -2);
+
+  // Re-issuing closes the task the old version raised.
+  const dcInsuranceV2 = await call('POST', `/v1/documents/${dcSubInsuranceId}/versions`, {
+    ...dcSubCtx,
+    body: {
+      fileId: await uploadDoc(dcSubCtx, 'ade-insurance-2027.pdf', Buffer.from('%PDF-1.4 renewed', 'ascii')),
+      expiresOn: '2028-01-31',
+    },
+  });
+  eq('the subcontractor renews its own insurance', dcInsuranceV2.status, 201);
+  await drainWorkers();
+
+  const { rows: dcRenewalNotice } = await db.query<{ title: string }>(
+    `select title from notifications
+      where kind = 'document.superseded' and company_id = $1
+      order by created_at desc limit 1`,
+    [evCompany]
+  );
+  check('...and the hiring company is told which version replaced which',
+    /Insurance v2 replaced v1/.test(dcRenewalNotice[0]?.title ?? ''),
+    dcRenewalNotice[0]?.title);
+  const dcSupersededScan = await runDocumentExpiryBatch();
+  const { rows: dcOldStillScanned } = await db.query<{ n: string }>(
+    `select count(*)::int as n from delivery_outbox
+      where topic = 'document.expiring' and aggregate_id = $1`,
+    [dcSubInsuranceId]
+  );
+  eq('...and the superseded version stops being warned about, because it is handled',
+    Number(dcOldStillScanned[0]?.n), 2);
+  void dcSupersededScan;
+
+  // ── 10. Packaging and capability ─────────────────────────────────────
+  const dcSubOwnProject = await call('GET', `/v1/projects/${evSubOwnProject.json.project.id}/documents`, {
+    ...dcSubCtx,
+  });
+  eq('a Crew-plan company gets no document section on its OWN project', dcSubOwnProject.status, 403);
+  check('...naming the key it would need',
+    JSON.stringify(dcSubOwnProject.json).includes('project_documents'), dcSubOwnProject.json);
+
+  const dcWorkerFile = await uploadDoc(dcOwnerCtx, 'worker-attempt.pdf', Buffer.from('%PDF-1.4 worker', 'ascii'));
+  const dcWorkerUpload = await call('POST', `/v1/projects/${evProject}/documents`, {
+    token: evWorker.token,
+    companyId: evCompany,
+    body: { fileId: dcWorkerFile, category: 'RAMS', title: 'Not my job' },
+  });
+  eq('a Worker bundle cannot file documents', dcWorkerUpload.status, 403);
+  check('...and the refusal names the capability',
+    JSON.stringify(dcWorkerUpload.json).includes('document.upload'), dcWorkerUpload.json);
+
+  // ── 11. The location cannot be deleted out from under a document ────
+  //
+  // A FRESH location with nothing else on it. Reusing Room 3.12 would have passed
+  // for the wrong reason — evidence already points at that one, so its refusal
+  // names photographs and would be green whether or not documents were ever added
+  // to the registry.
+  const dcPlant = await call('POST', `/v1/projects/${evProject}/locations`, {
+    ...dcOwnerCtx,
+    body: { kind: 'SITE_AREA', name: 'Plant room' },
+  });
+  const dcPlantId = dcPlant.json.location.id as string;
+  const dcEmptyDelete = await call('DELETE', `/v1/locations/${dcPlantId}`, { ...dcOwnerCtx });
+  eq('an unused location can be deleted outright', dcEmptyDelete.status, 204);
+
+  const dcPlant2 = await call('POST', `/v1/projects/${evProject}/locations`, {
+    ...dcOwnerCtx,
+    body: { kind: 'SITE_AREA', name: 'Plant room B' },
+  });
+  const dcPlant2Id = dcPlant2.json.location.id as string;
+  const dcDocOnPlant = await call('POST', `/v1/projects/${evProject}/documents`, {
+    ...dcOwnerCtx,
+    body: {
+      fileId: await uploadDoc(dcOwnerCtx, 'plant-drawing.pdf', Buffer.from('%PDF-1.4 drawing', 'ascii')),
+      category: 'DRAWING',
+      title: 'Plant room layout',
+      locationId: dcPlant2Id,
+    },
+  });
+  eq('a drawing is filed against that location', dcDocOnPlant.status, 201);
+  const dcPlantDelete = await call('DELETE', `/v1/locations/${dcPlant2Id}`, { ...dcOwnerCtx });
+  eq('...and the location can no longer be deleted', dcPlantDelete.status, 409);
+  check('...with the refusal naming documents specifically',
+    /\bdocuments\b/.test(dcPlantDelete.json?.error?.message ?? ''),
+    dcPlantDelete.json?.error?.message);
+
+  // ── 12. Concurrency and the tombstone ──────────────────────────────
+  const dcRev = (await call('GET', `/v1/documents/${dcRamsCurrentId}`, { ...dcOwnerCtx })).json
+    .document.revision as number;
+  const dcEdit = await call('PATCH', `/v1/documents/${dcRamsCurrentId}`, {
+    ...dcOwnerCtx,
+    body: { notes: 'Reviewed on site', expectedRevision: dcRev },
+  });
+  eq('an edit against the version it read is applied', dcEdit.status, 200);
+  const dcStale = await call('PATCH', `/v1/documents/${dcRamsCurrentId}`, {
+    ...dcOwnerCtx,
+    body: { notes: 'Composed offline', expectedRevision: dcRev },
+  });
+  eq('a stale edit is refused', dcStale.status, 409);
+  eq('...carrying the current version back', dcStale.json?.error?.details?.currentRevision, dcRev + 1);
+
+  await call('DELETE', `/v1/documents/${dcRamsCurrentId}`, { ...dcOwnerCtx });
+  const dcGone = await call('GET', `/v1/documents/${dcRamsCurrentId}`, { ...dcOwnerCtx });
+  eq('a deleted document answers as gone, not as never having existed', dcGone.status, 410);
+  const dcGoneOutsider = await call('GET', `/v1/documents/${dcRamsCurrentId}`, {
+    token: dcOutsider.token,
+    companyId: dcOutsider.companyId!,
+  });
+  eq('...while an outsider gets the same 404 as always', dcGoneOutsider.status, 404);
 
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);

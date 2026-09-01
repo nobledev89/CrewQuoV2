@@ -205,6 +205,26 @@ document whose bytes can be replaced in place is a document whose history is a
 claim rather than a record, and waste transfer notes are precisely the documents
 somebody is later asked to prove.
 
+**"Superseded" is derived, never stored** (2026-09-02). A row is superseded
+exactly when another *live* row points at it. A boolean column beside
+`supersedes_id` is two answers to one question, and they disagree the first time
+a wrongly-issued v2 is retracted: v1 would still say superseded, with nothing to
+un-set it. Because the partial unique index that prevents a fork also filters on
+`deleted_at is null`, retracting v2 makes v1 current again *and* frees the slot
+for a correct one, with nothing to back-fill.
+
+**A chain that forks has no answer to "which is current"**, and in this domain
+that answer is what somebody on site is relying on. Two concurrent re-issues of
+one version both pass any check the route can make, so the unique index on
+`(supersedes_id) where deleted_at is null` is the arbiter and the loser is told a
+newer version already exists.
+
+**A new version does not inherit `client_visible`, and inherits everything else.**
+Re-typing the category, title and reference is how version 2 ends up filed as
+something else, so those carry forward. Automatically re-publishing new bytes,
+because the previous version happened to be shared, discloses a document nobody
+has looked at — so that one field resets to false.
+
 ### `site_diary_entries`
 
 ```
@@ -259,7 +279,9 @@ ever narrow what `policies.ts` has already allowed.
 | Upload evidence | see §13.2 | `evidence.upload` | owner or one-hop provider | assigned to the project |
 | Edit another person's evidence metadata | `project_evidence` | `evidence.manage` | own company's rows; the project owner may re-tag any | the project |
 | Publish evidence to the client | `client_portal` (existing key) | `evidence.publish` | project-owning company **only** | the project |
-| Upload / supersede a document | `project_documents` | `document.upload` / `document.manage` | owner or one-hop provider | the project |
+| Upload / supersede a document | `project_documents` on the **owner** | `document.upload` / `document.manage` | owner or one-hop provider | the project |
+| Read a document | `project_documents` on the **owner** | `project.read` | project-wide, own, or filed against you | the project |
+| Share a document with the client | `project_documents` + `client_portal` | `document.manage` | project-owning company **only** | the project |
 | Write a diary entry | `site_diary` | `diary.write` | owner or one-hop provider | assigned to the project |
 | Close a day | `site_diary` | `diary.close` | the authoring company only | the entry |
 | Amend a closed day | `site_diary` | `diary.close` + a reason | the authoring company only | the entry |
@@ -323,10 +345,26 @@ act by one person, and forty events is forty notifications, forty audit rows and
 a projection nobody can read. The batch is the unit, keyed by the client-supplied
 batch id from §8, and the individual rows are reachable from it.
 
-**`document.expiring` ships without its consumer, on purpose.** Phase 12 owns the
-90/60/30/14/7 ladder, but the event's *shape* is decided by the record built
-here, and a shape decided later would be decided by whoever is writing the alert
-rather than by whoever knows what a document is.
+**`document.expiring` was to ship without its consumer, and shipped with one
+(2026-09-02).** The reason for emitting it in this phase is unchanged and still
+right: the event's *shape* is decided by the record built here, and a shape
+decided later would be decided by whoever is writing the alert rather than by
+whoever knows what a document is. But that argument is about the **producer**,
+and it says nothing in favour of leaving the topic unconsumed. `claimOutboxEvents`
+filters on the registered topic list, so an event with no handler is never
+claimed, never retried, never dead-lettered and never counted as a backlog — the
+fault recorded in this phase's own notes, where four such topics had accumulated
+3,578 undeliverable rows. Shipping a fifth knowingly would be the wrong kind of
+faithfulness to this document. Phase 12 still owns the **escalation**: who else is
+told at 14 days, whether it becomes urgent, and the portfolio compliance surface.
+What ships now is the durable Action Centre item, which `notifications.md`
+requires of every kind regardless.
+
+**The ladder gained a sixth rung, `0`.** §24's steps are 90/60/30/14/7, and a
+ladder that warns a week out and then says nothing on the day itself goes quiet
+exactly when the insurance lapses. An expired document stays on rung 0 rather
+than escalating further: there is one fact to report, and repeating it louder
+each day is how a person learns to filter the sender.
 
 ---
 
@@ -779,7 +817,7 @@ a queue.**
 | **2** ✅ | **The offline/sync contract (7.7) — shipped 2026-09-01.** Client ids, idempotency, expected versions, per-field diary merge, tombstones, the three timestamps. Settled before the evidence APIs harden, which is decision #22's whole reason for putting it in this phase. The browser half waits on 7.6's screens; the races are proved with concurrent HTTP instead. | **shipped** |
 | **3** ✅ | **Storage service (§22.1, item 7.0) — shipped 2026-09-01.** `stored_files`, presign → PUT → complete → scan → READY, `sharp` derivatives, authorized presigned downloads, the byte meter. | **shipped 2026-09-01** |
 | **4** ✅ | **Evidence (§22, item 7.3) — shipped 2026-09-01.** `project_evidence`, batch create with per-item overrides, publish/hide, filters and category counts, the client's portal view, and the three timestamps kept three. Gallery / timeline / table and sticky selection are the **screens**, which are 7.6; the ordering and grouping they render are built and tested here. | **shipped** |
-| **5** | **Documents (§24).** Categories, `supersedes_id` versioning, expiry dates, and `document.expiring` emitted for Phase 12's ladder. | step 3 |
+| **5** ✅ | **Documents (§24, item 7.4) — shipped 2026-09-02.** Sixteen categories, `supersedes_id` versioning with a one-successor index, expiry dates, the scan, and `document.expiring` — **with a consumer**, see §5. The document manager screen is 7.6. | **shipped** |
 | **6** | **Site diary (§23).** Entry, structured attendance, prefill from schedule and time logs, Close Day, post-close amendment with a required reason and the amendment count everywhere. | steps 0, 1, 2 |
 | **7** ✅ | **Retro-fit the Phase 3 expense receipt upload — shipped 2026-09-01 with step 3.** `expenses.receipt_url` has been null since `0004` with the comment *"upload deferred"*. It is the smallest real consumer of the storage service and therefore its best first proof. | **shipped** |
 

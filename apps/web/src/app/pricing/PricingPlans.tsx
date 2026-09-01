@@ -30,6 +30,7 @@ const FEATURE_LABELS: Record<FeatureKey, string> = {
   client_portal: 'Client portal',
   client_portal_notes: 'Portal notes',
   project_evidence: 'Photos & evidence',
+  project_documents: 'Project documents',
   invoicing: 'Invoicing',
   audit_visibility: 'Client-visible audit trail',
   api_access: 'API access',

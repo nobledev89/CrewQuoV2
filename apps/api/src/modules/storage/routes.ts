@@ -18,7 +18,7 @@ import { uuidParam } from '../../http/params';
 import { queryOne } from '../../db';
 import { env } from '../../env';
 import { withinLimit } from '../entitlements/guards';
-import { evidenceGrantsFileAccess, fileDisclosedToClient } from '../evidence/repo';
+import { referencedFileIsReadable } from './references';
 import { ensureBucket, headObject, presignGet, presignPut, storageConfigured } from './client';
 import {
   findByClientId,
@@ -317,14 +317,12 @@ async function readableFile(id: string, companyId: string): Promise<StoredFileRo
   }
 
   /*
-   * The record-granted hops. Two questions, deliberately not merged: an evidence
-   * row grants its own *uploading company* access to a file the floor already
-   * covers in the normal case but not when the row and the file were created by
-   * different members, and `client_visible` grants the client on the project's
-   * engagement. 7.4's documents and 7.5's diary attachments join this list.
+   * The record-granted hops, as a registry (`references.ts`) rather than a list of
+   * `if`s that each later phase has to remember to extend. Evidence and documents
+   * are in it today; 7.5's diary attachments and Phase 8's weight documents join
+   * it there rather than here.
    */
-  if (await evidenceGrantsFileAccess(id, companyId)) return file;
-  if (await fileDisclosedToClient(id, companyId)) return file;
+  if (await referencedFileIsReadable(id, companyId)) return file;
 
   // Not 403 — a forged id must not confirm that somebody else's file exists.
   throw new AppError('NOT_FOUND', 'File not found');

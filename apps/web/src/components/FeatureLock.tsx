@@ -21,6 +21,8 @@ const FEATURE_COPY: Record<FeatureKey, string> = {
   client_portal_notes: 'Portal notes let a client comment on a line item and you reply.',
   project_evidence:
     'Photos & evidence keeps site photographs, scans and files against a project, with categories, dates and locations.',
+  project_documents:
+    'Project documents file RAMS, insurance, waste transfer notes and drawings, with versions kept and expiry dates tracked.',
   invoicing: 'Invoicing turns approved work into an invoice you can issue.',
   audit_visibility: 'Audit visibility lets a client see the trail of activity you publish.',
   api_access: 'API access issues keys for your own integrations.',

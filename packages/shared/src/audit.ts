@@ -52,6 +52,18 @@ export const AUDIT_ACTIONS = [
   'evidence.published',
   'evidence.unpublished',
   'evidence.deleted',
+  /*
+   * Project documents (§24, 0031). `document.superseded` rather than
+   * `document.updated` for a re-issue, because they are different acts: an update
+   * corrects what a row says about the same bytes, and a supersession is new bytes
+   * with the old ones deliberately kept. A trail that called both "updated" could
+   * not answer "when did this RAMS change", which is the question a document trail
+   * exists for.
+   */
+  'document.created',
+  'document.updated',
+  'document.superseded',
+  'document.deleted',
   // A whole-company export (packet §14 step 5). Audited because it is a disclosure of
   // the company's record by one of its members, and the other owners are entitled to
   // know it happened. A *personal* export is not here on purpose: it has no company
@@ -150,6 +162,7 @@ export const AUDIT_ENTITY_TYPES = [
   'PROJECT',
   'LOCATION',
   'EVIDENCE',
+  'DOCUMENT',
   'TIME_LOG',
   'EXPENSE',
   'PROJECT_SUBMISSION',

@@ -24,6 +24,13 @@ export const FEATURE_KEYS = [
    * the Crew plan was invented to prevent.
    */
   'project_evidence',
+  /**
+   * Phase 7.4 (§43), and gated against the project owner exactly as
+   * `project_evidence` is. A Crew-plan subcontractor must be able to file its
+   * insurance and its waste transfer notes on a hiring company's job — a
+   * subcontractor who cannot produce a WTN cannot legally move the waste.
+   */
+  'project_documents',
   'invoicing',
   'audit_visibility',
   'api_access',

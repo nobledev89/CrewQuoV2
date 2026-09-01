@@ -29,4 +29,5 @@ export * from './capabilities';
 export * from './storage';
 export * from './locations';
 export * from './evidence';
+export * from './documents';
 export * from './sync';

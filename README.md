@@ -177,6 +177,20 @@ relationship decides what that client sees. Hiding a published file removes it
 from the portal going forward and withdraws nothing already downloaded, which is
 what `first_published_at` records and what the API's confirmation copy says.
 
+**A document is a chain, not an edit.** `POST /v1/projects/:id/documents` files
+one; `PATCH /v1/documents/:id` corrects its metadata; new bytes go through
+`POST /v1/documents/:id/versions`, which inserts a row pointing back at the old
+one and hides it by default. Nothing anywhere replaces a document's `file_id` in
+place, and `updateDocumentSchema` is strict so that adding such a path would be a
+deliberate act. `GET /v1/documents/:id/versions` returns the whole chain from any
+version in it.
+
+Documents with an `expiresOn` are scanned by the same `work` pass, which walks a
+90/60/30/14/7/0-day ladder in the **project owner's** own time zone and raises a
+durable task for the owning company and, where the document is filed against a
+subcontractor, for that subcontractor too. Each rung fires once; re-issuing the
+document closes the task the old version raised.
+
 ## Useful commands
 
 | Command | What it does |

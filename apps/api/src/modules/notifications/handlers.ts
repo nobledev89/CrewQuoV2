@@ -1,3 +1,4 @@
+import { describeExpiry, describeSupersession, type DocumentCategory } from '@crewquo/shared';
 import { PermanentDeliveryError } from '../delivery/model';
 import type { DeliveryHandler } from '../delivery/worker';
 import type { OutboxEvent } from '../delivery/repo';
@@ -606,6 +607,117 @@ async function onFileScanFailed(event: OutboxEvent): Promise<void> {
 }
 
 /**
+ * A document was re-issued (§24, packet §6).
+ *
+ * The body is composed from the **category and the version**, never from the
+ * title or the reference. §11 names both in its exclusion list, and they are the
+ * two fields anybody would reach for first: a title is customer prose, and a
+ * reference is a waste transfer note number — a fact about a real disposal at a
+ * real site. `describeSupersession` produces "RAMS v3 replaced v2", which is §6's
+ * own wording and needs neither.
+ */
+async function onDocumentSuperseded(event: OutboxEvent): Promise<void> {
+  const ownerCompanyId = required(event.payload, 'ownerCompanyId');
+  const projectId = required(event.payload, 'projectId');
+  const documentId = required(event.payload, 'documentId');
+  const actorUserId = optional(event.payload, 'actorUserId');
+  const category = required(event.payload, 'category') as DocumentCategory;
+  const version = Number(event.payload.version ?? 0);
+
+  await dispatchNotification({
+    kind: 'document.superseded',
+    companyId: ownerCompanyId,
+    recipientUserIds: without(await managerRecipients(ownerCompanyId), actorUserId),
+    title: describeSupersession({ category, version }),
+    body: 'A newer version of this document is now the current one. The previous version is kept in its history.',
+    subjectType: 'PROJECT_DOCUMENT',
+    subjectId: documentId,
+    actionUrl: `/projects/${projectId}`,
+    topic: event.topic,
+    aggregateId: event.aggregateId,
+  });
+
+  /*
+   * Re-issuing closes the expiry task the old version raised. Without this, the
+   * Action Centre keeps asking for a RAMS that has already been renewed — and an
+   * inbox full of already-handled items is one people stop reading, which is the
+   * rule `onWorkDecided` was written for and the same call it makes.
+   */
+  const supersededId = optional(event.payload, 'supersededId');
+  if (supersededId) {
+    await resolveActionsForSubject({ subjectType: 'PROJECT_DOCUMENT', subjectId: supersededId });
+  }
+}
+
+/**
+ * A document is approaching, or past, its expiry date (§24, packet §5).
+ *
+ * **The one kind in this phase that `requiresAction`**, because unlike a
+ * photograph arriving there is something the recipient must actually do: re-issue
+ * it. The task closes itself when a newer version supersedes this one, above.
+ *
+ * Phase 12 owns the escalation — who else is told at 14 days, and the portfolio
+ * compliance surface. What ships here is the durable item, because
+ * `notifications.md` allows no kind to exist only as an email, and a lapsing
+ * insurance certificate is the least acceptable thing to lose in a spam folder.
+ */
+async function onDocumentExpiring(event: OutboxEvent): Promise<void> {
+  const ownerCompanyId = required(event.payload, 'ownerCompanyId');
+  const projectId = required(event.payload, 'projectId');
+  const documentId = required(event.payload, 'documentId');
+  const category = required(event.payload, 'category') as DocumentCategory;
+  const daysRemaining = Number(event.payload.daysRemaining);
+  if (!Number.isFinite(daysRemaining)) {
+    throw new PermanentDeliveryError('daysRemaining missing from payload — nothing to describe');
+  }
+
+  /*
+   * Both companies are told when the document belongs to a subcontractor, and
+   * neither alone is enough. The provider is who has to renew its own insurance;
+   * the hiring company is who is exposed if it does not, and who finds out
+   * otherwise from an auditor. `dispatchNotification` is called twice rather than
+   * with a merged recipient list because the two notifications hang off different
+   * companies — an item filed under the wrong tenant is one nobody can act on.
+   */
+  const providerCompanyId = optional(event.payload, 'providerCompanyId');
+  const title = describeExpiry({ category, daysRemaining });
+  const body =
+    daysRemaining <= 0
+      ? 'This document has lapsed. Upload a new version to replace it.'
+      : 'Upload a new version before it lapses. The current one stays in its history.';
+
+  await dispatchNotification({
+    kind: 'document.expiring',
+    companyId: ownerCompanyId,
+    recipientUserIds: await managerRecipients(ownerCompanyId),
+    title,
+    body,
+    subjectType: 'PROJECT_DOCUMENT',
+    subjectId: documentId,
+    actionUrl: `/projects/${projectId}`,
+    topic: event.topic,
+    aggregateId: event.aggregateId,
+  });
+
+  if (providerCompanyId && providerCompanyId !== ownerCompanyId) {
+    await dispatchNotification({
+      kind: 'document.expiring',
+      companyId: providerCompanyId,
+      recipientUserIds: await managerRecipients(providerCompanyId),
+      title,
+      body,
+      subjectType: 'PROJECT_DOCUMENT',
+      subjectId: documentId,
+      topic: event.topic,
+      // A distinct aggregate suffix, or the dedupe key would make the second
+      // company's copy look like a redelivery of the first company's and silently
+      // drop it — the same shape the closure notices already use.
+      aggregateId: `${event.aggregateId}:provider`,
+    });
+  }
+}
+
+/**
  * The registered consumers. A topic with no handler here is simply not claimed by
  * this worker — `claimOutboxEvents` filters on the registered topic list, so an
  * unconsumed event waits rather than being marked delivered by a worker that did
@@ -628,6 +740,8 @@ export const NOTIFICATION_HANDLERS: ReadonlyMap<string, DeliveryHandler> = new M
   ['evidence.batch_uploaded', onEvidenceBatchUploaded],
   ['evidence.published', onEvidencePublished],
   ['file.scan_failed', onFileScanFailed],
+  ['document.superseded', onDocumentSuperseded],
+  ['document.expiring', onDocumentExpiring],
   ['auth.token_reuse', onAuthSecurityEvent],
   ['auth.session_revoked', onAuthSecurityEvent],
   ['auth.mfa_enrolled', onAuthSecurityEvent],

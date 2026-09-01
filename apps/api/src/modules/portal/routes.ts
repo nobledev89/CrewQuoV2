@@ -12,7 +12,8 @@ import { findEngagementByPair } from '../engagements/repo';
 import { hasFeature } from '../entitlements/guards';
 import { getAuditSettings } from '../audit/repo';
 import { countEvidenceByCategory, listEvidence, toEvidenceView } from '../evidence/repo';
-import { evidenceFilterSchema, refuseFilter } from '@crewquo/shared';
+import { listDocuments, toDocumentView } from '../documents/repo';
+import { documentFilterSchema, evidenceFilterSchema, refuseFilter } from '@crewquo/shared';
 import { getPortalLineItems, getPortalProject, listPortalProjects } from './repo';
 
 /**
@@ -181,5 +182,85 @@ portalRouter.get(
       return visible;
     });
     res.json({ evidence, categoryCounts });
+  })
+);
+
+/**
+ * GET /v1/portal/projects/:id/documents — what was deliberately shared (§24).
+ *
+ * The same boundary the evidence list draws, and the same reason it is drawn in
+ * the `where` clause: nothing the client may not see is ever serialised.
+ *
+ * **Superseded versions are absent for the client, and it is not merely a default
+ * here.** Internally the chain is the point — the history is why the current
+ * version exists. To a client, a superseded RAMS is a document that is no longer
+ * true, and showing it beside the current one invites somebody to read, print or
+ * act on the wrong copy. They see what is current, and nothing else.
+ */
+portalRouter.get(
+  '/projects/:id/documents',
+  asyncHandler(async (req, res) => {
+    const ctx = getCompanyCtx(req);
+    const found = await getPortalProject(ctx.companyId, param(req, 'id'));
+    if (!found) throw new AppError('NOT_FOUND', 'Project not found');
+
+    const allowed = canReadPortal({
+      companyId: ctx.companyId,
+      edge: { clientCompanyId: ctx.companyId, providerCompanyId: found.ownerCompanyId },
+      providerHasClientPortal: await hasFeature(found.ownerCompanyId, 'client_portal'),
+    });
+    if (!allowed) throw new AppError('NOT_FOUND', 'Project not found');
+    if (!(await hasFeature(found.ownerCompanyId, 'project_documents'))) {
+      // An empty section, not a refusal: the client has done nothing wrong and
+      // cannot fix the owner's plan.
+      res.json({ documents: [] });
+      return;
+    }
+
+    const raw = req.query as Record<string, unknown>;
+    const filter = documentFilterSchema.parse({
+      category:
+        raw.category === undefined
+          ? undefined
+          : Array.isArray(raw.category)
+            ? raw.category
+            : [raw.category],
+      locationId: raw.locationId,
+      limit: raw.limit === undefined ? undefined : Number(raw.limit),
+      offset: raw.offset === undefined ? undefined : Number(raw.offset),
+    });
+
+    const rows = await listDocuments(found.id, { kind: 'CLIENT' }, filter);
+
+    /*
+     * `companyId`, `providerCompanyId` and `uploadedByUserId` are stripped — the
+     * same destructure the project detail draws. The client was shown a document,
+     * not the supply chain that produced it, and which subcontractor filed a
+     * method statement is the hiring company's commercial business.
+     */
+    const documents = rows.map((row) => {
+      /*
+       * The chain ids go too, and that is not tidiness. `supersedesId` points at a
+       * version the client has no route to read and must never be shown — it is a
+       * dangling reference at best, and at worst an invitation to ask for a copy of
+       * a document that is no longer true. The client is shown what is current;
+       * the history is the owner's record of why it is current.
+       */
+      const {
+        companyId,
+        providerCompanyId,
+        uploadedByUserId,
+        supersedesId,
+        supersededById,
+        ...visible
+      } = toDocumentView(row);
+      void companyId;
+      void providerCompanyId;
+      void uploadedByUserId;
+      void supersedesId;
+      void supersededById;
+      return visible;
+    });
+    res.json({ documents });
   })
 );
