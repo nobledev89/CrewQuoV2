@@ -178,6 +178,8 @@ const view = (n: LocationLike, extra: Partial<LocationView> = {}): LocationView 
   sortOrder: n.sortOrder,
   active: true,
   depth: 1,
+  revision: 1,
+  deletedAt: null,
   createdAt: '2026-09-01T00:00:00.000Z',
   updatedAt: '2026-09-01T00:00:00.000Z',
   ...extra,

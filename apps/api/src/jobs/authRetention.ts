@@ -1,4 +1,5 @@
 import { pruneAuthAttempts } from '../modules/auth/rateLimit';
+import { pruneMutationReceipts } from '../http/idempotency';
 import { pruneAuthSessions } from '../modules/auth/sessions.repo';
 
 /**
@@ -23,11 +24,26 @@ import { pruneAuthSessions } from '../modules/auth/sessions.repo';
  * purge — including the tenant-configurable audit retention, so the cheapest way
  * to erase a compromise is *not* to downgrade the plan.
  */
-export async function pruneAuthState(): Promise<{ attempts: number; sessions: number }> {
+export async function pruneAuthState(): Promise<{
+  attempts: number;
+  sessions: number;
+  receipts: number;
+}> {
   const attempts = await pruneAuthAttempts();
   const sessions = await pruneAuthSessions();
-  if (attempts > 0 || sessions > 0) {
-    console.log(`[auth-retention] pruned ${attempts} attempt row(s), ${sessions} session(s)`);
+  /*
+   * The sync contract's idempotency ledger (0029) joins here for exactly the
+   * reason the session pruner did: a third one-shot job is a third thing that can
+   * stop quietly. It also holds response *bodies* rather than counters, which
+   * makes it the one table in this pass where leaving rows around is a data
+   * question and not only a housekeeping one.
+   */
+  const receipts = await pruneMutationReceipts();
+  if (attempts > 0 || sessions > 0 || receipts > 0) {
+    console.log(
+      `[auth-retention] pruned ${attempts} attempt row(s), ${sessions} session(s), ` +
+        `${receipts} mutation receipt(s)`
+    );
   }
-  return { attempts, sessions };
+  return { attempts, sessions, receipts };
 }

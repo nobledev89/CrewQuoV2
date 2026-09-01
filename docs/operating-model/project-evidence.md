@@ -6,9 +6,9 @@ every one of them sits on: the §37 capability model, and the offline/sync
 contract decision #22 requires settled *before* these APIs harden.
 **Phase:** 7 · **Status:** **adopted** — §13's four load-bearing questions were
 answered by the owner on 2026-09-01, every one as recommended; three remain open
-and none of them blocks the build. Steps 0, 1 and 3 of §14 — the capability
-layer, project locations and the storage service — are shipped, leaving step 2
-(the offline contract) before the records themselves
+and none of them blocks the build. Steps 0 to 3 of §14 — the capability layer,
+project locations, the offline contract and the storage service — are all
+shipped, leaving the records themselves: evidence, documents and the diary
 · **Last updated:** 2026-09-01
 **Plan refs:** §21 (locations), §22 (evidence + the storage layer), §23 (site
 diary), §24 (documents), §37 (capabilities), §39 (`capture_gps_on_evidence`),
@@ -763,7 +763,7 @@ a queue.**
 |---|---|---|
 | **0** ✅ | **Capability layer (§37, item 7.1) — shipped 2026-09-01.** `capabilities`, bundles, items, `memberships.bundle_key`, overrides, `resolveCapabilities`, `hasCapability` in `policies.ts`. Null bundle derives from role, so no existing membership changes behaviour. Every later route in this phase needs it, and retrofitting authorization is the expensive kind. | **nothing** |
 | **1** ✅ | **Project locations (§21, item 7.2) — shipped 2026-09-01.** Tree, depth cap 4, cycle rejection, retire-not-delete, and the reference check written as one function later phases extend rather than a hand-written list per phase — assets (Phase 8) and schedule assignments (Phase 11) both point here. | **shipped** |
-| **2** | **The offline/sync contract (7.7).** Client ids, idempotency, expected versions, per-field diary merge, tombstones, the three timestamps. Settled before the evidence APIs harden, which is decision #22's whole reason for putting it in this phase. Exercised from the browser. | **nothing** |
+| **2** ✅ | **The offline/sync contract (7.7) — shipped 2026-09-01.** Client ids, idempotency, expected versions, per-field diary merge, tombstones, the three timestamps. Settled before the evidence APIs harden, which is decision #22's whole reason for putting it in this phase. The browser half waits on 7.6's screens; the races are proved with concurrent HTTP instead. | **shipped** |
 | **3** ✅ | **Storage service (§22.1, item 7.0) — shipped 2026-09-01.** `stored_files`, presign → PUT → complete → scan → READY, `sharp` derivatives, authorized presigned downloads, the byte meter. | **shipped 2026-09-01** |
 | **4** | **Evidence (§22).** Records, batch upload and batch metadata, gallery / timeline / table, filters, sticky selection. | step 3 |
 | **5** | **Documents (§24).** Categories, `supersedes_id` versioning, expiry dates, and `document.expiring` emitted for Phase 12's ladder. | step 3 |

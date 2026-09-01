@@ -7271,6 +7271,252 @@ async function main(): Promise<void> {
   check('...and retiring reads as retiring rather than as an edit', Boolean(locRetireRow),
     locRetireRow?.description);
 
+  // ── The offline/sync contract (7.7) — Phase 7 build order step 2 ──────────
+  section('Sync contract — idempotency, expected versions and tombstones');
+
+  const syncOwner = await register('syncowner', `SyncCo ${RUN}`);
+  const syncCompany = syncOwner.companyId!;
+  await subscribe(syncCompany, 'pro');
+  const syncProject = await call('POST', '/v1/projects', {
+    token: syncOwner.token,
+    companyId: syncCompany,
+    body: { name: `Sync site ${RUN}` },
+  });
+  const syncProjectId = syncProject.json.project.id as string;
+
+  const syncCreate = (body: Record<string, unknown>) =>
+    call('POST', `/v1/projects/${syncProjectId}/locations`, {
+      token: syncOwner.token,
+      companyId: syncCompany,
+      body,
+    });
+
+  // ── 1. Idempotency: "have I already done this?" ───────────────────────────
+  const syncClientId = randomUUID();
+  const syncBody = { kind: 'FLOOR', name: 'Floor 7', clientId: syncClientId };
+  const syncFirst = await syncCreate(syncBody);
+  eq('a create with a client id succeeds', syncFirst.status, 201);
+  eq('...at revision 1', syncFirst.json.location.revision, 1);
+
+  const syncReplay = await syncCreate(syncBody);
+  eq('a replayed create returns the answer it missed rather than a refusal', syncReplay.status, 201);
+  eq('...byte for byte the same, so the client cannot tell which attempt it was',
+    syncReplay.json, syncFirst.json);
+  const { rows: syncOnce } = await db.query<{ n: string }>(
+    `select count(*)::int as n from project_locations where project_id = $1 and name = 'Floor 7'`,
+    [syncProjectId]
+  );
+  eq('...and exactly one Floor 7 exists', Number(syncOnce[0]?.n), 1);
+
+  const syncReused = await syncCreate({ kind: 'ROOM', name: 'Something else', clientId: syncClientId });
+  eq('the same client id for a different change is refused, not answered', syncReused.status, 409);
+  check('...because handing back the first answer would silently discard the second',
+    syncReused.json?.error?.details?.reason === 'CLIENT_ID_REUSED',
+    syncReused.json?.error?.details);
+
+  /*
+   * Two genuinely concurrent retries of one request. The primary key on
+   * `mutation_receipts` is the arbiter; whichever lands first is the answer both
+   * receive, which is correct — they asked for the same thing.
+   */
+  const syncRaceId = randomUUID();
+  const syncRaceBody = { kind: 'ROOM', name: 'Raced room', clientId: syncRaceId };
+  const [syncRaceA, syncRaceB] = await Promise.all([syncCreate(syncRaceBody), syncCreate(syncRaceBody)]);
+  check('two simultaneous retries both succeed',
+    syncRaceA.status === 201 && syncRaceB.status === 201,
+    { a: syncRaceA.status, b: syncRaceB.status });
+  const { rows: syncRacedRows } = await db.query<{ n: string }>(
+    `select count(*)::int as n from project_locations where project_id = $1 and name = 'Raced room'`,
+    [syncProjectId]
+  );
+  eq('...and create exactly one room between them', Number(syncRacedRows[0]?.n), 1);
+
+  // A create without a client id is not idempotent, and that is the honest
+  // default rather than a hole: two deliberate creates of "Floor 8" are two floors.
+  await syncCreate({ kind: 'FLOOR', name: 'Floor 8' });
+  await syncCreate({ kind: 'FLOOR', name: 'Floor 8' });
+  const { rows: syncTwice } = await db.query<{ n: string }>(
+    `select count(*)::int as n from project_locations where project_id = $1 and name = 'Floor 8'`,
+    [syncProjectId]
+  );
+  eq('without a client id nothing is deduplicated, which is the honest default',
+    Number(syncTwice[0]?.n), 2);
+
+  // ── 2. Expected revisions: "is this still what I read?" ───────────────────
+  const syncTarget = syncFirst.json.location.id as string;
+  const syncRename = await call('PATCH', `/v1/locations/${syncTarget}`, {
+    token: syncOwner.token,
+    companyId: syncCompany,
+    body: { name: 'Floor 7 (north)', expectedRevision: 1 },
+  });
+  eq('an edit matching what the caller read is applied', syncRename.status, 200);
+  eq('...and the revision moves', syncRename.json.location.revision, 2);
+
+  const syncStale = await call('PATCH', `/v1/locations/${syncTarget}`, {
+    token: syncOwner.token,
+    companyId: syncCompany,
+    body: { name: 'Floor 7 (south)', expectedRevision: 1 },
+  });
+  eq('a second edit against the old revision is refused', syncStale.status, 409);
+  check('...naming it as a stale version rather than as a generic conflict',
+    syncStale.json?.error?.details?.reason === 'STALE_REVISION',
+    syncStale.json?.error?.details?.reason);
+  check('...and carrying the current record, so the client can show a real difference',
+    syncStale.json?.error?.details?.current?.name === 'Floor 7 (north)' &&
+      syncStale.json?.error?.details?.currentRevision === 2,
+    { name: syncStale.json?.error?.details?.current?.name });
+
+  const syncBlind = await call('PATCH', `/v1/locations/${syncTarget}`, {
+    token: syncOwner.token,
+    companyId: syncCompany,
+    body: { name: 'Floor 7 (east)' },
+  });
+  eq('an edit that makes no claim still applies, which is the browser-form case',
+    syncBlind.status, 200);
+
+  // A no-op write must not move the revision: bumping it would invalidate every
+  // client's expected version over a change nobody made.
+  const syncNoop = await call('PATCH', `/v1/locations/${syncTarget}`, {
+    token: syncOwner.token,
+    companyId: syncCompany,
+    body: { name: 'Floor 7 (east)' },
+  });
+  eq('a write that changes nothing does not move the revision',
+    syncNoop.json.location.revision, syncBlind.json.location.revision);
+
+  /*
+   * Two tabs racing one record, which is what the browser case would exercise if
+   * there were a locations screen yet. Both compose against revision N; exactly
+   * one may win, and the loser must be told rather than silently overwritten.
+   */
+  const syncBefore = await call('GET', `/v1/locations/${syncTarget}`, {
+    token: syncOwner.token,
+    companyId: syncCompany,
+  });
+  const syncRev = syncBefore.json.location.revision as number;
+  const [syncTabA, syncTabB] = await Promise.all([
+    call('PATCH', `/v1/locations/${syncTarget}`, {
+      token: syncOwner.token,
+      companyId: syncCompany,
+      body: { reference: 'TAB-A', expectedRevision: syncRev },
+    }),
+    call('PATCH', `/v1/locations/${syncTarget}`, {
+      token: syncOwner.token,
+      companyId: syncCompany,
+      body: { reference: 'TAB-B', expectedRevision: syncRev },
+    }),
+  ]);
+  const syncWinners = [syncTabA, syncTabB].filter((r) => r.status === 200);
+  const syncLosers = [syncTabA, syncTabB].filter((r) => r.status === 409);
+  check('two tabs racing one record: exactly one wins',
+    syncWinners.length === 1 && syncLosers.length === 1,
+    { a: syncTabA.status, b: syncTabB.status });
+  check('...and the loser is told, not silently overwritten',
+    syncLosers[0]?.json?.error?.details?.reason === 'STALE_REVISION');
+
+  // ── 3. Tombstones: "is it gone, or am I not allowed?" ─────────────────────
+  const syncDoomed = await syncCreate({ kind: 'ROOM', name: 'Doomed room' });
+  const syncDoomedId = syncDoomed.json.location.id as string;
+
+  const syncAlive = await call('GET', `/v1/locations/${syncDoomedId}`, {
+    token: syncOwner.token,
+    companyId: syncCompany,
+  });
+  eq('a live location reads normally', syncAlive.status, 200);
+
+  eq('deleting it succeeds',
+    (await call('DELETE', `/v1/locations/${syncDoomedId}`, {
+      token: syncOwner.token,
+      companyId: syncCompany,
+    })).status,
+    204);
+
+  const { rows: syncRowStays } = await db.query<{ deleted_at: Date | null }>(
+    `select deleted_at from project_locations where id = $1`,
+    [syncDoomedId]
+  );
+  check('...as a tombstone, so the row stays', syncRowStays[0]?.deleted_at !== null);
+
+  const syncGone = await call('GET', `/v1/locations/${syncDoomedId}`, {
+    token: syncOwner.token,
+    companyId: syncCompany,
+  });
+  eq('a client returning from offline is told it is gone, not that it never existed',
+    syncGone.status, 410);
+  check('...with the tombstone it needs to stop queueing edits',
+    typeof syncGone.json?.error?.details?.tombstone?.deletedAt === 'string',
+    syncGone.json?.error?.details);
+
+  const syncEditGone = await call('PATCH', `/v1/locations/${syncDoomedId}`, {
+    token: syncOwner.token,
+    companyId: syncCompany,
+    body: { name: 'Too late', expectedRevision: 1 },
+  });
+  eq('a queued edit for a deleted record is refused as gone', syncEditGone.status, 410);
+  check('...rather than as a stale version, because the client should abandon it',
+    syncEditGone.json?.error?.details?.reason === 'GONE');
+
+  const syncTree = await call('GET', `/v1/projects/${syncProjectId}/locations`, {
+    token: syncOwner.token,
+    companyId: syncCompany,
+  });
+  check('a tombstone is never part of the tree',
+    !(syncTree.json.locations as { id: string }[]).some((l) => l.id === syncDoomedId));
+
+  /*
+   * The rule that keeps a tombstone from being a disclosure: it is told only to
+   * somebody who could have read the live row. Everybody else still gets the 404
+   * they would have got before tombstones existed, so this is never an oracle for
+   * ids in another tenant.
+   */
+  const syncOutsider = await register('syncoutsider', `SyncOutsider ${RUN}`);
+  const syncOutsiderGone = await call('GET', `/v1/locations/${syncDoomedId}`, {
+    token: syncOutsider.token,
+    companyId: syncOutsider.companyId!,
+  });
+  eq('an outsider is not told a deleted record ever existed', syncOutsiderGone.status, 404);
+  const syncOutsiderMissing = await call('GET', `/v1/locations/${randomUUID()}`, {
+    token: syncOutsider.token,
+    companyId: syncOutsider.companyId!,
+  });
+  eq('...answering identically to an id that never existed', syncOutsiderMissing.status, 404);
+
+  // A tombstoned child must not lock its parent for ever.
+  const syncParent = await syncCreate({ kind: 'BUILDING', name: 'Block C' });
+  const syncChild = await syncCreate({
+    kind: 'FLOOR',
+    name: 'Block C Floor 1',
+    parentId: syncParent.json.location.id,
+  });
+  const syncBlocked = await call('DELETE', `/v1/locations/${syncParent.json.location.id}`, {
+    token: syncOwner.token,
+    companyId: syncCompany,
+  });
+  eq('a parent with a live child cannot be deleted', syncBlocked.status, 409);
+  await call('DELETE', `/v1/locations/${syncChild.json.location.id}`, {
+    token: syncOwner.token,
+    companyId: syncCompany,
+  });
+  const syncUnblocked = await call('DELETE', `/v1/locations/${syncParent.json.location.id}`, {
+    token: syncOwner.token,
+    companyId: syncCompany,
+  });
+  eq('...and a tombstoned child does not lock it for ever', syncUnblocked.status, 204);
+
+  // ── 4. The receipt ledger holds no customer prose ─────────────────────────
+  const { rows: syncReceipt } = await db.query<{ route: string; fingerprint: string; response: unknown }>(
+    `select route, request_fingerprint as fingerprint, response
+       from mutation_receipts where company_id = $1 and client_id = $2`,
+    [syncCompany, syncClientId]
+  );
+  eq('the ledger records the route template, never the populated path',
+    syncReceipt[0]?.route, 'POST /v1/projects/:projectId/locations');
+  check('...and hashes what was asked rather than storing it',
+    /^[a-f0-9]{64}$/.test(syncReceipt[0]?.fingerprint ?? ''),
+    syncReceipt[0]?.fingerprint);
+  check('...so the name typed by a customer is not in the ledger row',
+    !JSON.stringify({ route: syncReceipt[0]?.route, fp: syncReceipt[0]?.fingerprint }).includes('Floor 7'));
+
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);
   if (failures.length === 0) {

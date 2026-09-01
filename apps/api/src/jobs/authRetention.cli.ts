@@ -12,8 +12,11 @@ import { pruneJobRuns, recordJobRun } from './jobRuns';
  */
 try {
   await recordJobRun('auth-retention', async () => {
-    const { attempts, sessions } = await pruneAuthState();
-    console.log(`[auth-retention] done (${attempts} attempts, ${sessions} sessions)`);
+    const { attempts, sessions, receipts } = await pruneAuthState();
+    console.log(
+      `[auth-retention] done (${attempts} attempts, ${sessions} sessions, ` +
+        `${receipts} mutation receipts)`
+    );
     // Also prunes `job_runs` itself, on the same 30-day operational clock (§7).
     // Deliberately not its own job: a table that records whether jobs run,
     // pruned by a job that can stop, would be one more thing to notice had

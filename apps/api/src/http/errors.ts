@@ -6,6 +6,16 @@ export type ErrorCode =
   | 'VALIDATION'
   | 'LIMIT_EXCEEDED'
   | 'CONFLICT'
+  /**
+   * The record existed and is gone (item 7.7's tombstones).
+   *
+   * A separate code from NOT_FOUND because separating them is the entire point:
+   * a client returning from offline has to distinguish "stop queueing edits for
+   * this" from "you may not see this", and a 404 says both. It is disclosed only
+   * to a caller who could have read the live row, so it is never an oracle for
+   * ids in another tenant.
+   */
+  | 'GONE'
   | 'RATE_LIMITED'
   | 'INTERNAL';
 
@@ -16,6 +26,7 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
   VALIDATION: 422,
   LIMIT_EXCEEDED: 402,
   CONFLICT: 409,
+  GONE: 410,
   RATE_LIMITED: 429,
   INTERNAL: 500,
 };

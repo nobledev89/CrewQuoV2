@@ -28,3 +28,4 @@ export * from './billing';
 export * from './capabilities';
 export * from './storage';
 export * from './locations';
+export * from './sync';

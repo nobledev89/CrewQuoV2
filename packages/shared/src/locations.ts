@@ -51,6 +51,14 @@ export const locationViewSchema = z.object({
   active: z.boolean(),
   /** 1 for a top-level location. Derived, never stored — a stored depth drifts on every move. */
   depth: z.number().int(),
+  /**
+   * The sync contract's two columns (0029, item 7.7). `revision` is what an
+   * `expectedRevision` is compared against; `deletedAt` is set instead of
+   * removing the row, so a stale client can be told the record is gone rather
+   * than inferring it from a 404.
+   */
+  revision: z.number().int().min(1),
+  deletedAt: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -67,6 +75,8 @@ export const createLocationSchema = z.object({
   reference: z.string().trim().max(120).nullable().default(null),
   notes: z.string().trim().max(2000).nullable().default(null),
   sortOrder: z.number().int().min(0).max(100000).default(0),
+  /** Idempotency key for a retry that could not tell whether it landed (item 7.7). */
+  clientId: z.string().uuid().optional(),
 });
 export type CreateLocation = z.infer<typeof createLocationSchema>;
 
@@ -80,6 +90,8 @@ export const updateLocationSchema = z
     sortOrder: z.number().int().min(0).max(100000),
     /** `false` retires it (§21). The row and its history stay. */
     active: z.boolean(),
+    /** The revision this edit was composed against (item 7.7). Optional by design. */
+    expectedRevision: z.number().int().min(1),
   })
   .partial()
   .refine((v) => Object.keys(v).length > 0, { message: 'Nothing to update' });

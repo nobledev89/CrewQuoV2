@@ -19,12 +19,14 @@ interface LocationRow {
   notes: string | null;
   sort_order: number;
   active: boolean;
+  revision: number;
+  deleted_at: Date | null;
   created_at: Date;
   updated_at: Date;
 }
 
 const COLUMNS = `id, project_id, parent_id, kind, name, reference, notes,
-  sort_order, active, created_at, updated_at`;
+  sort_order, active, revision, deleted_at, created_at, updated_at`;
 
 /**
  * `depth` is computed here from the rows just loaded, never stored.
@@ -45,6 +47,8 @@ function toView(row: LocationRow, depth: number): LocationView {
     sortOrder: row.sort_order,
     active: row.active,
     depth,
+    revision: row.revision,
+    deletedAt: row.deleted_at ? row.deleted_at.toISOString() : null,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
@@ -58,9 +62,11 @@ function withDepths(rows: LocationRow[]): LocationView[] {
   return rows.map((r) => toView(r, depthOf(r.id, byId) ?? 1));
 }
 
+/** Live locations only. A tombstone is never part of the tree (0029). */
 export async function listLocations(projectId: string, runner?: Queryable): Promise<LocationView[]> {
   const rows = await query<LocationRow>(
-    `select ${COLUMNS} from project_locations where project_id = $1
+    `select ${COLUMNS} from project_locations
+      where project_id = $1 and deleted_at is null
       order by sort_order asc, name asc`,
     [projectId],
     runner
@@ -68,6 +74,15 @@ export async function listLocations(projectId: string, runner?: Queryable): Prom
   return withDepths(rows);
 }
 
+/**
+ * One location, **tombstone included**.
+ *
+ * The caller decides what to do with a tombstoned row, because that decision is
+ * about who is asking: a caller inside the boundary is told it is gone, and
+ * everybody else still gets the 404 they would have got before tombstones
+ * existed. Filtering here would take that choice away and make the contract's
+ * whole point unreachable.
+ */
 export async function findLocation(id: string, runner?: Queryable): Promise<LocationView | null> {
   const row = await queryOne<LocationRow>(
     `select ${COLUMNS} from project_locations where id = $1`,
@@ -75,6 +90,7 @@ export async function findLocation(id: string, runner?: Queryable): Promise<Loca
     runner
   );
   if (!row) return null;
+  if (row.deleted_at) return toView(row, 1);
   // Its depth needs the rest of its project, which is one more query and the only
   // honest way to answer: depth is a property of a path, not of a row.
   const siblings = await listLocations(row.project_id, runner);
@@ -96,6 +112,22 @@ export async function insertLocation(
   return all.find((l) => l.id === row?.id) ?? toView(row as LocationRow, 1);
 }
 
+/**
+ * Update, with the revision check **inside the statement**.
+ *
+ * Reading the revision and then writing is check-then-act, and the live suite
+ * caught it doing exactly what check-then-act does: two tabs composing against
+ * revision 4 both passed the check and both wrote, so the second silently
+ * overwrote the first and nobody was told. The comparison has to be part of the
+ * `where` clause, where the row lock makes it atomic — the same shape the
+ * company-creation ledger uses for its allowance and the outbox uses for its
+ * lease.
+ *
+ * Returns null when nothing matched, which the caller resolves into a conflict, a
+ * tombstone or a genuine 404 by re-reading. Null is deliberately not
+ * self-describing: only one of those three answers is the truth, and the row is
+ * the only thing that knows which.
+ */
 export async function updateLocation(
   id: string,
   patch: UpdateLocation,
@@ -112,9 +144,9 @@ export async function updateLocation(
        reference  = case when $8::boolean then $9::text else reference end,
        notes      = case when $10::boolean then $11::text else notes end,
        sort_order = case when $12::boolean then $13::int else sort_order end,
-       active     = case when $14::boolean then $15::boolean else active end,
-       updated_at = now()
-     where id = $1
+       active     = case when $14::boolean then $15::boolean else active end
+     where id = $1 and deleted_at is null
+       and ($16::int is null or revision = $16::int)
      returning ${COLUMNS}`,
     [
       id,
@@ -125,6 +157,7 @@ export async function updateLocation(
       'notes' in patch, patch.notes ?? null,
       'sortOrder' in patch, patch.sortOrder ?? null,
       'active' in patch, patch.active ?? null,
+      patch.expectedRevision ?? null,
     ],
     runner
   );
@@ -133,8 +166,23 @@ export async function updateLocation(
   return all.find((l) => l.id === row.id) ?? toView(row, 1);
 }
 
-export async function deleteLocation(id: string, runner?: Queryable): Promise<void> {
-  await query(`delete from project_locations where id = $1`, [id], runner);
+/**
+ * Delete as a tombstone (0029), not as a `delete`.
+ *
+ * The row stays so a client holding a stale copy can be told the record is gone,
+ * rather than inferring it from a 404 — which is indistinguishable from a
+ * permission failure, and on an intermittent connection from a timeout as well.
+ *
+ * The revision bumps with it, through the trigger, so a queued edit composed
+ * against the live version is refused with `GONE` rather than silently applied to
+ * something nobody can see.
+ */
+export async function tombstoneLocation(id: string, runner?: Queryable): Promise<void> {
+  await query(
+    `update project_locations set deleted_at = now() where id = $1 and deleted_at is null`,
+    [id],
+    runner
+  );
 }
 
 /**
@@ -167,8 +215,18 @@ export async function countLocationReferences(
     // constant in `@crewquo/shared` rather than from any request — but they are
     // still interpolated into SQL, so the existence check above doubles as the
     // guard: a name that is not a real column never reaches the query.
+    // A tombstoned referrer does not count. Refusing to delete a location
+    // because a *deleted* sub-location still points at it would make the
+    // tombstone a permanent lock on its parent.
+    const tombstoned = await queryOne<{ ok: boolean }>(
+      `select true as ok from information_schema.columns
+        where table_schema = 'public' and table_name = $1 and column_name = 'deleted_at'`,
+      [ref.table],
+      runner
+    );
+    const liveOnly = tombstoned ? ' and "deleted_at" is null' : '';
     const row = await queryOne<{ n: string }>(
-      `select count(*)::int as n from "${ref.table}" where "${ref.column}" = $1`,
+      `select count(*)::int as n from "${ref.table}" where "${ref.column}" = $1${liveOnly}`,
       [id],
       runner
     );

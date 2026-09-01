@@ -3,6 +3,7 @@ import {
   buildLocationTree,
   createLocationSchema,
   describeReferences,
+  detectConflict,
   updateLocationSchema,
   validateParent,
   type LocationLike,
@@ -11,15 +12,16 @@ import { asyncHandler } from '../../http/asyncHandler';
 import { getCompanyCtx } from '../../http/context';
 import { AppError } from '../../http/errors';
 import { uuidParam } from '../../http/params';
+import { withIdempotency } from '../../http/idempotency';
 import { queryOne } from '../../db';
 import { assertCapability } from '../capabilities/guards';
 import { recordAudit } from '../audit/record';
 import {
   countLocationReferences,
-  deleteLocation,
   findLocation,
   insertLocation,
   listLocations,
+  tombstoneLocation,
   updateLocation,
 } from './repo';
 
@@ -100,21 +102,44 @@ projectLocationsRouter.post(
     await assertCapability(ctx, 'project.manage');
 
     const input = createLocationSchema.parse(req.body);
-    const all = await listLocations(projectId);
-    const refusal = validateParent({ all: all as LocationLike[], id: null, parentId: input.parentId });
-    if (refusal) throw new AppError('VALIDATION', refusal.message, { reason: refusal.code });
 
-    const created = await insertLocation(projectId, input);
-    await recordAudit({
-      companyId: ctx.companyId,
-      actorUserId: ctx.userId,
-      action: 'location.created',
-      entityType: 'LOCATION',
-      entityId: created.id,
-      changes: { name: created.name, kind: created.kind, parentId: created.parentId },
-      description: `Location added: ${created.name}`,
-    });
-    res.status(201).json({ location: created });
+    /*
+     * The idempotency wrapper (item 7.7). A tablet that lost signal mid-request
+     * and retried must not create a second Floor 3 — and, more importantly, must
+     * be handed the answer it missed rather than a refusal, or it has no way to
+     * learn the id of the thing it just made.
+     */
+    await withIdempotency(
+      {
+        res,
+        companyId: ctx.companyId,
+        clientId: input.clientId,
+        route: 'POST /v1/projects/:projectId/locations',
+        body: req.body,
+        successStatus: 201,
+      },
+      async () => {
+        const all = await listLocations(projectId);
+        const refusal = validateParent({
+          all: all as LocationLike[],
+          id: null,
+          parentId: input.parentId,
+        });
+        if (refusal) throw new AppError('VALIDATION', refusal.message, { reason: refusal.code });
+
+        const created = await insertLocation(projectId, input);
+        await recordAudit({
+          companyId: ctx.companyId,
+          actorUserId: ctx.userId,
+          action: 'location.created',
+          entityType: 'LOCATION',
+          entityId: created.id,
+          changes: { name: created.name, kind: created.kind, parentId: created.parentId },
+          description: `Location added: ${created.name}`,
+        });
+        return { location: created };
+      }
+    );
   })
 );
 
@@ -134,6 +159,38 @@ locationsRouter.patch(
 
     const patch = updateLocationSchema.parse(req.body);
 
+    /*
+     * The optimistic-concurrency check (item 7.7). It runs *after* authorization
+     * and before anything else, so a conflict is only ever reported to somebody
+     * who was entitled to see the record — and the 409 carries the current
+     * version, so the client can show a real difference instead of "try again".
+     *
+     * A caller that sends no `expectedRevision` is not making a claim about what
+     * it read, and last-write-wins applies. That is the browser-form case, where
+     * the person is looking at the thing they are changing.
+     */
+    const conflict = detectConflict({
+      expected: patch.expectedRevision,
+      actual: existing.revision,
+      deletedAt: existing.deletedAt,
+    });
+    if (conflict) {
+      // 410 for a write against a tombstone and 409 for a stale one, because the
+      // client's next move differs: a queued edit for a deleted record should be
+      // abandoned, while a stale one should be re-composed against what came back.
+      if (conflict.code === 'GONE') {
+        throw new AppError('GONE', conflict.message, {
+          reason: conflict.code,
+          tombstone: { id: existing.id, deletedAt: existing.deletedAt, revision: existing.revision },
+        });
+      }
+      throw new AppError('CONFLICT', conflict.message, {
+        reason: conflict.code,
+        currentRevision: existing.revision,
+        current: existing,
+      });
+    }
+
     if ('parentId' in patch) {
       const all = await listLocations(existing.projectId);
       /*
@@ -152,7 +209,29 @@ locationsRouter.patch(
     }
 
     const updated = await updateLocation(id, patch);
-    if (!updated) throw new AppError('NOT_FOUND', 'Location not found');
+    if (!updated) {
+      /*
+       * The statement matched nothing, and only the row knows why. The check
+       * above passed against the version read a moment ago; between then and the
+       * write, somebody else's commit can land — which is precisely the race the
+       * live suite caught when the comparison lived only up there. Re-read and
+       * report the same three answers, so a loser is told rather than silently
+       * overwritten.
+       */
+      const now = await findLocation(id);
+      if (!now) throw new AppError('NOT_FOUND', 'Location not found');
+      if (now.deletedAt !== null) {
+        throw new AppError('GONE', 'This was deleted. Your change was not applied.', {
+          reason: 'GONE',
+          tombstone: { id: now.id, deletedAt: now.deletedAt, revision: now.revision },
+        });
+      }
+      throw new AppError('CONFLICT', 'Somebody else changed this while you were away.', {
+        reason: 'STALE_REVISION',
+        currentRevision: now.revision,
+        current: now,
+      });
+    }
 
     await recordAudit({
       companyId: ctx.companyId,
@@ -205,7 +284,7 @@ locationsRouter.delete(
       });
     }
 
-    await deleteLocation(id);
+    await tombstoneLocation(id);
     await recordAudit({
       companyId: ctx.companyId,
       actorUserId: ctx.userId,
@@ -216,5 +295,42 @@ locationsRouter.delete(
       description: `Location deleted: ${existing.name}`,
     });
     res.status(204).end();
+  })
+);
+
+/**
+ * GET one location, which is where a tombstone is actually useful.
+ *
+ * A client coming back from offline asks about the record it holds. Three
+ * answers, and the whole contract is that they are distinguishable:
+ *
+ *  - **200** — here it is, at this revision.
+ *  - **410** — it existed and is gone. Stop queueing edits for it.
+ *  - **404** — no such thing, *or* not yours. Deliberately still one answer,
+ *    because separating them would make this endpoint an oracle for ids in other
+ *    tenants. The tombstone is disclosed only to a caller who could have read the
+ *    live row, which is checked before it is mentioned.
+ */
+locationsRouter.get(
+  '/:id',
+  asyncHandler(async (req, res) => {
+    const ctx = getCompanyCtx(req);
+    const existing = await findLocation(uuidParam(req, 'id'));
+    if (!existing) throw new AppError('NOT_FOUND', 'Location not found');
+    // Authorization first, and unchanged. Only then does a tombstone exist to be
+    // told about.
+    await readableProject(existing.projectId, ctx.companyId);
+    await assertCapability(ctx, 'project.read');
+
+    if (existing.deletedAt !== null) {
+      throw new AppError('GONE', 'This location was deleted.', {
+        tombstone: {
+          id: existing.id,
+          deletedAt: existing.deletedAt,
+          revision: existing.revision,
+        },
+      });
+    }
+    res.json({ location: existing });
   })
 );
