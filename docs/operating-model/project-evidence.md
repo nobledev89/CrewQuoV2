@@ -4,8 +4,10 @@
 evidence, project documents and the site diary — together with the two layers
 every one of them sits on: the §37 capability model, and the offline/sync
 contract decision #22 requires settled *before* these APIs harden.
-**Phase:** 7 · **Status:** `draft` — §13 holds seven questions, four of which
-change what gets built rather than how · **Last updated:** 2026-09-01
+**Phase:** 7 · **Status:** **adopted** — §13's four load-bearing questions were
+answered by the owner on 2026-09-01, every one as recommended; three remain open
+and none of them blocks the build. Step 0 (the capability layer) is shipped
+· **Last updated:** 2026-09-01
 **Plan refs:** §21 (locations), §22 (evidence + the storage layer), §23 (site
 diary), §24 (documents), §37 (capabilities), §39 (`capture_gps_on_evidence`),
 §41.1 (no invented numbers), §43 (the new entitlement keys), §44 (the tests this
@@ -581,13 +583,16 @@ phase's `verify:e2e` and browser suites implement.
 
 ---
 
-## 13. Decisions required — open, put to the owner 2026-09-01
+## 13. Decisions — four answered 2026-09-01, three still open
 
-Seven. Four change what gets built. Each carries a recommendation and the
-alternatives that were rejected, so a decision taken quickly is still a decision
-taken knowingly.
+Seven were raised. **The four that decide what gets built were answered by the
+owner on 2026-09-01, every one as recommended.** Each still carries the
+alternatives that were rejected, because a decision whose options are lost reads
+a year later like something nobody considered. The three that remain are marked
+open below; none of them blocks step 3, and §14 says how each is being treated
+in the meantime.
 
-### 1. Where do evidence bytes live before production? → recommend **a local S3-compatible store, R2 unchanged as the production target**
+### 1. Where do evidence bytes live before production? → **ANSWERED (owner, 2026-09-01): a local S3-compatible store, R2 unchanged as the production target**
 
 The 2026-08-31 decision says all data is local until CrewQuo is production
 ready, and R2 is hosted. But R2 is already the decided store (§2) and nothing
@@ -611,7 +616,7 @@ strictly worse, because presigned upload and download *are* the design. A local
 driver that streams bytes through the API exercises none of the flow that ships,
 and the first real R2 request would be the first test of it.
 
-### 2. Feature packaging for the Phase 7 keys (§43) → recommend **capture is free, the record is the project owner's entitlement**
+### 2. Feature packaging for the Phase 7 keys (§43) → **ANSWERED (owner, 2026-09-01): capture is free, the record is the project owner's entitlement**
 
 The already-open owner decision, now with a concrete shape. §43 proposes "upload
 only" for Crew, which is nearly right without saying why.
@@ -638,7 +643,7 @@ The tier numbers themselves (`storage_gb` 1/25/200/1000/unlimited,
 replacing; they are the only part of this that is a pricing judgement rather
 than a product rule.
 
-### 3. Whose storage does an upload consume? → recommend **the project-owning company**
+### 3. Whose storage does an upload consume? → **ANSWERED (owner, 2026-09-01): the project-owning company**
 
 Follows directly from (2), and needs stating separately because it decides a
 column's meaning. §22.1 scopes `stored_files` by the uploader's active company.
@@ -654,7 +659,7 @@ recording and is no longer the billing key. Left as a distinct column rather
 than repurposed: two facts, two columns, and collapsing them is how the meter
 starts disagreeing with the audit trail.
 
-### 4. Does a data export include the files themselves? → recommend **manifest and authorized links, not bytes**
+### 4. Does a data export include the files themselves? → **ANSWERED (owner, 2026-09-01): manifest and authorized links, not bytes**
 
 The export built on 2026-08-21 generates per request with no stored bundle and
 no expiry clock, deliberately — so it stays protected by an authorization check
@@ -675,7 +680,7 @@ The manifest must say this in prose, the way it already explains withheld
 columns. An unexplained absence reads as a bug or as evasion, and *"where are my
 photos"* is the first question a careful reader will have.
 
-### 5. Is `READY` set by the request or by the worker? → recommend **the worker**
+### 5. Is `READY` set by the request or by the worker? → **OPEN — built as recommended: the worker**
 
 A departure from §22.1's canonical contract, raised rather than taken (§0 rule
 3). The reasoning is §3's: the API cannot sniff bytes it never receives, and the
@@ -691,7 +696,7 @@ sufficient for magic numbers and it splits validation across two places, one of
 which cannot do the scan. Two validators disagreeing about one file is worse
 than one validator running slightly later.
 
-### 6. A report snapshot versus an amended diary → recommend **the snapshot stands, and says it is stale**
+### 6. A report snapshot versus an amended diary → **OPEN — bites in Phase 10, not here**
 
 §29.4 (Phase 10) says a re-render reads the snapshot and never recalculates —
 so a client reopening a document a year later sees the numbers they were shown.
@@ -714,7 +719,7 @@ because what happened is sometimes recorded wrong.
 Flagged now rather than in Phase 10 because the column that makes it possible is
 `site_diary_entries`' revision, and it is free to include here.
 
-### 7. GPS in Phase 7, when its governing setting is a Phase 9 table → recommend **capture nothing**
+### 7. GPS in Phase 7, when its governing setting is a Phase 9 table → **OPEN — capturing nothing, which needs no decision to proceed**
 
 §22.2 gives evidence `gps_lat` / `gps_lng` / `gps_accuracy_m`. §39 governs
 capture with `capture_gps_on_evidence`, in `sustainability_settings` — a table
@@ -738,14 +743,17 @@ person who uploaded it should be able to find that out.
 ## 14. Build order
 
 §14's convention: the items needing **no** §13 answer go first, so the phase
-does not stall at step 1 waiting on the owner. Steps 0–2 are buildable today.
+does not stall at step 1 waiting on the owner. **Step 0 shipped on 2026-09-01
+doing exactly that, and the four answers landed the same day — so steps 1, 2 and
+3 are all buildable now and the ordering below is a dependency graph rather than
+a queue.**
 
 | Step | What | Blocked on |
 |---|---|---|
-| **0** | **Capability layer (§37, item 7.1).** `capabilities`, bundles, items, `memberships.bundle_key`, overrides, `resolveCapabilities`, `hasCapability` in `policies.ts`. Null bundle derives from role, so no existing membership changes behaviour. Every later route in this phase needs it, and retrofitting authorization is the expensive kind. | **nothing** |
+| **0** ✅ | **Capability layer (§37, item 7.1) — shipped 2026-09-01.** `capabilities`, bundles, items, `memberships.bundle_key`, overrides, `resolveCapabilities`, `hasCapability` in `policies.ts`. Null bundle derives from role, so no existing membership changes behaviour. Every later route in this phase needs it, and retrofitting authorization is the expensive kind. | **nothing** |
 | **1** | **Project locations (§21, item 7.2).** Tree, depth cap 4, cycle rejection, retire-not-delete, and the reference check written as one function later phases extend rather than a hand-written list per phase — assets (Phase 8) and schedule assignments (Phase 11) both point here. | **nothing** |
 | **2** | **The offline/sync contract (7.7).** Client ids, idempotency, expected versions, per-field diary merge, tombstones, the three timestamps. Settled before the evidence APIs harden, which is decision #22's whole reason for putting it in this phase. Exercised from the browser. | **nothing** |
-| **3** | **Storage service (§22.1, item 7.0).** `stored_files`, presign → PUT → complete → scan → READY, `sharp` derivatives, authorized presigned downloads, the byte meter. | §13.1, §13.2, §13.3, §13.5 |
+| **3** | **Storage service (§22.1, item 7.0).** `stored_files`, presign → PUT → complete → scan → READY, `sharp` derivatives, authorized presigned downloads, the byte meter. | **unblocked 2026-09-01** |
 | **4** | **Evidence (§22).** Records, batch upload and batch metadata, gallery / timeline / table, filters, sticky selection. | step 3 |
 | **5** | **Documents (§24).** Categories, `supersedes_id` versioning, expiry dates, and `document.expiring` emitted for Phase 12's ladder. | step 3 |
 | **6** | **Site diary (§23).** Entry, structured attendance, prefill from schedule and time logs, Close Day, post-close amendment with a required reason and the amendment count everywhere. | steps 0, 1, 2 |
