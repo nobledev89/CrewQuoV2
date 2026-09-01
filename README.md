@@ -136,9 +136,12 @@ development-comfort choice, not a data one.
 | `docker compose --env-file .env -f infra/docker-compose.yml up -d` | Start the local stack (Postgres + API) |
 | `docker compose --env-file .env -f infra/docker-compose.yml logs -f api` | Follow the API log |
 | `docker compose --env-file .env -f infra/docker-compose.yml down` | Stop the stack (the data volume survives) |
+| `pnpm --filter @crewquo/api build` | Compile the API server and production job entry points to `apps/api/dist` |
+| `pnpm --filter @crewquo/api rehearse-restore` | Restore the local Docker database into isolated scratch, verify it, and clean it up |
+| `pnpm --filter @crewquo/api launch-check` | Run the read-only production launch gate against the configured database |
 | `pnpm --filter @crewquo/api purge-audit` | Delete audit rows past their retention window |
 | `pnpm --filter @crewquo/api purge-auth` | Prune rate-limit counters and long-expired sessions |
-| `pnpm --filter @crewquo/api work` | Drain the outbox and the notification queue (`-- --loop` locally) |
+| `pnpm --filter @crewquo/api work` | Reconcile verified webhooks, drain the outbox and deliver notifications (`-- --loop` locally) |
 
 Run the two purges from an external daily scheduler
 (`pnpm --filter @crewquo/api purge-audit`, `pnpm --filter @crewquo/api purge-auth`);
@@ -186,7 +189,7 @@ monorepo root for the pnpm workspace to resolve.
 
 | Field | Value |
 | --- | --- |
-| Build Command | `corepack enable && pnpm install --frozen-lockfile --prod=false` |
+| Build Command | `corepack enable && pnpm install --frozen-lockfile && pnpm --filter @crewquo/api build` |
 | Start Command | `pnpm db:migrate && pnpm --filter @crewquo/api start` |
 | Health Check Path | `/healthz` |
 
@@ -202,9 +205,36 @@ Then add the environment variables the blueprint would have set:
 | `TRUST_PROXY_HOPS` | **`1` on Render.** Left at the default `0`, every request looks like it came from Render's proxy, so one source-keyed sign-in budget is shared by the entire internet and thirty failures from anywhere lock out every user |
 | `APP_BASE_URL` | the Vercel URL below |
 | `RESEND_API_KEY`, `NOTIFICATION_FROM_EMAIL` | without both, every email records as `SKIPPED` rather than sending |
+| `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET`, `PADDLE_ENVIRONMENT` | server-side Paddle transaction creation and signed webhook receipt; optional while checkout is disabled |
 
 Both secrets are mandatory in production: `apps/api/src/env.ts` only falls back to
 insecure defaults outside production, so the service refuses to boot without them.
+
+### Paddle billing (guarded until merchant acceptance)
+
+Checkout has two independent gates: valid Paddle configuration and the Platform
+Settings checkout switch. Leave the switch off while configuring sandbox. Add one
+active USD `pri_…` id per sellable plan/interval in Platform → Plans, set the Paddle
+default payment link to the web app's `/plan` page, and point a Paddle notification
+destination at `POST /v1/webhooks/paddle`. The web deployment also needs the public
+`NEXT_PUBLIC_PADDLE_CLIENT_TOKEN` and matching `NEXT_PUBLIC_PADDLE_ENVIRONMENT`.
+
+The `work` pass now reconciles the verified webhook inbox before delivering outbox
+events. A running API without that scheduled pass will acknowledge Paddle events but
+will not change subscriptions, which is why the checkout switch must stay off while
+the hosted schedule below is paused. Before enabling checkout, prove purchase,
+renewal, failed payment, cancellation, refund and replay in Paddle sandbox, then
+repeat the production smoke test after seller KYC and payout setup.
+
+Before public release, run the compiled launch gate with the deployment's real
+environment and database. Manual claims are supplied as a dated evidence file;
+the command exits non-zero for any automated blocker or missing attestation. See
+[`docs/operations/launch-readiness.md`](docs/operations/launch-readiness.md).
+
+```bash
+pnpm --filter @crewquo/api build
+pnpm --filter @crewquo/api launch-check -- --evidence /path/to/launch-evidence.json
+```
 
 ### The scheduler (required in production — currently PAUSED, and run by hand)
 
@@ -344,6 +374,14 @@ And in **Settings → Environment Variables**:
 | Variable | Value |
 | --- | --- |
 | `NEXT_PUBLIC_API_URL` | the Render API URL, e.g. `https://crewquo-api.onrender.com` |
+| `NEXT_PUBLIC_SENTRY_DSN` | optional browser DSN; without it web tracking is inert |
+| `NEXT_PUBLIC_SENTRY_RELEASE` | the same commit/tag used by the API release |
+| `NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE` | `0` by default; a fraction from 0 to 1 when tracing is deliberately enabled |
+
+For server-rendering errors, set `SENTRY_DSN`, `SENTRY_RELEASE` and
+`SENTRY_TRACES_SAMPLE_RATE` on Vercel as well. Source-map upload additionally
+requires `SENTRY_AUTH_TOKEN`, `SENTRY_ORG` and `SENTRY_PROJECT`; without the token
+the build disables uploading rather than making a failing network call.
 
 `NEXT_PUBLIC_*` is inlined at build time, not read at runtime — set it before you
 build, and redeploy after changing it, or the browser will keep calling
@@ -351,5 +389,5 @@ build, and redeploy after changing it, or the browser will keep calling
 
 ## Notes
 
-- The API runs via `tsx` in both dev and production for now; a bundled build step is added when needed. This is why the Render build installs with `--prod=false`: `tsx` is a devDependency, and `NODE_ENV=production` would otherwise make pnpm skip it.
+- Production runs the compiled files in `apps/api/dist`; `tsx` is confined to development and repository utilities. Render builds all HTTP and scheduled-job entry points before starting the service. The local Docker stack intentionally uses `start:source`, so a source edit still needs only `docker compose restart api` rather than an image rebuild.
 - CI runs focused type-aware ESLint, TypeScript and unit tests. API verification scripts are included in the API TypeScript project.
