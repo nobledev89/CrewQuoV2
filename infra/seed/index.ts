@@ -16,6 +16,7 @@ const FEATURES: Array<[key: string, name: string, category: string]> = [
   ['exports', 'Exports (PDF/XLSX)', 'reporting'],
   ['client_portal', 'Client portal', 'portal'],
   ['client_portal_notes', 'Client portal notes', 'portal'],
+  ['project_evidence', 'Photos & evidence', 'evidence'],
   ['invoicing', 'Invoicing', 'billing'],
   ['audit_visibility', 'Audit trail visibility', 'portal'],
   ['api_access', 'API access', 'platform'],
@@ -28,6 +29,16 @@ const LIMITS: Array<[key: string, name: string, unit: string]> = [
   ['internal_seats', 'Internal seats', 'count'],
   ['clients', 'Clients (real portal logins)', 'count'],
   ['audit_retention_days', 'Audit retention', 'days'],
+  /*
+   * Phase 7 (§43). The catalog rows land here; the per-plan VALUES deliberately do
+   * not — see the note on the plans below.
+   *
+   * These two must exist as rows regardless of whether any plan sets them, because
+   * `company_entitlement_overrides.limit_key` carries a foreign key to this table:
+   * without them an operator cannot grant one company a ceiling even by hand.
+   */
+  ['storage_gb', 'File storage', 'gigabytes'],
+  ['evidence_uploads_per_month', 'Evidence uploads per month', 'count/month'],
 ];
 
 type PlanSeed = {
@@ -43,6 +54,22 @@ type PlanSeed = {
 };
 
 const ALL_FEATURES = FEATURES.map(([key]) => key);
+
+/**
+ * **`storage_gb` and `evidence_uploads_per_month` are deliberately unset on every
+ * plan below, and that is a stated gap rather than an oversight.**
+ *
+ * The owner answered the packaging *rule* on 2026-09-01 — capture is free and the
+ * record is the project owner's entitlement — and explicitly reserved the tier
+ * *numbers* as a pricing judgement (§43 proposes 1/25/200/1000/unlimited). Seeding
+ * those figures here would be taking a decision that was kept.
+ *
+ * The consequence, said plainly because an unset limit is silently unlimited:
+ * until the owner sets them, storage is uncapped on every plan including the free
+ * one. The enforcement path is built and proved — `withinLimit` refuses at
+ * presign, in gigabytes, before a byte moves — and turning it on is one value per
+ * plan in this file, with no code change anywhere.
+ */
 
 const PLANS: PlanSeed[] = [
   {
@@ -63,7 +90,7 @@ const PLANS: PlanSeed[] = [
     operatesDownstream: true,
     sortOrder: 1,
     trialDays: 14,
-    features: ['rate_cards', 'holiday_rates', 'exports', 'client_portal'],
+    features: ['rate_cards', 'holiday_rates', 'exports', 'client_portal', 'project_evidence'],
     limits: { active_subcontractors: 5, internal_seats: 2, clients: null, audit_retention_days: 30 },
     prices: [
       { currency: 'USD', interval: 'MONTH', amountCents: 4700 },
@@ -85,6 +112,7 @@ const PLANS: PlanSeed[] = [
       'client_portal_notes',
       'invoicing',
       'audit_visibility',
+      'project_evidence',
     ],
     limits: { active_subcontractors: 30, internal_seats: 8, clients: null, audit_retention_days: 90 },
     prices: [
@@ -110,6 +138,7 @@ const PLANS: PlanSeed[] = [
       'api_access',
       'sso',
       'white_label',
+      'project_evidence',
     ],
     limits: {
       active_subcontractors: 150,

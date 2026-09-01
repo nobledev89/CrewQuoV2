@@ -7517,6 +7517,659 @@ async function main(): Promise<void> {
   check('...so the name typed by a customer is not in the ledger row',
     !JSON.stringify({ route: syncReceipt[0]?.route, fp: syncReceipt[0]?.fingerprint }).includes('Floor 7'));
 
+  // ── Project evidence (§22) — Phase 7 build order step 4 ───────────────────
+  section('Project evidence — the batch, the disclosure and the three timestamps');
+
+  const evOwner = await register('evowner', `EvidenceCo ${RUN}`);
+  const evCompany = evOwner.companyId!;
+  await subscribe(evCompany, 'pro');
+
+  const evClientRes = await call('POST', '/v1/clients', {
+    token: evOwner.token,
+    companyId: evCompany,
+    body: { name: `Tunde Estates ${RUN}`, email: `evclient+${RUN}@verify.crewquo.test` },
+  });
+  const evClientCompany = evClientRes.json.client.clientCompanyId as string;
+  const evProjectRes = await call('POST', '/v1/projects', {
+    token: evOwner.token,
+    companyId: evCompany,
+    body: {
+      name: `Riverside Fit-Out ${RUN}`,
+      clientCompanyId: evClientCompany,
+      engagementId: evClientRes.json.client.engagementId,
+      clientVisible: true,
+    },
+  });
+  const evProject = evProjectRes.json.project.id as string;
+
+  // Ade's company: a subcontractor on the free Crew plan, which is the whole
+  // point of the packaging decision below.
+  const evSubInvite = await call('POST', '/v1/providers', {
+    token: evOwner.token,
+    companyId: evCompany,
+    body: { name: `Ade Fitouts ${RUN}`, email: `evsub+${RUN}@verify.crewquo.test` },
+  });
+  const evSub = await register('evsub', undefined, `evsub+${RUN}@verify.crewquo.test`);
+  await call('POST', `/v1/invites/${evSubInvite.json.inviteToken}/accept`, { token: evSub.token });
+  const evSubMemberships = await call('GET', '/v1/me/memberships', { token: evSub.token });
+  const evSubCompany = ((evSubMemberships.json.memberships ?? []) as { companyId: string }[]).find(
+    (m) => m.companyId !== evSub.companyId
+  )?.companyId as string;
+  const evEngagements = await call('GET', '/v1/engagements', {
+    token: evOwner.token,
+    companyId: evCompany,
+  });
+  const evEdge = (evEngagements.json.data as { id: string; providerCompanyId: string }[]).find(
+    (e) => e.providerCompanyId === evSubCompany
+  );
+  await call('POST', `/v1/projects/${evProject}/assignments`, {
+    token: evOwner.token,
+    companyId: evCompany,
+    body: { providerCompanyId: evSubCompany, engagementId: evEdge?.id },
+  });
+
+  // ── 1. Empty ──────────────────────────────────────────────────────────────
+  const evEmpty = await call('GET', `/v1/projects/${evProject}/evidence`, {
+    token: evOwner.token,
+    companyId: evCompany,
+  });
+  eq('a new project has no evidence', evEmpty.status, 200);
+  eq('...and says so with an empty list rather than an invented count', evEmpty.json.evidence, []);
+  eq('...and no category counts to render a filter bar from', evEmpty.json.categoryCounts, {});
+
+  // ── 2. Structure ──────────────────────────────────────────────────────────
+  const evFloor = await call('POST', `/v1/projects/${evProject}/locations`, {
+    token: evOwner.token,
+    companyId: evCompany,
+    body: { kind: 'FLOOR', name: 'Floor 3' },
+  });
+  const evFloorId = evFloor.json.location.id as string;
+  const evRoom = await call('POST', `/v1/projects/${evProject}/locations`, {
+    token: evOwner.token,
+    companyId: evCompany,
+    body: { kind: 'ROOM', name: 'Room 3.12', parentId: evFloorId },
+  });
+  const evRoomId = evRoom.json.location.id as string;
+
+  /**
+   * Uploading four photographs the way a client does: presign, PUT, complete.
+   * Returns the file ids, so the evidence assertions below stay about evidence.
+   */
+  async function uploadPhoto(
+    who: { token: string; companyId: string },
+    filename: string,
+    bytes: Buffer,
+    contentType = 'image/png'
+  ): Promise<string> {
+    const presigned = await call('POST', '/v1/files/presign', {
+      token: who.token,
+      companyId: who.companyId,
+      body: {
+        kind: 'IMAGE',
+        filename,
+        contentType,
+        byteSize: bytes.byteLength,
+        projectId: evProject,
+        clientId: randomUUID(),
+      },
+    });
+    if (presigned.status !== 201) {
+      throw new Error(`presign ${filename} failed: ${presigned.status} ${JSON.stringify(presigned.json)}`);
+    }
+    await fetch(presigned.json.uploadUrl as string, {
+      method: 'PUT',
+      headers: presigned.json.requiredHeaders as Record<string, string>,
+      body: bytes,
+    });
+    await call('POST', `/v1/files/${presigned.json.fileId}/complete`, {
+      token: who.token,
+      companyId: who.companyId,
+      body: { checksumSha256: createHash('sha256').update(bytes).digest('hex') },
+    });
+    return presigned.json.fileId as string;
+  }
+
+  const evPhoto = await sharpFactory()({
+    create: { width: 1200, height: 800, channels: 3, background: { r: 90, g: 120, b: 60 } },
+  })
+    .png()
+    .toBuffer();
+
+  const evSubCtx = { token: evSub.token, companyId: evSubCompany };
+  const evFileIds: string[] = [];
+  for (let i = 0; i < 4; i += 1) {
+    evFileIds.push(await uploadPhoto(evSubCtx, `floor-3-${i}.png`, evPhoto));
+  }
+
+  // ── 3. Capture: batch defaults, per-item override, and an explicit clear ──
+  const evBatchId = randomUUID();
+  const evBatchBody = {
+    batchClientId: evBatchId,
+    // Applied to the whole selection at once — §22.3's answer to "tagging 40
+    // photos individually is the failure mode that kills evidence capture".
+    defaults: {
+      category: 'BEFORE',
+      evidenceDate: '2026-08-28',
+      locationId: evFloorId,
+      capturedAt: '2026-08-28T14:12:00.000Z',
+    },
+    items: [
+      { fileId: evFileIds[0] },
+      // Overridden to the room inside the floor.
+      { fileId: evFileIds[1], locationId: evRoomId, caption: 'North wall' },
+      // Explicitly cleared. `item.locationId ?? defaults.locationId` would put
+      // Floor 3 back on the one photograph that is not on Floor 3.
+      { fileId: evFileIds[2], locationId: null },
+      { fileId: evFileIds[3], category: 'DAMAGE' },
+    ],
+  };
+  const evBatch = await call('POST', `/v1/projects/${evProject}/evidence`, {
+    ...evSubCtx,
+    body: evBatchBody,
+  });
+  eq('a subcontractor on a free plan may photograph the hiring company\'s floor', evBatch.status, 201);
+  eq('...and all four files became evidence', evBatch.json.created.length, 4);
+  eq('...with nothing rejected', evBatch.json.rejected, []);
+
+  const evByFile = new Map<string, any>(
+    (evBatch.json.created as any[]).map((e) => [e.fileId, e])
+  );
+  eq('the batch default reaches an item that said nothing',
+    evByFile.get(evFileIds[0]!)?.locationId, evFloorId);
+  eq('an item overrides the batch', evByFile.get(evFileIds[1]!)?.locationId, evRoomId);
+  eq('...and an explicit null clears it rather than reading as silence',
+    evByFile.get(evFileIds[2]!)?.locationId, null);
+  eq('...while a per-item category overrides the batch category',
+    evByFile.get(evFileIds[3]!)?.category, 'DAMAGE');
+
+  // ── 4. Three timestamps, and they are three ──────────────────────────────
+  const evOne = evByFile.get(evFileIds[0]!);
+  eq('the project day is the day the photograph depicts', evOne?.evidenceDate, '2026-08-28');
+  eq('...the device clock is recorded as its own claim', evOne?.capturedAt, '2026-08-28T14:12:00.000Z');
+  check('...and the server\'s own timestamp is neither of them',
+    typeof evOne?.createdAt === 'string' &&
+      evOne.createdAt.slice(0, 10) !== '2026-08-28' &&
+      evOne.createdAt !== evOne.capturedAt,
+    { createdAt: evOne?.createdAt, capturedAt: evOne?.capturedAt, evidenceDate: evOne?.evidenceDate });
+
+  // ── 5. Rejected: the file that is not what it says it is ─────────────────
+  const evExe = Buffer.from('4d5a90000300000004000000ffff0000b8000000', 'hex');
+  const evBadFile = await uploadPhoto(evSubCtx, 'innocent.jpg', evExe, 'image/jpeg');
+  const evBadBatchId = randomUUID();
+  const evBadBatch = await call('POST', `/v1/projects/${evProject}/evidence`, {
+    ...evSubCtx,
+    body: {
+      batchClientId: evBadBatchId,
+      defaults: { category: 'DURING', evidenceDate: '2026-08-28' },
+      items: [{ fileId: evBadFile }],
+    },
+  });
+  eq('a record may be created while its bytes are still being scanned', evBadBatch.status, 201);
+  eq('...because losing the tagging every time a PUT is slow is the real failure', evBadBatch.json.created.length, 1);
+
+  await runStorageBatch();
+  const evBadRow = await call('GET', `/v1/evidence/${evBadBatch.json.created[0].id}`, { ...evSubCtx });
+  eq('...and the scanner\'s verdict shows through on the record', evBadRow.json.evidence.fileStatus, 'FAILED');
+  check('...with a reason the gallery can render beside it',
+    /not the type it claims/i.test(evBadRow.json.evidence.fileFailureReason ?? ''),
+    evBadRow.json.evidence.fileFailureReason);
+  const evGoodRow = await call('GET', `/v1/evidence/${evOne.id}`, { ...evSubCtx });
+  eq('...while the rest of the batch is READY and untouched by it',
+    evGoodRow.json.evidence.fileStatus, 'READY');
+  check('...with derivatives resolved through the file, not copied onto the record',
+    evGoodRow.json.evidence.webFileId !== null && evGoodRow.json.evidence.thumbFileId !== null,
+    { web: evGoodRow.json.evidence.webFileId, thumb: evGoodRow.json.evidence.thumbFileId });
+
+  // The uploader is told. A scan runs minutes later in a worker, long after the
+  // screen that started it has moved on.
+  await drainWorkers();
+  const { rows: evScanNotice } = await db.query<{ n: string }>(
+    `select count(*)::int as n from notifications
+      where kind = 'file.scan_failed' and recipient_user_id = $1`,
+    [evSub.userId]
+  );
+  check('the person who uploaded a refused file is told, not left to notice',
+    Number(evScanNotice[0]?.n) >= 1, evScanNotice[0]);
+  const { rows: evScanPayload } = await db.query<{ payload: any }>(
+    `select payload from delivery_outbox where topic = 'file.scan_failed' and aggregate_id = $1`,
+    [evBadFile]
+  );
+  check('...and the event carries a reason class, never the filename a customer typed',
+    JSON.stringify(evScanPayload[0]?.payload ?? {}).includes('TYPE_MISMATCH') &&
+      !JSON.stringify(evScanPayload[0]?.payload ?? {}).includes('innocent.jpg'),
+    evScanPayload[0]?.payload);
+
+  // ── 6. Replay: the batch is idempotent and leaves one row per file ────────
+  const evReplay = await call('POST', `/v1/projects/${evProject}/evidence`, {
+    ...evSubCtx,
+    body: evBatchBody,
+  });
+  eq('a replayed batch returns the answer it missed rather than a refusal', evReplay.status, 201);
+  eq('...byte for byte, so the client cannot tell which attempt it was',
+    evReplay.json, evBatch.json);
+  const { rows: evRowCount } = await db.query<{ n: string }>(
+    `select count(*)::int as n from project_evidence
+      where project_id = $1 and deleted_at is null`,
+    [evProject]
+  );
+  eq('...leaving five records for five files, not ten', Number(evRowCount[0]?.n), 5);
+
+  // And without the ledger: the unique index on a live file is the second line,
+  // which is what makes a retry safe even when the client id is lost.
+  const evNoLedger = await call('POST', `/v1/projects/${evProject}/evidence`, {
+    ...evSubCtx,
+    body: { items: [{ fileId: evFileIds[0] }] },
+  });
+  eq('re-posting one file with no batch id is refused per file, not per request',
+    evNoLedger.json.rejected[0]?.code, 'FILE_ALREADY_ATTACHED');
+  eq('...and the request still succeeds, because a partial batch keeps what worked',
+    evNoLedger.status, 201);
+
+  // ── 7. The event is one per batch, and holds no prose ────────────────────
+  const { rows: evBatchEvent } = await db.query<{ payload: any; n: string }>(
+    `select payload, count(*) over ()::int as n from delivery_outbox
+      where topic = 'evidence.batch_uploaded' and aggregate_id = $1`,
+    [evBatchId]
+  );
+  eq('forty photographs is one act, so the batch emits one event', Number(evBatchEvent[0]?.n), 1);
+  eq('...counting what it carried', evBatchEvent[0]?.payload?.count, 4);
+  eq('...and naming the categories rather than the captions',
+    evBatchEvent[0]?.payload?.categories, ['BEFORE', 'DAMAGE']);
+  check('...with no caption, filename or location name anywhere in it',
+    !JSON.stringify(evBatchEvent[0]?.payload ?? {}).match(/North wall|floor-3-|Floor 3/),
+    evBatchEvent[0]?.payload);
+  const { rows: evOwnerNotice } = await db.query<{ n: string }>(
+    `select count(*)::int as n from notifications
+      where kind = 'evidence.batch_uploaded' and company_id = $1`,
+    [evCompany]
+  );
+  check('the hiring company is told a subcontractor added evidence',
+    Number(evOwnerNotice[0]?.n) >= 1, evOwnerNotice[0]);
+
+  // ── 8. Scope: a second subcontractor sees none of the first's ────────────
+  const evSub2Invite = await call('POST', '/v1/providers', {
+    token: evOwner.token,
+    companyId: evCompany,
+    body: { name: `Rival Trades ${RUN}`, email: `evsub2+${RUN}@verify.crewquo.test` },
+  });
+  const evSub2 = await register('evsub2', undefined, `evsub2+${RUN}@verify.crewquo.test`);
+  await call('POST', `/v1/invites/${evSub2Invite.json.inviteToken}/accept`, { token: evSub2.token });
+  const evSub2Memberships = await call('GET', '/v1/me/memberships', { token: evSub2.token });
+  const evSub2Company = ((evSub2Memberships.json.memberships ?? []) as { companyId: string }[]).find(
+    (m) => m.companyId !== evSub2.companyId
+  )?.companyId as string;
+  const evEngagements2 = await call('GET', '/v1/engagements', {
+    token: evOwner.token,
+    companyId: evCompany,
+  });
+  const evEdge2 = (evEngagements2.json.data as { id: string; providerCompanyId: string }[]).find(
+    (e) => e.providerCompanyId === evSub2Company
+  );
+  await call('POST', `/v1/projects/${evProject}/assignments`, {
+    token: evOwner.token,
+    companyId: evCompany,
+    body: { providerCompanyId: evSub2Company, engagementId: evEdge2?.id },
+  });
+
+  const evRivalList = await call('GET', `/v1/projects/${evProject}/evidence`, {
+    token: evSub2.token,
+    companyId: evSub2Company,
+  });
+  eq('a second subcontractor is on the project', evRivalList.status, 200);
+  eq('...and sees none of the first one\'s photographs', evRivalList.json.evidence, []);
+  const evRivalRead = await call('GET', `/v1/evidence/${evOne.id}`, {
+    token: evSub2.token,
+    companyId: evSub2Company,
+  });
+  eq('...nor can it read one by id, which answers as not found rather than forbidden',
+    evRivalRead.status, 404);
+
+  const evOwnerList = await call('GET', `/v1/projects/${evProject}/evidence`, {
+    token: evOwner.token,
+    companyId: evCompany,
+  });
+  eq('the project owner sees everything on their own project', evOwnerList.json.evidence.length, 5);
+  eq('...with counts for the filter bar over the whole set',
+    evOwnerList.json.categoryCounts, { BEFORE: 3, DAMAGE: 1, DURING: 1 });
+
+  // ── 9. Filters ───────────────────────────────────────────────────────────
+  const evFiltered = await call(
+    'GET',
+    `/v1/projects/${evProject}/evidence?category=BEFORE&locationId=${evFloorId}`,
+    { token: evOwner.token, companyId: evCompany }
+  );
+  eq('a filter narrows to one category on one location', evFiltered.json.evidence.length, 1);
+  const evBadRange = await call(
+    'GET',
+    `/v1/projects/${evProject}/evidence?from=2026-09-09&to=2026-08-01`,
+    { token: evOwner.token, companyId: evCompany }
+  );
+  eq('a range that starts after it ends is refused, not answered with nothing',
+    evBadRange.status, 422);
+
+  // ── 10. Capability: a Worker may photograph and may not publish ──────────
+  const evWorker = await register('evworker', undefined, `evworker+${RUN}@verify.crewquo.test`);
+  const evWorkerInvite = await call('POST', '/v1/members/invite', {
+    token: evOwner.token,
+    companyId: evCompany,
+    body: { email: evWorker.email, role: 'MEMBER' },
+  });
+  eq('a member is invited into the owning company', evWorkerInvite.status, 201);
+  const evWorkerJoin = await call('POST', `/v1/invites/${evWorkerInvite.json.inviteToken}/accept`, {
+    token: evWorker.token,
+  });
+  eq('...and joins it', evWorkerJoin.status, 201);
+  await db.query(
+    `update memberships set bundle_key = 'worker' where company_id = $1 and user_id = $2`,
+    [evCompany, evWorker.userId]
+  );
+  const evWorkerPublish = await call('POST', `/v1/projects/${evProject}/evidence/publish`, {
+    token: evWorker.token,
+    companyId: evCompany,
+    body: { ids: [evOne.id], clientVisible: true },
+  });
+  eq('a Worker is refused the disclosure lever, with the capability named',
+    evWorkerPublish.status, 403);
+  check('...and the refusal says which one, so nobody has to ring support',
+    JSON.stringify(evWorkerPublish.json).includes('evidence.publish'),
+    evWorkerPublish.json);
+
+  // ── 11. Publishing is the owner's alone ─────────────────────────────────
+  const evSubPublish = await call('POST', `/v1/projects/${evProject}/evidence/publish`, {
+    ...evSubCtx,
+    body: { ids: [evOne.id], clientVisible: true },
+  });
+  eq('a subcontractor cannot disclose to the hiring company\'s client', evSubPublish.status, 403);
+
+  const evPublishIds = [evByFile.get(evFileIds[0]!)!.id, evByFile.get(evFileIds[1]!)!.id];
+  const evPublish = await call('POST', `/v1/projects/${evProject}/evidence/publish`, {
+    token: evOwner.token,
+    companyId: evCompany,
+    body: { ids: evPublishIds, clientVisible: true },
+  });
+  eq('the project owner publishes two of the five', evPublish.status, 200);
+  eq('...and is told what that means', evPublish.json.updated, 2);
+  check('...in a sentence that does not promise a retraction',
+    /cannot un-send/i.test(evPublish.json.notice ?? ''), evPublish.json.notice);
+
+  // ── 12. The client sees exactly what was published ──────────────────────
+  const evClientUser = await register('evclientuser', undefined, `evclient+${RUN}@verify.crewquo.test`);
+  const evClientJoin = await call('POST', `/v1/invites/${evClientRes.json.inviteToken}/accept`, {
+    token: evClientUser.token,
+  });
+  eq('the client accepts its portal invite', evClientJoin.status, 201);
+  const evPortal = await call('GET', `/v1/portal/projects/${evProject}/evidence`, {
+    token: evClientUser.token,
+    companyId: evClientCompany,
+  });
+  eq('the client can read the project\'s shared evidence', evPortal.status, 200);
+  eq('...and sees the two that were published', evPortal.json.evidence.length, 2);
+  const evPortalPayload = JSON.stringify(evPortal.json);
+  check('the three that were not are ABSENT from the payload, not hidden in it',
+    !evPortalPayload.includes(evByFile.get(evFileIds[2]!)!.id) &&
+      !evPortalPayload.includes(evByFile.get(evFileIds[3]!)!.id),
+    evPortal.json.evidence.map((e: any) => e.id));
+  check('...and the supply chain behind the photograph is not disclosed either',
+    !evPortalPayload.includes(evSubCompany) && !evPortalPayload.includes(evSub.userId),
+    { company: evSubCompany, user: evSub.userId });
+
+  // The money boundary, the same assertion class the export earned on 2026-08-21.
+  check('nothing in the client\'s evidence carries a rate, a margin or a snapshot',
+    !/resolvedRate|payRate|marginCents|amountCents/i.test(evPortalPayload));
+  const evProviderPayload = JSON.stringify(
+    (await call('GET', `/v1/projects/${evProject}/evidence`, { ...evSubCtx })).json
+  );
+  check('...and neither does the provider\'s',
+    !/resolvedRate|payRate|marginCents|amountCents/i.test(evProviderPayload));
+
+  // ── 13. Publishing widens the file download, and only through the record ─
+  const evPublished = (evPortal.json.evidence as any[])[0];
+  const evClientDownload = await call('GET', `/v1/files/${evPublished.fileId}/download`, {
+    token: evClientUser.token,
+    companyId: evClientCompany,
+  });
+  eq('a published file is downloadable by the client it was shared with', evClientDownload.status, 200);
+  const evClientThumb = await call('GET', `/v1/files/${evPublished.thumbFileId}/download`, {
+    token: evClientUser.token,
+    companyId: evClientCompany,
+  });
+  eq('...and so is its thumbnail, through the same record', evClientThumb.status, 200);
+  const evClientHidden = await call(
+    'GET',
+    `/v1/files/${evByFile.get(evFileIds[2]!)!.fileId}/download`,
+    { token: evClientUser.token, companyId: evClientCompany }
+  );
+  eq('...while an unpublished file is not found for the same client', evClientHidden.status, 404);
+  const evRivalDownload = await call('GET', `/v1/files/${evPublished.fileId}/download`, {
+    token: evSub2.token,
+    companyId: evSub2Company,
+  });
+  eq('...and a rival subcontractor on the same project cannot reach it at all',
+    evRivalDownload.status, 404);
+
+  const { rows: evClientNotice } = await db.query<{ n: string }>(
+    `select count(*)::int as n from notifications
+      where kind = 'evidence.published' and company_id = $1`,
+    [evClientCompany]
+  );
+  await drainWorkers();
+  const { rows: evClientNoticeAfter } = await db.query<{ n: string }>(
+    `select count(*)::int as n from notifications
+      where kind = 'evidence.published' and company_id = $1`,
+    [evClientCompany]
+  );
+  check('the client is told that evidence was shared with them',
+    Number(evClientNoticeAfter[0]?.n) > Number(evClientNotice[0]?.n) ||
+      Number(evClientNoticeAfter[0]?.n) >= 1,
+    { before: evClientNotice[0], after: evClientNoticeAfter[0] });
+
+  // ── 14. Un-publishing hides, and does not claim to withdraw ─────────────
+  const evHide = await call('POST', `/v1/projects/${evProject}/evidence/publish`, {
+    token: evOwner.token,
+    companyId: evCompany,
+    body: { ids: [evPublishIds[1]], clientVisible: false },
+  });
+  eq('the owner hides one again', evHide.status, 200);
+  check('...and the sentence refuses to imply a retraction',
+    /does not withdraw/i.test(evHide.json.notice ?? ''), evHide.json.notice);
+  const { rows: evFirstPublished } = await db.query<{ first_published_at: Date | null }>(
+    `select first_published_at from project_evidence where id = $1`,
+    [evPublishIds[1]]
+  );
+  check('...and the record still remembers that it WAS published',
+    evFirstPublished[0]?.first_published_at !== null, evFirstPublished[0]);
+  const evPortalAfterHide = await call('GET', `/v1/portal/projects/${evProject}/evidence`, {
+    token: evClientUser.token,
+    companyId: evClientCompany,
+  });
+  eq('...while the client now sees one', evPortalAfterHide.json.evidence.length, 1);
+
+  // Both edges are in the trail, as distinct actions.
+  const { rows: evAudit } = await db.query<{ action: string }>(
+    `select action from audit_logs where company_id = $1
+       and action in ('evidence.created','evidence.published','evidence.unpublished')
+     order by created_at asc`,
+    [evCompany]
+  );
+  check('the trail records publishing and hiding as two different acts',
+    evAudit.some((r) => r.action === 'evidence.published') &&
+      evAudit.some((r) => r.action === 'evidence.unpublished'),
+    evAudit.map((r) => r.action));
+
+  // ── 15. Re-tagging: whose rows, and which capability ────────────────────
+  const evBulk = await call('PATCH', `/v1/projects/${evProject}/evidence`, {
+    token: evOwner.token,
+    companyId: evCompany,
+    body: { ids: evPublishIds, patch: { category: 'AFTER' } },
+  });
+  eq('the project owner may re-tag a subcontractor\'s photographs', evBulk.status, 200);
+  eq('...both of them', evBulk.json.updated, 2);
+
+  const evSubBulk = await call('PATCH', `/v1/projects/${evProject}/evidence`, {
+    ...evSubCtx,
+    body: { ids: evPublishIds, patch: { caption: 'mine now' } },
+  });
+  eq('a subcontractor editing its own rows succeeds', evSubBulk.status, 200);
+  const evRivalBulk = await call('PATCH', `/v1/projects/${evProject}/evidence`, {
+    token: evSub2.token,
+    companyId: evSub2Company,
+    body: { ids: evPublishIds, patch: { caption: 'not mine' } },
+  });
+  eq('...and a rival naming the same ids changes nothing rather than something',
+    evRivalBulk.json.updated, 0);
+  eq('...while still being told how many it asked for', evRivalBulk.json.requested, 2);
+
+  // ── 16. Optimistic concurrency and the tombstone ────────────────────────
+  const evTarget = evByFile.get(evFileIds[3]!)!;
+  const evCurrent = await call('GET', `/v1/evidence/${evTarget.id}`, { ...evSubCtx });
+  const evRev = evCurrent.json.evidence.revision as number;
+  const evEdit = await call('PATCH', `/v1/evidence/${evTarget.id}`, {
+    ...evSubCtx,
+    body: { caption: 'Cracked panel', expectedRevision: evRev },
+  });
+  eq('an edit against the version it read is applied', evEdit.status, 200);
+  eq('...and the database bumps the revision, not the route', evEdit.json.evidence.revision, evRev + 1);
+  const evStale = await call('PATCH', `/v1/evidence/${evTarget.id}`, {
+    ...evSubCtx,
+    body: { caption: 'Composed offline', expectedRevision: evRev },
+  });
+  eq('a stale edit is refused', evStale.status, 409);
+  eq('...carrying the current version back so a client can show a real difference',
+    evStale.json?.error?.details?.currentRevision, evRev + 1);
+
+  const evDelete = await call('DELETE', `/v1/evidence/${evTarget.id}`, { ...evSubCtx });
+  eq('the uploader removes their own record', evDelete.status, 204);
+  const evGone = await call('GET', `/v1/evidence/${evTarget.id}`, { ...evSubCtx });
+  eq('...and a stale client is told it is gone rather than left to infer it', evGone.status, 410);
+  const evGoneOutsider = await call('GET', `/v1/evidence/${evTarget.id}`, {
+    token: evSub2.token,
+    companyId: evSub2Company,
+  });
+  eq('...while somebody who could never have read it gets the same 404 as always',
+    evGoneOutsider.status, 404);
+  const { rows: evStillThere } = await db.query<{ n: string }>(
+    `select count(*)::int as n from stored_files where id = $1 and status = 'READY'`,
+    [evTarget.fileId]
+  );
+  eq('...and detaching a photograph does not destroy its bytes', Number(evStillThere[0]?.n), 1);
+
+  // ── 17. The location cannot be deleted out from under the evidence ──────
+  const evLocDelete = await call('DELETE', `/v1/locations/${evFloorId}`, {
+    token: evOwner.token,
+    companyId: evCompany,
+  });
+  eq('a location with evidence on it cannot be deleted', evLocDelete.status, 409);
+  check('...and the refusal names what is using it and offers retirement',
+    /photos and files/.test(evLocDelete.json?.error?.message ?? '') &&
+      /retire/i.test(evLocDelete.json?.error?.message ?? ''),
+    evLocDelete.json?.error?.message);
+
+  // ── 18. Packaging: the feature is the owner's, never the uploader's ─────
+  const evSubOwnProject = await call('POST', '/v1/projects', {
+    ...evSubCtx,
+    body: { name: `Ade's own job ${RUN}` },
+  });
+  const evSubOwnEvidence = await call('GET', `/v1/projects/${evSubOwnProject.json.project.id}/evidence`, {
+    ...evSubCtx,
+  });
+  eq('a Crew-plan company gets no evidence section on its OWN project', evSubOwnEvidence.status, 403);
+  check('...naming the key it would need', JSON.stringify(evSubOwnEvidence.json).includes('project_evidence'),
+    evSubOwnEvidence.json);
+  eq('...while the same company keeps working on the hiring company\'s project',
+    (await call('GET', `/v1/projects/${evProject}/evidence`, { ...evSubCtx })).status, 200);
+
+  // ── 19. The storage ceiling, refused before a byte moves ────────────────
+  //
+  // Set by an override rather than by a plan value, because the §43 tier figures
+  // are a pricing judgement the owner deliberately kept (see `infra/seed`). The
+  // enforcement path is identical either way — this is what a plan limit does.
+  await db.query(
+    `insert into company_entitlement_overrides (company_id, limit_key, limit_value, note)
+     values ($1, 'storage_gb', 0, 'verify-e2e: prove the ceiling refuses at presign')`,
+    [evCompany]
+  );
+  const evOverLimit = await call('POST', '/v1/files/presign', {
+    ...evSubCtx,
+    body: {
+      kind: 'IMAGE',
+      filename: 'one-more.png',
+      contentType: 'image/png',
+      byteSize: evPhoto.byteLength,
+      projectId: evProject,
+    },
+  });
+  eq('a company at its storage ceiling is refused at presign', evOverLimit.status, 402);
+  check('...with the figure and its unit, before anything is uploaded',
+    /KB|MB|GB/.test(evOverLimit.json?.error?.message ?? ''), evOverLimit.json?.error?.message);
+  check('...and it is the PROJECT OWNER\'s ceiling that stopped the subcontractor',
+    evOverLimit.json?.error?.details?.limit === 'storage_gb',
+    evOverLimit.json?.error?.details);
+  await db.query(
+    `delete from company_entitlement_overrides where company_id = $1 and limit_key = 'storage_gb'`,
+    [evCompany]
+  );
+
+  // The windowed meter, across a month boundary in a zone that is not UTC.
+  await db.query(`update companies set time_zone = 'Asia/Manila' where id = $1`, [evCompany]);
+  await db.query(
+    `insert into company_entitlement_overrides (company_id, limit_key, limit_value, note)
+     values ($1, 'evidence_uploads_per_month', 1, 'verify-e2e: the first windowed meter')`,
+    [evCompany]
+  );
+  const evMonthly = await call('POST', '/v1/files/presign', {
+    ...evSubCtx,
+    body: {
+      kind: 'IMAGE',
+      filename: 'this-month.png',
+      contentType: 'image/png',
+      byteSize: 512,
+      projectId: evProject,
+    },
+  });
+  eq('the monthly upload allowance is enforced too', evMonthly.status, 402);
+  eq('...by its own key', evMonthly.json?.error?.details?.limit, 'evidence_uploads_per_month');
+
+  /*
+   * The window's start is the company's own month, not the server's. Backdating
+   * every existing upload past the Manila month boundary must empty the meter —
+   * if the boundary were computed in UTC, a company eight hours ahead would be
+   * told it was still in the old month for eight hours of every rollover.
+   */
+  await db.query(
+    `update stored_files set created_at = (
+        date_trunc('month', (now() at time zone 'Asia/Manila')) at time zone 'Asia/Manila'
+      ) - interval '1 second'
+      where project_id = $1`,
+    [evProject]
+  );
+  const evNewMonth = await call('POST', '/v1/files/presign', {
+    ...evSubCtx,
+    body: {
+      kind: 'IMAGE',
+      filename: 'new-month.png',
+      contentType: 'image/png',
+      byteSize: 512,
+      projectId: evProject,
+    },
+  });
+  eq('...and the window starts at the company\'s own month boundary, not the server\'s',
+    evNewMonth.status, 201);
+  await db.query(
+    `delete from company_entitlement_overrides where company_id = $1
+      and limit_key = 'evidence_uploads_per_month'`,
+    [evCompany]
+  );
+
+  // ── 20. Closure keeps the record and drops the name ─────────────────────
+  const { rows: evFk } = await db.query<{ delete_rule: string }>(
+    `select rc.delete_rule
+       from information_schema.referential_constraints rc
+       join information_schema.key_column_usage k on k.constraint_name = rc.constraint_name
+      where k.table_name = 'project_evidence' and k.column_name = 'uploaded_by_user_id'`
+  );
+  eq('a photograph outlives the person who took it, attributed to a tombstoned identity',
+    evFk[0]?.delete_rule, 'SET NULL');
+
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);
   if (failures.length === 0) {

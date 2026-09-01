@@ -9,6 +9,8 @@ import {
   type FileVariant,
 } from '@crewquo/shared';
 import { log } from '../../observability/log';
+import { withTransaction } from '../../db';
+import { enqueueOutboxEvent } from '../delivery/repo';
 import { deleteObject, getObjectBytes, putObject, storageConfigured } from './client';
 import {
   claimScanning,
@@ -95,7 +97,7 @@ async function scanOne(file: StoredFileRow): Promise<{ ok: boolean; derivatives:
   // 1. The size the store actually holds, again. `complete` checked this too, and
   //    checking twice is cheap next to storing a file nobody verified.
   if (bytes.byteLength !== Number(file.byte_size)) {
-    await markFailed(file.id, 'The stored file changed size after it was uploaded.');
+    await failFile(file, 'The stored file changed size after it was uploaded.', 'SIZE_MISMATCH');
     return { ok: false, derivatives: 0 };
   }
 
@@ -105,7 +107,7 @@ async function scanOne(file: StoredFileRow): Promise<{ ok: boolean; derivatives:
   if (file.checksum_sha256) {
     const actual = createHash('sha256').update(bytes).digest('hex');
     if (actual !== file.checksum_sha256) {
-      await markFailed(file.id, 'The uploaded file did not match its checksum.');
+      await failFile(file, 'The uploaded file did not match its checksum.', 'CHECKSUM_MISMATCH');
       return { ok: false, derivatives: 0 };
     }
   }
@@ -114,9 +116,10 @@ async function scanOne(file: StoredFileRow): Promise<{ ok: boolean; derivatives:
   //    was never evidence; this is the check the whole SCANNING state exists for.
   const sniffed = sniffContentType(bytes.subarray(0, HEAD_BYTES));
   if (!sniffedTypeAgrees(file.content_type, sniffed)) {
-    await markFailed(
-      file.id,
-      `This file is not the type it claims to be, so it was not stored (${file.original_filename}).`
+    await failFile(
+      file,
+      `This file is not the type it claims to be, so it was not stored (${file.original_filename}).`,
+      'TYPE_MISMATCH'
     );
     // The bytes go too. Keeping a rejected object costs storage nobody agreed to
     // and leaves a file the store would happily serve if a key ever leaked.
@@ -127,6 +130,50 @@ async function scanOne(file: StoredFileRow): Promise<{ ok: boolean; derivatives:
   const derivatives = await makeDerivatives(file, bytes);
   await markReady(file.id);
   return { ok: true, derivatives };
+}
+
+/**
+ * Mark a file refused, and tell the person who uploaded it — in one transaction.
+ *
+ * **The event is the point, and it is why this is not a bare `markFailed`.** The
+ * scan runs in a worker minutes after the upload, long after the screen that
+ * started it has moved on. Without a notification, a refused photograph is
+ * something Ade discovers weeks later when a report is one picture short. The
+ * packet's §6 promises him the message; this is where it is owed.
+ *
+ * `reasonClass` and not the reason itself travels in the payload. The prose
+ * carries `original_filename`, which is customer data — `scrubEvent` already made
+ * that argument for error events, and an outbox payload read by a notification
+ * body is the same surface with the same rule.
+ */
+async function failFile(
+  file: StoredFileRow,
+  reason: string,
+  reasonClass: 'TYPE_MISMATCH' | 'SIZE_MISMATCH' | 'CHECKSUM_MISMATCH'
+): Promise<void> {
+  await withTransaction(async (client) => {
+    const failed = await markFailed(file.id, reason, client);
+    // Nothing moved — another pass got there first. Enqueueing anyway would be a
+    // second notification for one refusal.
+    if (!failed) return;
+    await enqueueOutboxEvent(
+      {
+        topic: 'file.scan_failed',
+        aggregateType: 'STORED_FILE',
+        aggregateId: file.id,
+        companyId: file.company_id,
+        payload: {
+          fileId: file.id,
+          companyId: file.company_id,
+          projectId: file.project_id,
+          uploadedByUserId: file.uploaded_by_user_id,
+          reasonClass,
+        },
+        idempotencyKey: `file.scan_failed:${file.id}`,
+      },
+      client
+    );
+  });
 }
 
 /**

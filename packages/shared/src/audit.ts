@@ -37,6 +37,21 @@ export const AUDIT_ACTIONS = [
   'location.created',
   'location.updated',
   'location.deleted',
+  /*
+   * Project evidence (§22, 0030). `evidence.published` and `.unpublished` are two
+   * actions rather than one with a boolean, because "who shared this with the
+   * client, and when" and "who stopped sharing it" are different questions — and
+   * collapsing them makes the second unanswerable without reading every row's
+   * changes. Publishing is a disclosure; both edges are recorded.
+   *
+   * `evidence.created` is written once per **batch**. Forty photographs is one act
+   * by one person, and forty audit rows is a trail nobody can read.
+   */
+  'evidence.created',
+  'evidence.updated',
+  'evidence.published',
+  'evidence.unpublished',
+  'evidence.deleted',
   // A whole-company export (packet §14 step 5). Audited because it is a disclosure of
   // the company's record by one of its members, and the other owners are entitled to
   // know it happened. A *personal* export is not here on purpose: it has no company
@@ -134,6 +149,7 @@ export type AuditAction = z.infer<typeof auditActionSchema>;
 export const AUDIT_ENTITY_TYPES = [
   'PROJECT',
   'LOCATION',
+  'EVIDENCE',
   'TIME_LOG',
   'EXPENSE',
   'PROJECT_SUBMISSION',

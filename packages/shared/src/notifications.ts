@@ -30,6 +30,19 @@ export const NOTIFICATION_KINDS = [
   'rate_proposal.submitted',
   'rate_proposal.decided',
   'invoice.issued',
+  /*
+   * Project evidence (§22, `project-evidence.md` §6). Three kinds for three
+   * different readers: the project owner learns a subcontractor added photographs,
+   * the client learns some were shared with them, and the uploader learns which of
+   * their files could not be stored.
+   *
+   * **`evidence.uploaded` is deliberately not one of them.** Forty photographs is
+   * one act by one person; the batch is the unit, and forty notifications is a
+   * feature nobody would leave switched on.
+   */
+  'evidence.batch_uploaded',
+  'evidence.published',
+  'file.scan_failed',
   'delivery.dead_lettered',
   // Account security (`docs/operating-model/access.md` §6). The first kinds in
   // this catalog that belong to a *person* rather than to a company, which is why
@@ -103,6 +116,26 @@ export const NOTIFICATION_KIND_SPECS: Readonly<Record<NotificationKind, Notifica
   'rate_proposal.submitted': { requiresAction: true, urgency: 'NORMAL', defaultChannels: ['PUSH', 'EMAIL'] },
   'rate_proposal.decided': { requiresAction: false, urgency: 'NORMAL', defaultChannels: ['PUSH', 'EMAIL'] },
   'invoice.issued': { requiresAction: true, urgency: 'NORMAL', defaultChannels: ['EMAIL'] },
+
+  /*
+   * Evidence. None of the three `requiresAction`, and that is the honest reading:
+   * photographs arriving is news, not a task — there is nothing the recipient owes
+   * anybody, and an Action Centre item that can only be dismissed is an inbox that
+   * teaches people to dismiss without reading.
+   *
+   * All three take the ordinary rules, which means the user's own digest setting
+   * decides whether a busy day arrives as one message or twelve. That is the
+   * packet's "digest" column: a property of the reader's preference, not a
+   * per-kind override — the product has exactly one place where batching is
+   * configured and this does not become a second.
+   */
+  'evidence.batch_uploaded': { requiresAction: false, urgency: 'NORMAL', defaultChannels: ['EMAIL'] },
+  'evidence.published': { requiresAction: false, urgency: 'NORMAL', defaultChannels: ['EMAIL'] },
+  // The one of the three the uploader can act on — a file that was refused can be
+  // re-taken or re-uploaded — but the action lives in the batch they are already
+  // looking at, not in a task somebody has to close.
+  'file.scan_failed': { requiresAction: false, urgency: 'NORMAL', defaultChannels: ['EMAIL'] },
+
   // The only URGENT kind among the *product* events, and deliberately an operator
   // one. A customer event is never urgent enough to wake somebody: their work will
   // still be there at 8am.

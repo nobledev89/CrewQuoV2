@@ -13,6 +13,17 @@ export const FEATURE_KEYS = [
   'exports',
   'client_portal',
   'client_portal_notes',
+  /**
+   * Phase 7 (§43). The record, not the capture.
+   *
+   * **Checked against the project owner, never against the uploader** (owner
+   * decision, 2026-09-01). A Crew-plan subcontractor may always photograph a
+   * floor on somebody else's project and consumes that owner's entitlement doing
+   * it; its own projects need this key on its own plan. Gating the uploader would
+   * make a free subcontractor useless to a paying customer, which is the failure
+   * the Crew plan was invented to prevent.
+   */
+  'project_evidence',
   'invoicing',
   'audit_visibility',
   'api_access',

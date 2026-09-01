@@ -18,6 +18,7 @@ import { uuidParam } from '../../http/params';
 import { queryOne } from '../../db';
 import { env } from '../../env';
 import { withinLimit } from '../entitlements/guards';
+import { evidenceGrantsFileAccess, fileDisclosedToClient } from '../evidence/repo';
 import { ensureBucket, headObject, presignGet, presignPut, storageConfigured } from './client';
 import {
   findByClientId,
@@ -285,11 +286,22 @@ filesRouter.get(
 /**
  * The one authorization rule for reading a file, in one place.
  *
- * Today a file is readable by the company that uploaded it and by the company
- * that owns its project — the same one-hop shape every other record in this API
- * uses. When evidence and documents land (7.3, 7.4) their own `client_visible`
- * rules narrow this further; nothing will ever widen it, because the check runs
- * against the *record* and this is the floor beneath it.
+ * A file is readable by the company that uploaded it, by the company that owns
+ * its project, and by whoever a **record referencing it** has deliberately
+ * disclosed it to. The first two are the floor; the third is the packet's §4 rule
+ * that a download is governed by *"whichever hop the referencing record allows"*.
+ *
+ * **This corrects the note that stood here from 7.0**, which said record rules
+ * would only ever narrow the floor and never widen it. Publishing evidence to a
+ * client is exactly a widening, and it is the entire point of the flag: the
+ * client is on neither side of the file's own two companies, and a disclosure the
+ * project owner deliberately made must reach them or `client_visible` means
+ * nothing. The floor is still a floor — nothing here is reachable *without* a
+ * record that names the caller — and the widening is per record, per file, and
+ * revocable going forward.
+ *
+ * A derivative is reachable through its original's record, so a thumbnail is
+ * never a way around a rule its full-size photograph obeys.
  */
 async function readableFile(id: string, companyId: string): Promise<StoredFileRow> {
   const file = await findFile(id);
@@ -303,6 +315,17 @@ async function readableFile(id: string, companyId: string): Promise<StoredFileRo
     );
     if (owner?.company_id === companyId) return file;
   }
+
+  /*
+   * The record-granted hops. Two questions, deliberately not merged: an evidence
+   * row grants its own *uploading company* access to a file the floor already
+   * covers in the normal case but not when the row and the file were created by
+   * different members, and `client_visible` grants the client on the project's
+   * engagement. 7.4's documents and 7.5's diary attachments join this list.
+   */
+  if (await evidenceGrantsFileAccess(id, companyId)) return file;
+  if (await fileDisclosedToClient(id, companyId)) return file;
+
   // Not 403 — a forged id must not confirm that somebody else's file exists.
   throw new AppError('NOT_FOUND', 'File not found');
 }

@@ -19,6 +19,8 @@ const FEATURE_COPY: Record<FeatureKey, string> = {
   exports: 'Exports produce a PDF or spreadsheet of a project and its line items.',
   client_portal: 'The client portal gives a client read access to the projects you publish.',
   client_portal_notes: 'Portal notes let a client comment on a line item and you reply.',
+  project_evidence:
+    'Photos & evidence keeps site photographs, scans and files against a project, with categories, dates and locations.',
   invoicing: 'Invoicing turns approved work into an invoice you can issue.',
   audit_visibility: 'Audit visibility lets a client see the trail of activity you publish.',
   api_access: 'API access issues keys for your own integrations.',

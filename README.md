@@ -156,6 +156,27 @@ files stay in `SCANNING`:
 pnpm --filter @crewquo/api build   # the job entry points are compiled, not tsx
 pnpm --filter @crewquo/api work
 ```
+
+**A file is not evidence until a record says what it shows.** Once the three
+upload steps are done, `POST /v1/projects/:projectId/evidence` turns a selection
+into `project_evidence` rows — one request for the whole batch, with metadata
+applied to all of it and overridden per photograph. The response always carries
+both a `created` and a `rejected` list and never refuses the whole batch for one
+bad file, because losing thirty-nine good photographs to one bad one is how a
+capture product teaches people to stop using it.
+
+Three timestamps, and they are not interchangeable: `createdAt` is when the
+server accepted it and is the only one the platform attests to, `capturedAt` is
+what the device's clock claimed, and `evidenceDate` is the project day a person
+says it belongs to. A supervisor uploading Friday's photographs on Monday has all
+three different.
+
+`client_visible` is the disclosure lever and belongs to the **project owner
+alone** — a subcontractor uploads, and the company that owns the client
+relationship decides what that client sees. Hiding a published file removes it
+from the portal going forward and withdraws nothing already downloaded, which is
+what `first_published_at` records and what the API's confirmation copy says.
+
 ## Useful commands
 
 | Command | What it does |

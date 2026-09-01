@@ -295,7 +295,9 @@ export interface LocationReferenceTable {
 
 export const LOCATION_REFERENCE_TABLES: readonly LocationReferenceTable[] = [
   { table: 'project_locations', column: 'parent_id', label: 'sub-locations' },
-  // Phase 7.3 adds project_evidence.location_id here.
+  // 7.3, and the first entry this registry was written for. A location deleted out
+  // from under a year of photographs is the failure the shape exists to prevent.
+  { table: 'project_evidence', column: 'location_id', label: 'photos and files' },
   // Phase 7.4 adds project_documents.location_id.
   // Phase 7.6 adds site_diary_locations.location_id.
   // Phase 8 adds project_assets.location_id.

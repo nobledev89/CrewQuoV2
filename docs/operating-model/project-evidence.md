@@ -255,6 +255,7 @@ ever narrow what `policies.ts` has already allowed.
 | `POST /v1/files/presign` | `storage_gb` limit + the feature of the record it is for | the record's own upload capability | the company the file will be charged to (§13.3) | the project, when `project_id` is set |
 | `POST /v1/files/:id/complete` | none — re-checking here would strand paid-for bytes | must be the presigning membership | same | same |
 | `GET /v1/files/:id/download` | none | the referencing record's read capability | whichever hop the referencing record allows | the referencing record |
+| Read a counterparty's evidence | `project_evidence` on the **owner** | `project.read` | own company's rows; the owner sees all | the project |
 | Upload evidence | see §13.2 | `evidence.upload` | owner or one-hop provider | assigned to the project |
 | Edit another person's evidence metadata | `project_evidence` | `evidence.manage` | own company's rows; the project owner may re-tag any | the project |
 | Publish evidence to the client | `client_portal` (existing key) | `evidence.publish` | project-owning company **only** | the project |
@@ -272,6 +273,18 @@ gate. Gating the structure as well would mean a company whose plan includes
 scheduling but not evidence cannot lay out the floors its schedule refers to —
 one feature key silently deciding another feature's usability. The packet was
 changed to match what shipped, rather than the code bent to match the packet.
+
+**A referencing record may WIDEN the file floor, and 7.0's note said it would
+not.** The storage service shipped with a comment promising that evidence and
+document rules would only ever *narrow* the "uploader plus project owner" floor.
+Publishing is the counter-example, and it is the whole point of `client_visible`:
+the client is on neither side of the file's own two companies, so a disclosure
+the owner deliberately made must reach them or the flag means nothing. The floor
+still holds — nothing is reachable *without* a record naming the caller — and the
+widening is per record, per file, and closed again the moment it is hidden. A
+derivative is reachable only through its original's record, so a thumbnail is
+never a way around a rule its full-size photograph obeys. The comment in
+`storage/routes.ts` was corrected rather than quietly left standing.
 
 **Publishing is the project owner's alone, and that is not an oversight.**
 `client_visible` decides what a third company sees. A subcontractor able to set
@@ -765,7 +778,7 @@ a queue.**
 | **1** ✅ | **Project locations (§21, item 7.2) — shipped 2026-09-01.** Tree, depth cap 4, cycle rejection, retire-not-delete, and the reference check written as one function later phases extend rather than a hand-written list per phase — assets (Phase 8) and schedule assignments (Phase 11) both point here. | **shipped** |
 | **2** ✅ | **The offline/sync contract (7.7) — shipped 2026-09-01.** Client ids, idempotency, expected versions, per-field diary merge, tombstones, the three timestamps. Settled before the evidence APIs harden, which is decision #22's whole reason for putting it in this phase. The browser half waits on 7.6's screens; the races are proved with concurrent HTTP instead. | **shipped** |
 | **3** ✅ | **Storage service (§22.1, item 7.0) — shipped 2026-09-01.** `stored_files`, presign → PUT → complete → scan → READY, `sharp` derivatives, authorized presigned downloads, the byte meter. | **shipped 2026-09-01** |
-| **4** | **Evidence (§22).** Records, batch upload and batch metadata, gallery / timeline / table, filters, sticky selection. | step 3 |
+| **4** ✅ | **Evidence (§22, item 7.3) — shipped 2026-09-01.** `project_evidence`, batch create with per-item overrides, publish/hide, filters and category counts, the client's portal view, and the three timestamps kept three. Gallery / timeline / table and sticky selection are the **screens**, which are 7.6; the ordering and grouping they render are built and tested here. | **shipped** |
 | **5** | **Documents (§24).** Categories, `supersedes_id` versioning, expiry dates, and `document.expiring` emitted for Phase 12's ladder. | step 3 |
 | **6** | **Site diary (§23).** Entry, structured attendance, prefill from schedule and time logs, Close Day, post-close amendment with a required reason and the amendment count everywhere. | steps 0, 1, 2 |
 | **7** ✅ | **Retro-fit the Phase 3 expense receipt upload — shipped 2026-09-01 with step 3.** `expenses.receipt_url` has been null since `0004` with the comment *"upload deferred"*. It is the smallest real consumer of the storage service and therefore its best first proof. | **shipped** |

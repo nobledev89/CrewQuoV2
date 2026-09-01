@@ -513,6 +513,99 @@ async function onCompanyClosureCancelled(event: OutboxEvent): Promise<void> {
 }
 
 /**
+ * A provider added photographs to the hiring company's project (§22, packet §6).
+ *
+ * **The batch is the unit.** The payload carries a count and a category set and
+ * no prose whatsoever — no caption, no filename, no location name — because the
+ * event travels to analytics as well as to an inbox, and a filename like
+ * `Ridley_Redundancy_Consultation_Floor3.pdf` is a fact about somebody's job that
+ * would move as an ordinary string field. The title is composed here from
+ * resolved facts instead.
+ */
+async function onEvidenceBatchUploaded(event: OutboxEvent): Promise<void> {
+  const ownerCompanyId = required(event.payload, 'ownerCompanyId');
+  const projectId = required(event.payload, 'projectId');
+  const actorUserId = optional(event.payload, 'actorUserId');
+  const count = Number(event.payload.count ?? 0);
+  if (!Number.isFinite(count) || count < 1) {
+    throw new PermanentDeliveryError('count missing from payload — nothing to describe');
+  }
+
+  await dispatchNotification({
+    kind: 'evidence.batch_uploaded',
+    companyId: ownerCompanyId,
+    // Nobody is notified about their own action, which sounds obvious and is the
+    // bug that reaches production.
+    recipientUserIds: without(await managerRecipients(ownerCompanyId), actorUserId),
+    title: `${count} ${count === 1 ? 'file' : 'files'} added to a project`,
+    body: `A subcontractor added ${count} ${count === 1 ? 'file' : 'files'} of evidence.`,
+    subjectType: 'PROJECT',
+    subjectId: projectId,
+    actionUrl: `/projects/${projectId}`,
+    topic: event.topic,
+    aggregateId: event.aggregateId,
+  });
+}
+
+/** Evidence was deliberately shared with the client (§22.4, packet §6). */
+async function onEvidencePublished(event: OutboxEvent): Promise<void> {
+  const clientCompanyId = required(event.payload, 'clientCompanyId');
+  const projectId = required(event.payload, 'projectId');
+  const actorUserId = optional(event.payload, 'actorUserId');
+  const count = Number(event.payload.count ?? 0);
+
+  await dispatchNotification({
+    kind: 'evidence.published',
+    companyId: clientCompanyId,
+    recipientUserIds: without(await managerRecipients(clientCompanyId), actorUserId),
+    title: `${count} ${count === 1 ? 'file' : 'files'} shared with you`,
+    // Deliberately does not name the sharing company. The portal's own audit rule
+    // is that a visible row never names a counterparty, and the client already
+    // knows whose project they are looking at.
+    body: `New evidence is available on a project you are following.`,
+    subjectType: 'PROJECT',
+    subjectId: projectId,
+    actionUrl: `/portal/projects/${projectId}`,
+    topic: event.topic,
+    aggregateId: event.aggregateId,
+  });
+}
+
+/**
+ * A file was refused by the scanner, and the person who uploaded it is told.
+ *
+ * **Told, and not left to notice.** The scan happens minutes after the upload,
+ * in a worker, long after the screen that started it has moved on — so without
+ * this the failure is a thing Ade discovers weeks later when a report is short of
+ * a photograph. The uploader is the recipient rather than the company, because a
+ * refused file is a fact about one person's attempt and not about the business.
+ */
+async function onFileScanFailed(event: OutboxEvent): Promise<void> {
+  const uploaderUserId = required(event.payload, 'uploadedByUserId');
+  const fileId = required(event.payload, 'fileId');
+  const companyId = optional(event.payload, 'companyId');
+
+  await dispatchNotification({
+    kind: 'file.scan_failed',
+    companyId,
+    // The uploader IS the recipient here, so `without(..., actorUserId)` would
+    // silence the only message that matters. The "never your own action" rule is
+    // about acts a person performed; this is an outcome that happened to them.
+    recipientUserIds: [uploaderUserId],
+    title: 'A file could not be stored',
+    // The reason class, never the filename — a filename is customer prose and
+    // this body reaches an email server.
+    body: optional(event.payload, 'reasonClass') === 'TYPE_MISMATCH'
+      ? 'One of your uploads was not the type it claimed to be and was not stored. Re-take or re-export it and try again.'
+      : 'One of your uploads could not be stored. Try uploading it again.',
+    subjectType: 'STORED_FILE',
+    subjectId: fileId,
+    topic: event.topic,
+    aggregateId: event.aggregateId,
+  });
+}
+
+/**
  * The registered consumers. A topic with no handler here is simply not claimed by
  * this worker — `claimOutboxEvents` filters on the registered topic list, so an
  * unconsumed event waits rather than being marked delivered by a worker that did
@@ -532,6 +625,9 @@ export const NOTIFICATION_HANDLERS: ReadonlyMap<string, DeliveryHandler> = new M
   ['rate_proposal.submitted', onRateProposalSubmitted],
   ['rate_proposal.decided', onRateProposalDecided],
   ['invoice.issued', onInvoiceIssued],
+  ['evidence.batch_uploaded', onEvidenceBatchUploaded],
+  ['evidence.published', onEvidencePublished],
+  ['file.scan_failed', onFileScanFailed],
   ['auth.token_reuse', onAuthSecurityEvent],
   ['auth.session_revoked', onAuthSecurityEvent],
   ['auth.mfa_enrolled', onAuthSecurityEvent],

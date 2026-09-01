@@ -11,6 +11,8 @@ import { canReadPortal, type EngagementEdge } from '../../authorization/policies
 import { findEngagementByPair } from '../engagements/repo';
 import { hasFeature } from '../entitlements/guards';
 import { getAuditSettings } from '../audit/repo';
+import { countEvidenceByCategory, listEvidence, toEvidenceView } from '../evidence/repo';
+import { evidenceFilterSchema, refuseFilter } from '@crewquo/shared';
 import { getPortalLineItems, getPortalProject, listPortalProjects } from './repo';
 
 /**
@@ -103,5 +105,81 @@ portalRouter.get(
       showAuditTrail: settings?.showAuditTrail ?? false,
     };
     res.json(body);
+  })
+);
+
+/**
+ * GET /v1/portal/projects/:id/evidence — what was deliberately shared (§22.4).
+ *
+ * **The unpublished rows are absent from this response, not hidden in it.** The
+ * scope is applied in the `where` clause, so nothing the client may not see is
+ * ever serialised — which is the difference between a boundary and a rendering
+ * decision, and the assertion the acceptance script makes on the payload rather
+ * than on the page.
+ *
+ * Reading uses the same gate as the project detail above: the **owner's** plan
+ * must include `client_portal`, because a client on the free Crew plan can still
+ * be shown a portal by a provider who pays for one. The client's own capabilities
+ * are not consulted — they are a member of their own company and this is a
+ * disclosure made *to* that company, not a permission held inside it.
+ */
+portalRouter.get(
+  '/projects/:id/evidence',
+  asyncHandler(async (req, res) => {
+    const ctx = getCompanyCtx(req);
+    const found = await getPortalProject(ctx.companyId, param(req, 'id'));
+    if (!found) throw new AppError('NOT_FOUND', 'Project not found');
+
+    const allowed = canReadPortal({
+      companyId: ctx.companyId,
+      edge: { clientCompanyId: ctx.companyId, providerCompanyId: found.ownerCompanyId },
+      providerHasClientPortal: await hasFeature(found.ownerCompanyId, 'client_portal'),
+    });
+    if (!allowed) throw new AppError('NOT_FOUND', 'Project not found');
+    if (!(await hasFeature(found.ownerCompanyId, 'project_evidence'))) {
+      // Nothing to disclose rather than a refusal: the client has done nothing
+      // wrong and cannot fix the owner's plan, so an empty section is the honest
+      // answer and a 403 would be a message aimed at the wrong person.
+      res.json({ evidence: [], categoryCounts: {} });
+      return;
+    }
+
+    const raw = req.query as Record<string, unknown>;
+    const filter = evidenceFilterSchema.parse({
+      category:
+        raw.category === undefined
+          ? undefined
+          : Array.isArray(raw.category)
+            ? raw.category
+            : [raw.category],
+      from: raw.from,
+      to: raw.to,
+      locationId: raw.locationId,
+      limit: raw.limit === undefined ? undefined : Number(raw.limit),
+      offset: raw.offset === undefined ? undefined : Number(raw.offset),
+    });
+    const refusal = refuseFilter(filter);
+    if (refusal) throw new AppError('VALIDATION', refusal);
+
+    const [rows, categoryCounts] = await Promise.all([
+      listEvidence(found.id, { kind: 'CLIENT' }, filter),
+      countEvidenceByCategory(found.id, { kind: 'CLIENT' }),
+    ]);
+
+    /*
+     * `uploadedByUserId` and `companyId` are stripped, and that is the same
+     * boundary the project detail's destructure draws. Which of a provider's
+     * people took a photograph, and which subcontractor they work for, is the
+     * hiring company's business and not part of what was shared — the client was
+     * given the evidence, not the supply chain behind it.
+     */
+    const evidence = rows.map((row) => {
+      const { uploadedByUserId, companyId, batchClientId, ...visible } = toEvidenceView(row);
+      void uploadedByUserId;
+      void companyId;
+      void batchClientId;
+      return visible;
+    });
+    res.json({ evidence, categoryCounts });
   })
 );

@@ -36,6 +36,10 @@ import {
   locationsRouter,
   projectLocationsRouter,
 } from './modules/locations/routes';
+import {
+  evidenceRouter,
+  projectEvidenceRouter,
+} from './modules/evidence/routes';
 import { invitesRouter } from './modules/invites/routes';
 import { projectsRouter } from './modules/projects/routes';
 import {
@@ -274,8 +278,10 @@ export function buildApp(): Express {
   // Mounted before `projectsRouter` so `/:projectId/locations` reaches the router
   // that owns it rather than falling through to the project handler.
   app.use('/v1/projects', requireAuth, projectLocationsRouter);
+  app.use('/v1/projects', requireAuth, projectEvidenceRouter);
   app.use('/v1/projects', requireAuth, projectsRouter);
   app.use('/v1/locations', requireAuth, locationsRouter);
+  app.use('/v1/evidence', requireAuth, evidenceRouter);
   app.use('/v1/work-context', requireAuth, workContextRouter);
   app.use('/v1/time-logs', requireAuth, timeLogsRouter);
   app.use('/v1/expenses', requireAuth, expensesRouter);
