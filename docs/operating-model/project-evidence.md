@@ -6,8 +6,9 @@ every one of them sits on: the §37 capability model, and the offline/sync
 contract decision #22 requires settled *before* these APIs harden.
 **Phase:** 7 · **Status:** **adopted** — §13's four load-bearing questions were
 answered by the owner on 2026-09-01, every one as recommended; three remain open
-and none of them blocks the build. Steps 0 and 3 of §14 — the capability layer
-and the storage service — are shipped
+and none of them blocks the build. Steps 0, 1 and 3 of §14 — the capability
+layer, project locations and the storage service — are shipped, leaving step 2
+(the offline contract) before the records themselves
 · **Last updated:** 2026-09-01
 **Plan refs:** §21 (locations), §22 (evidence + the storage layer), §23 (site
 diary), §24 (documents), §37 (capabilities), §39 (`capture_gps_on_evidence`),
@@ -249,7 +250,7 @@ ever narrow what `policies.ts` has already allowed.
 
 | Operation | Feature | Capability | Company edge | Resource scope |
 |---|---|---|---|---|
-| Create / edit a location | `project_evidence` on the project owner | `project.manage` | project-owning company only | the project |
+| Create / edit a location | **none** — corrected 2026-09-01; see below | `project.manage` | project-owning company only | the project |
 | Read the location tree | none — it is structure, not content | `project.read` | owner or one-hop provider | the project |
 | `POST /v1/files/presign` | `storage_gb` limit + the feature of the record it is for | the record's own upload capability | the company the file will be charged to (§13.3) | the project, when `project_id` is set |
 | `POST /v1/files/:id/complete` | none — re-checking here would strand paid-for bytes | must be the presigning membership | same | same |
@@ -262,6 +263,15 @@ ever narrow what `policies.ts` has already allowed.
 | Close a day | `site_diary` | `diary.close` | the authoring company only | the entry |
 | Amend a closed day | `site_diary` | `diary.close` + a reason | the authoring company only | the entry |
 | Read a counterparty's diary | `site_diary` on the reader | `project.read` | one hop, engagement `ACTIVE` | the project |
+
+**Locations carry no feature entitlement, and this row is a correction rather
+than a design.** It first read `project_evidence`, written before step 1 was
+built. A location is *structure*, not content: it is consumed by evidence,
+documents, the diary, assets and the schedule, each of which carries its own
+gate. Gating the structure as well would mean a company whose plan includes
+scheduling but not evidence cannot lay out the floors its schedule refers to —
+one feature key silently deciding another feature's usability. The packet was
+changed to match what shipped, rather than the code bent to match the packet.
 
 **Publishing is the project owner's alone, and that is not an oversight.**
 `client_visible` decides what a third company sees. A subcontractor able to set
@@ -752,7 +762,7 @@ a queue.**
 | Step | What | Blocked on |
 |---|---|---|
 | **0** ✅ | **Capability layer (§37, item 7.1) — shipped 2026-09-01.** `capabilities`, bundles, items, `memberships.bundle_key`, overrides, `resolveCapabilities`, `hasCapability` in `policies.ts`. Null bundle derives from role, so no existing membership changes behaviour. Every later route in this phase needs it, and retrofitting authorization is the expensive kind. | **nothing** |
-| **1** | **Project locations (§21, item 7.2).** Tree, depth cap 4, cycle rejection, retire-not-delete, and the reference check written as one function later phases extend rather than a hand-written list per phase — assets (Phase 8) and schedule assignments (Phase 11) both point here. | **nothing** |
+| **1** ✅ | **Project locations (§21, item 7.2) — shipped 2026-09-01.** Tree, depth cap 4, cycle rejection, retire-not-delete, and the reference check written as one function later phases extend rather than a hand-written list per phase — assets (Phase 8) and schedule assignments (Phase 11) both point here. | **shipped** |
 | **2** | **The offline/sync contract (7.7).** Client ids, idempotency, expected versions, per-field diary merge, tombstones, the three timestamps. Settled before the evidence APIs harden, which is decision #22's whole reason for putting it in this phase. Exercised from the browser. | **nothing** |
 | **3** ✅ | **Storage service (§22.1, item 7.0) — shipped 2026-09-01.** `stored_files`, presign → PUT → complete → scan → READY, `sharp` derivatives, authorized presigned downloads, the byte meter. | **shipped 2026-09-01** |
 | **4** | **Evidence (§22).** Records, batch upload and batch metadata, gallery / timeline / table, filters, sticky selection. | step 3 |

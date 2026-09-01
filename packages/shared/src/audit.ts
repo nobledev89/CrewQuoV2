@@ -28,6 +28,15 @@ export const AUDIT_ACTIONS = [
   'project.updated',
   'project.deleted',
   'project.exported',
+  /*
+   * Project locations (§21, 0028). Their own actions rather than
+   * `project.updated`: a location is a spatial key that evidence, assets and
+   * diary entries hang off, and "somebody retired Floor 3" is a different
+   * question from "somebody renamed the project".
+   */
+  'location.created',
+  'location.updated',
+  'location.deleted',
   // A whole-company export (packet §14 step 5). Audited because it is a disclosure of
   // the company's record by one of its members, and the other owners are entitled to
   // know it happened. A *personal* export is not here on purpose: it has no company
@@ -124,6 +133,7 @@ export type AuditAction = z.infer<typeof auditActionSchema>;
 
 export const AUDIT_ENTITY_TYPES = [
   'PROJECT',
+  'LOCATION',
   'TIME_LOG',
   'EXPENSE',
   'PROJECT_SUBMISSION',

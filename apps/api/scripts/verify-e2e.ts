@@ -255,12 +255,28 @@ async function subscribe(companyId: string, planId: string): Promise<void> {
  */
 async function drainWorkers() {
   const MAX_PASSES = 100;
+  /*
+   * A pass claims this many, rather than the production default of 25.
+   *
+   * Headroom, not a fix for anything observed: the number that has to stay ahead
+   * of a backlog is `PASSES × LIMIT`, the loop above was sized at a 640-event
+   * backlog, and passes cost a round trip each while a bigger bite costs almost
+   * nothing. **This does not touch the 3,578 events sitting PENDING locally** —
+   * those have no registered handler, so the claim never sees them at all (see
+   * the note under Phase 7 in PROGRESS.md).
+   */
+  const PASS_LIMIT = 500;
   let outbox = { claimed: 0, delivered: 0, failed: 0 };
   let deliveries = { claimed: 0, sent: 0, skipped: 0, failed: 0 };
+  let drained = false;
   for (let pass = 0; pass < MAX_PASSES; pass += 1) {
     await recoverStaleOutboxClaims(0);
-    const o = await runOutboxBatch({ workerId: 'verify-e2e', handlers: NOTIFICATION_HANDLERS });
-    const d = await runNotificationDeliveryBatch();
+    const o = await runOutboxBatch({
+      workerId: 'verify-e2e',
+      handlers: NOTIFICATION_HANDLERS,
+      limit: PASS_LIMIT,
+    });
+    const d = await runNotificationDeliveryBatch(PASS_LIMIT);
     outbox = {
       claimed: outbox.claimed + o.claimed,
       delivered: outbox.delivered + o.delivered,
@@ -272,7 +288,30 @@ async function drainWorkers() {
       skipped: deliveries.skipped + d.skipped,
       failed: deliveries.failed + d.failed,
     };
-    if (o.claimed === 0 && d.claimed === 0) break;
+    if (o.claimed === 0 && d.claimed === 0) {
+      drained = true;
+      break;
+    }
+  }
+  /*
+   * And if it ever does run out of passes, say so *here* rather than letting it
+   * surface as an unrelated assertion three sections later. The silent exit is
+   * the defect worth closing: a bound that can be reached without anybody being
+   * told is a bound that reports its own failure as somebody else's bug, and this
+   * loop already had that shape once.
+   */
+  if (!drained) {
+    const { rows } = await db.query<{ n: string }>(
+      `select count(*)::int as n from delivery_outbox
+        where status = 'PENDING' and topic = any($1::text[])`,
+      [[...NOTIFICATION_HANDLERS.keys()]]
+    );
+    check(
+      `the outbox drains within ${MAX_PASSES} passes of ${PASS_LIMIT}`,
+      false,
+      `${rows[0]?.n ?? '?'} handled events still pending — every assertion about a ` +
+        `freshly enqueued notification below this point is unreliable`
+    );
   }
   return { outbox, deliveries };
 }
@@ -6995,6 +7034,242 @@ async function main(): Promise<void> {
     },
   });
   eq('a receipt belonging to another company cannot be attached', stStolenReceipt.status, 404);
+
+  // ── Project locations (§21) — Phase 7 build order step 1 ──────────────────
+  section('Project locations — the tree, and the four rules that keep it one');
+
+  const locOwner = await register('locowner', `LocationCo ${RUN}`);
+  const locCompany = locOwner.companyId!;
+  await subscribe(locCompany, 'pro');
+
+  const locProject = await call('POST', '/v1/projects', {
+    token: locOwner.token,
+    companyId: locCompany,
+    body: { name: `PwC London ${RUN}` },
+  });
+  const locProjectId = locProject.json.project.id as string;
+
+  const locEmpty = await call('GET', `/v1/projects/${locProjectId}/locations`, {
+    token: locOwner.token,
+    companyId: locCompany,
+  });
+  eq('a new project has no locations, which is the normal case', locEmpty.json.tree, []);
+
+  const mkLocation = async (body: Record<string, unknown>) =>
+    call('POST', `/v1/projects/${locProjectId}/locations`, {
+      token: locOwner.token,
+      companyId: locCompany,
+      body,
+    });
+
+  const locBuilding = await mkLocation({ kind: 'BUILDING', name: 'Building A' });
+  eq('a top-level location is created', locBuilding.status, 201);
+  eq('...at depth 1', locBuilding.json.location.depth, 1);
+
+  const locFloor1 = await mkLocation({ kind: 'FLOOR', name: 'Floor 1', parentId: locBuilding.json.location.id, sortOrder: 1 });
+  const locFloor3 = await mkLocation({ kind: 'FLOOR', name: 'Floor 3', parentId: locBuilding.json.location.id, sortOrder: 3 });
+  const locRoom = await mkLocation({ kind: 'ROOM', name: 'Room 3.12', parentId: locFloor3.json.location.id, reference: 'PWC-312' });
+  eq('a room three levels down is created', locRoom.status, 201);
+  eq('...and reports its depth without storing it', locRoom.json.location.depth, 3);
+
+  const locDesk = await mkLocation({ kind: 'OTHER', name: 'Desk 12a', parentId: locRoom.json.location.id });
+  eq('the fourth level is the last one allowed', locDesk.json.location.depth, 4);
+
+  const locFifth = await mkLocation({ kind: 'OTHER', name: 'Drawer', parentId: locDesk.json.location.id });
+  eq('a fifth level is refused', locFifth.status, 422);
+  check('...naming the cap rather than saying "invalid"',
+    /4 levels|4 deep|nested 4/i.test(locFifth.json?.error?.message ?? ''),
+    locFifth.json?.error?.message);
+
+  await mkLocation({ kind: 'LOADING_BAY', name: 'Loading Bay', sortOrder: 5 });
+
+  const locTree = await call('GET', `/v1/projects/${locProjectId}/locations`, {
+    token: locOwner.token,
+    companyId: locCompany,
+  });
+  eq('the tree comes back nested and ordered',
+    (locTree.json.tree as { name: string; children: { name: string }[] }[]).map((n) => n.name),
+    ['Building A', 'Loading Bay']);
+  eq('...with children in sortOrder',
+    (locTree.json.tree as { children: { name: string }[] }[])[0]?.children.map((c) => c.name),
+    ['Floor 1', 'Floor 3']);
+  eq('...and the flat list beside it for filters and exports',
+    (locTree.json.locations as unknown[]).length, 6);
+
+  // ── The four rules ────────────────────────────────────────────────────────
+  const locSelfParent = await call('PATCH', `/v1/locations/${locFloor3.json.location.id}`, {
+    token: locOwner.token,
+    companyId: locCompany,
+    body: { parentId: locFloor3.json.location.id },
+  });
+  eq('a location cannot be its own parent', locSelfParent.status, 422);
+
+  const locCycle = await call('PATCH', `/v1/locations/${locBuilding.json.location.id}`, {
+    token: locOwner.token,
+    companyId: locCompany,
+    body: { parentId: locRoom.json.location.id },
+  });
+  eq('a location cannot be moved inside its own sub-location', locCycle.status, 422);
+
+  /*
+   * The rule §21 implies and does not state: moving Floor 3 — which contains a
+   * room, which contains a desk — under Floor 1 puts the floor at a legal depth 3
+   * and the desk at 5. A check that only looked at the node being moved would
+   * allow it.
+   */
+  const locDeepMove = await call('PATCH', `/v1/locations/${locFloor3.json.location.id}`, {
+    token: locOwner.token,
+    companyId: locCompany,
+    body: { parentId: locFloor1.json.location.id },
+  });
+  eq('a move that fits the node but not its children is refused', locDeepMove.status, 422);
+  check('...for being too deep rather than for being a cycle',
+    locDeepMove.json?.error?.details?.reason === 'TOO_DEEP',
+    locDeepMove.json?.error?.details);
+
+  // The same move is fine once the subtree is short enough, which proves the
+  // refusal above is about height and not about Floor 1.
+  await call('DELETE', `/v1/locations/${locDesk.json.location.id}`, {
+    token: locOwner.token,
+    companyId: locCompany,
+  });
+  const locShallowMove = await call('PATCH', `/v1/locations/${locFloor3.json.location.id}`, {
+    token: locOwner.token,
+    companyId: locCompany,
+    body: { parentId: locFloor1.json.location.id },
+  });
+  eq('...and allowed once the subtree fits', locShallowMove.status, 200);
+  eq('...with the room following its floor down a level', locShallowMove.json.location.depth, 3);
+  const locAfterMove = await call('GET', `/v1/projects/${locProjectId}/locations`, {
+    token: locOwner.token,
+    companyId: locCompany,
+  });
+  eq('...and the room now at the cap',
+    (locAfterMove.json.locations as { id: string; depth: number }[]).find(
+      (l) => l.id === locRoom.json.location.id
+    )?.depth,
+    4);
+  // Put it back so the delete assertions below read against the shape above.
+  await call('PATCH', `/v1/locations/${locFloor3.json.location.id}`, {
+    token: locOwner.token,
+    companyId: locCompany,
+    body: { parentId: locBuilding.json.location.id },
+  });
+
+  // ── Delete, which §21 mostly refuses ──────────────────────────────────────
+  const locDeleteParent = await call('DELETE', `/v1/locations/${locFloor3.json.location.id}`, {
+    token: locOwner.token,
+    companyId: locCompany,
+  });
+  eq('deleting a location with sub-locations is refused', locDeleteParent.status, 409);
+  check('...naming what is using it and offering retirement instead',
+    /sub-locations/.test(locDeleteParent.json?.error?.message ?? '') &&
+      /retire/i.test(locDeleteParent.json?.error?.message ?? ''),
+    locDeleteParent.json?.error?.message);
+
+  const locRetire = await call('PATCH', `/v1/locations/${locFloor3.json.location.id}`, {
+    token: locOwner.token,
+    companyId: locCompany,
+    body: { active: false },
+  });
+  eq('retiring it works where deleting it does not', locRetire.json.location.active, false);
+  const locStillThere = await call('GET', `/v1/projects/${locProjectId}/locations`, {
+    token: locOwner.token,
+    companyId: locCompany,
+  });
+  check('...and everything recorded under it stays',
+    (locStillThere.json.locations as { id: string }[]).some(
+      (l) => l.id === locRoom.json.location.id
+    ));
+
+  const locDeleteLeaf = await call('DELETE', `/v1/locations/${locRoom.json.location.id}`, {
+    token: locOwner.token,
+    companyId: locCompany,
+  });
+  eq('an unused leaf can still be deleted outright', locDeleteLeaf.status, 204);
+
+  // ── Who may read and who may shape ───────────────────────────────────────
+  const locSubInvite = await call('POST', '/v1/providers', {
+    token: locOwner.token,
+    companyId: locCompany,
+    body: { name: `LocSub ${RUN}`, email: `locsub+${RUN}@verify.crewquo.test` },
+  });
+  const locSub = await register('locsub', undefined, `locsub+${RUN}@verify.crewquo.test`);
+  await call('POST', `/v1/invites/${locSubInvite.json.inviteToken}/accept`, { token: locSub.token });
+  const locSubCompany = ((await call('GET', '/v1/me/memberships', { token: locSub.token })).json
+    .memberships as { companyId: string }[]).find((m) => m.companyId !== locSub.companyId)
+    ?.companyId as string;
+  await call('POST', `/v1/projects/${locProjectId}/assignments`, {
+    token: locOwner.token,
+    companyId: locCompany,
+    body: { providerCompanyId: locSubCompany },
+  });
+
+  const locSubReads = await call('GET', `/v1/projects/${locProjectId}/locations`, {
+    token: locSub.token,
+    companyId: locSubCompany,
+  });
+  eq('an assigned subcontractor can see the tree it has to tag photos against',
+    locSubReads.status, 200);
+  const locSubWrites = await call('POST', `/v1/projects/${locProjectId}/locations`, {
+    token: locSub.token,
+    companyId: locSubCompany,
+    body: { kind: 'ROOM', name: 'Sub-invented room' },
+  });
+  eq('...and cannot reshape the client\'s site', locSubWrites.status, 403);
+
+  const locOutsider = await register('locoutsider', `LocOutsider ${RUN}`);
+  const locOutsiderReads = await call('GET', `/v1/projects/${locProjectId}/locations`, {
+    token: locOutsider.token,
+    companyId: locOutsider.companyId!,
+  });
+  eq('another company\'s project is not found, never forbidden', locOutsiderReads.status, 404);
+
+  /*
+   * A parent from another project is refused by the *database*, through the
+   * composite foreign key, not only by the route. Asserted directly because the
+   * route's own check would hide it: this is the guarantee that survives a
+   * handler somebody writes later without reading §21.
+   */
+  const locOtherProject = await call('POST', '/v1/projects', {
+    token: locOwner.token,
+    companyId: locCompany,
+    body: { name: `Second site ${RUN}` },
+  });
+  const locForeignParent = await mkLocation({
+    kind: 'FLOOR',
+    name: 'Impossible',
+    parentId: locBuilding.json.location.id,
+  });
+  eq('a location is created for the cross-project test', locForeignParent.status, 201);
+  let locDbRefused = false;
+  try {
+    await db.query(
+      `insert into project_locations (project_id, parent_id, kind, name)
+       values ($1, $2, 'ROOM', 'Cross-project child')`,
+      [locOtherProject.json.project.id, locBuilding.json.location.id]
+    );
+  } catch {
+    locDbRefused = true;
+  }
+  check('the database itself refuses a parent from another project', locDbRefused);
+
+  // ── The trail ─────────────────────────────────────────────────────────────
+  const locTrail = await call('GET', '/v1/audit-logs', {
+    token: locOwner.token,
+    companyId: locCompany,
+  });
+  const locActions = (locTrail.json.data as { action: string }[]).map((r) => r.action);
+  check('creating, changing and deleting a location are each audited',
+    locActions.includes('location.created') &&
+      locActions.includes('location.updated') &&
+      locActions.includes('location.deleted'),
+    [...new Set(locActions)].filter((a) => a.startsWith('location.')));
+  const locRetireRow = (locTrail.json.data as { action: string; description: string }[]).find(
+    (r) => r.action === 'location.updated' && /retired/i.test(r.description)
+  );
+  check('...and retiring reads as retiring rather than as an edit', Boolean(locRetireRow),
+    locRetireRow?.description);
 
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);
