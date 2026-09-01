@@ -260,19 +260,48 @@ function Preferences() {
   async function save(e: React.FormEvent) {
     e.preventDefault();
     if (!ctx) return;
+
+    /*
+     * The submitted form is the source of truth for the submitted values.
+     *
+     * These controls are still controlled because their live values drive the
+     * digest hint. React state, however, is an asynchronous rendering model: an
+     * input event and a submit can be delivered in one browser task before the
+     * state update has produced a new `save` closure. The old implementation read
+     * `start` and `end` here, so the fields could visibly contain 22:00 / 07:00
+     * while the request carried two nulls. Reading the successful controls from
+     * the submit event removes that timing boundary; it is also how a native form
+     * defines what was submitted.
+     */
+    const form = new FormData(e.currentTarget as HTMLFormElement);
+    const submittedStart = String(form.get('quiet-start') ?? '');
+    const submittedEnd = String(form.get('quiet-end') ?? '');
+    const submittedDigest = String(form.get('digest') ?? 'IMMEDIATE') as NotificationDigest;
+
+    // A half-window is almost certainly an unfinished edit. Clearing the stored
+    // pair would be a successful but destructive answer, so refuse it on-screen.
+    if ((submittedStart === '') !== (submittedEnd === '')) {
+      setSaved(false);
+      setError('Set both ends of quiet hours, or leave both blank.');
+      return;
+    }
+
     setBusy(true);
     setError(null);
     setSaved(false);
     try {
-      // Both ends or neither — the API refuses half a window, so the UI sends a
-      // pair rather than letting the user discover that as a validation error.
-      const both = start !== '' && end !== '';
+      const both = submittedStart !== '' && submittedEnd !== '';
       const { preferences } = await api.saveNotificationPreferences(ctx.accessToken, {
-        quietHoursStart: both ? start : null,
-        quietHoursEnd: both ? end : null,
-        digest,
+        quietHoursStart: both ? submittedStart : null,
+        quietHoursEnd: both ? submittedEnd : null,
+        digest: submittedDigest,
       });
       setPrefs(preferences);
+      // Canonicalise the editable state to the values the API accepted. This is
+      // normally a no-op; it matters if a browser normalises a time input.
+      setStart(preferences.quietHoursStart ?? '');
+      setEnd(preferences.quietHoursEnd ?? '');
+      setDigest(preferences.digest);
       setSaved(true);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not save your preferences');
@@ -293,7 +322,7 @@ function Preferences() {
           channel can never hide a task from you. A digest batches email; push is never
           batched, because one notification standing in for six is not a summary.
         </Notice>
-        <form onSubmit={save}>
+        <form onSubmit={save} aria-label="Delivery preferences">
           <Stack>
             <div className="cq-form-grid">
               <Field label="Quiet hours start" hint="Leave both blank for no quiet hours.">
