@@ -29,7 +29,7 @@ const DEFAULT_SETTINGS: AdminPlatformSettings = {
  * `platform.company_creation` (§3.1.1) is stored under its own key rather than
  * folded into `platform.access`, because its two flags are read on a hot path by
  * the creation service and are each waiting on a different Phase 6 bullet —
- * Resend for verification, Gumroad for checkout. Keeping them separable is what
+ * Resend for verification, Paddle for checkout. Keeping them separable is what
  * lets either be flipped the day its dependency lands.
  */
 const SETTINGS_KEYS = ['platform.branding', 'platform.access', 'platform.company_creation'];
@@ -321,7 +321,7 @@ export async function getAdminReporting(days: number): Promise<AdminReporting> {
 }
 
 export async function getAdminOperations(): Promise<AdminOperations> {
-  const [invites, overrides, recentAudit, delivery, deadLetters, notifications, jobs] =
+  const [invites, overrides, recentAudit, delivery, deadLetters, notifications, jobs, settings] =
     await Promise.all([
     query<{ id: string; kind: string; email: string; company_name: string; expires_at: Date }>(
       `select i.id, i.kind, i.email, c.name as company_name, i.expires_at
@@ -372,6 +372,7 @@ export async function getAdminOperations(): Promise<AdminOperations> {
      * draining it.
      */
     readJobHealth(),
+    getPlatformSettings(),
   ]);
 
   const overdueJobs = jobs.filter((job) => job.overdue);
@@ -429,8 +430,13 @@ export async function getAdminOperations(): Promise<AdminOperations> {
       },
       {
         name: 'Merchant of Record',
-        status: 'NOT_CONFIGURED',
-        detail: 'No merchant of record is selected; checkout is off.',
+        status: env.PADDLE_API_KEY && env.PADDLE_WEBHOOK_SECRET ? 'HEALTHY' : 'NOT_CONFIGURED',
+        detail:
+          env.PADDLE_API_KEY && env.PADDLE_WEBHOOK_SECRET
+            ? `Paddle server configuration is present; checkout is ${
+                settings.companyCheckoutEnabled ? 'enabled' : 'held off by the operator switch'
+              }.`
+            : 'Paddle API or webhook configuration is missing; checkout must remain off.',
       },
       {
         name: 'Email provider',

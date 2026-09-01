@@ -671,7 +671,9 @@ is already relying on it.
    the wiring is proved by initialising the real SDK against a stub transport — removing
    `beforeSend` puts a secret on the wire and the suite says so. **Still owed:** no event
    observed against a real project, since a DSN makes Sentry a disclosed subprocessor and
-   that belongs with the legal pages; and the web app is not wired yet.
+   that belongs with the legal pages. **The web half shipped 2026-09-01:** browser,
+   Node, edge, nested server-component and root-boundary errors all pass through the
+   same scrubber; mobile remains deferred to Phase 13.
 4. **The recovery promise** (§13.4): tier, backup schedule, and the rehearsal —
    which is the step, not the paperwork.
 5. **Export**, then **deletion** (§13.1, §13.2), in that order and never the

@@ -1,0 +1,34 @@
+{
+  "legalReview": {
+    "completedAt": "REPLACE_WITH_ISO_8601_TIMESTAMP",
+    "reference": "REPLACE_WITH_APPROVAL_OR_DOCUMENT_REFERENCE"
+  },
+  "productionEmailDelivery": {
+    "completedAt": "REPLACE_WITH_ISO_8601_TIMESTAMP",
+    "reference": "REPLACE_WITH_REAL_RECIPIENT_DELIVERY_RECEIPT"
+  },
+  "hostedErrorTracking": {
+    "completedAt": "REPLACE_WITH_ISO_8601_TIMESTAMP",
+    "reference": "REPLACE_WITH_API_AND_BROWSER_EVENT_RECEIPT"
+  },
+  "paddleSellerApproval": {
+    "completedAt": "REPLACE_WITH_ISO_8601_TIMESTAMP",
+    "reference": "REPLACE_WITH_PADDLE_ACCOUNT_REFERENCE"
+  },
+  "paddleLifecycle": {
+    "completedAt": "REPLACE_WITH_ISO_8601_TIMESTAMP",
+    "reference": "REPLACE_WITH_LIFECYCLE_TEST_RECEIPT"
+  },
+  "hostedRestore": {
+    "completedAt": "REPLACE_WITH_ISO_8601_TIMESTAMP",
+    "reference": "REPLACE_WITH_RESTORE_RECEIPT_AND_RPO_RTO"
+  },
+  "statusChannel": {
+    "completedAt": "REPLACE_WITH_ISO_8601_TIMESTAMP",
+    "reference": "REPLACE_WITH_PUBLIC_STATUS_URL"
+  },
+  "realCompanyPilot": {
+    "completedAt": "REPLACE_WITH_ISO_8601_TIMESTAMP",
+    "reference": "REPLACE_WITH_PILOT_SIGN_OFF"
+  }
+}

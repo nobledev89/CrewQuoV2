@@ -92,9 +92,9 @@ function DeadLetters({ rows, onChanged }: {
 /**
  * The additional-company review queue (§3.1.1(3)).
  *
- * Until Gumroad lands there is no checkout arm, so **every** additional company
- * a customer asks for arrives here — this queue is the safeguard's only approval
- * path, not a rarely-used exception screen.
+ * While additional-company checkout remains disabled, every request arrives here.
+ * This queue is therefore the safeguard's active approval path, not a rarely-used
+ * exception screen.
  *
  * The reviewer's actual job is the `Owns` column: somebody on their second
  * company is ordinary, somebody on their fifth with a name matching the previous
