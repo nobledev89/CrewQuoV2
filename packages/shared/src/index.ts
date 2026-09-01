@@ -24,3 +24,4 @@ export * from './totp';
 export * from './scrub';
 export * from './data-export';
 export * from './deletion';
+export * from './billing';

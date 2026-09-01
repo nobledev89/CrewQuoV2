@@ -110,6 +110,11 @@ import type {
   WorkContext,
   WorkStatus,
   WorkspacesResponse,
+  BillingOverview,
+  BillingCheckoutResponse,
+  BillingPaymentMethodResponse,
+  BillingSubscriptionActionResponse,
+  PublicPricingResponse,
 } from '@crewquo/shared';
 
 const API_URL: string = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
@@ -358,6 +363,11 @@ export const api = {
     }),
   deleteCompanyCreationRequest: (t: string, id: string) =>
     request<void>('DELETE', `/v1/company-creation-requests/${id}`, { accessToken: t }),
+  startRequestCheckout: (t: string, id: string, priceId: string) =>
+    request<BillingCheckoutResponse>('POST', `/v1/company-creation-requests/${id}/checkout`, {
+      accessToken: t,
+      body: { priceId },
+    }),
 
   // ── Company settings (§7) — OWNER/ADMIN may change the currency ──────────────
   getCompany: (t: string, c: string) =>
@@ -403,6 +413,38 @@ export const api = {
   // ── Entitlements ─────────────────────────────────────────────────────────────
   entitlements: (t: string, c: string) =>
     request<EntitlementsResponse>('GET', '/v1/entitlements', { accessToken: t, companyId: c }),
+  billing: (t: string, c: string) =>
+    request<BillingOverview>('GET', '/v1/billing', { accessToken: t, companyId: c }),
+  startBillingCheckout: (t: string, c: string, priceId: string) =>
+    request<BillingCheckoutResponse>('POST', '/v1/billing/checkout', {
+      accessToken: t,
+      companyId: c,
+      body: { priceId },
+    }),
+  cancelSubscription: (t: string, c: string) =>
+    request<BillingSubscriptionActionResponse>('POST', '/v1/billing/subscription/cancel', {
+      accessToken: t,
+      companyId: c,
+    }),
+  resumeSubscription: (t: string, c: string) =>
+    request<BillingSubscriptionActionResponse>('POST', '/v1/billing/subscription/resume', {
+      accessToken: t,
+      companyId: c,
+    }),
+  changeSubscriptionPlan: (t: string, c: string, priceId: string) =>
+    request<BillingSubscriptionActionResponse>('POST', '/v1/billing/subscription/plan', {
+      accessToken: t,
+      companyId: c,
+      body: { priceId },
+    }),
+  subscriptionPaymentMethodUrl: (t: string, c: string) =>
+    request<BillingPaymentMethodResponse>('POST', '/v1/billing/subscription/payment-method', {
+      accessToken: t,
+      companyId: c,
+    }),
+
+  /** The public pricing catalog. No bearer, no company — see `/v1/public/pricing`. */
+  publicPricing: () => request<PublicPricingResponse>('GET', '/v1/public/pricing'),
 
   // ── Role catalog ─────────────────────────────────────────────────────────────
   listRoles: (t: string, c: string) =>

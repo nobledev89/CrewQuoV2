@@ -361,7 +361,7 @@ describe('resolveCompanyApprovalRoute', () => {
     expect(resolveCompanyApprovalRoute({ checkoutEnabled: true, intendedPlanIsPaid: false }).route).toBe('ADMIN');
   });
 
-  /** Checkout is off until Gumroad: every request lands in the audited-admin arm. */
+  /** With checkout off, every request lands in the audited-admin arm. */
   it('sends everything to review while checkout is disabled', () => {
     expect(resolveCompanyApprovalRoute({ checkoutEnabled: false, intendedPlanIsPaid: true })).toEqual({
       route: 'ADMIN',

@@ -98,6 +98,19 @@ export const AUDIT_ACTIONS = [
   'company.closure_requested',
   'company.closure_cancelled',
   'company.closed',
+  /*
+   * Subscription self-management (§3.1.1, §5B). The company's own trail, not the
+   * platform's: these are the owner's decisions about what the company is paying
+   * for, and the person who finds an unexpected downgrade next quarter is a
+   * colleague, not an operator.
+   *
+   * `company.plan_changed` above is deliberately not reused. It is the *operator*
+   * setting a plan by hand, and collapsing the two would make "who decided this"
+   * unanswerable from the action alone.
+   */
+  'subscription.cancel_scheduled',
+  'subscription.cancel_withdrawn',
+  'subscription.plan_changed',
 ] as const;
 export const auditActionSchema = z.enum(AUDIT_ACTIONS);
 export type AuditAction = z.infer<typeof auditActionSchema>;

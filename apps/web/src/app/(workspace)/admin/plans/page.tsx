@@ -94,9 +94,9 @@ function AdminPlans() {
       />
 
       <Notice>
-        A plan edit affects companies that resolve entitlements live. Grandfathering is
-        snapshot-based and lands with Phase 5 billing, so today an edit to an active plan
-        changes what its current subscribers can do.
+        A plan edit affects companies that resolve entitlements live. Paddle-managed
+        subscriptions keep the entitlement snapshot written by their latest subscription
+        event; manually assigned and free plans continue to follow the live definition.
       </Notice>
 
       {creating && token ? (
@@ -284,7 +284,7 @@ function PriceEditor({
   onSaved: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [currency, setCurrency] = useState('USD');
+  const currency = 'USD';
   const [interval, setInterval] = useState<PriceInterval>('MONTH');
   const [amount, setAmount] = useState('');
   const [providerPriceId, setProviderPriceId] = useState('');
@@ -301,7 +301,7 @@ function PriceEditor({
     setError(null);
     try {
       await api.adminUpsertPrice(token, plan.id, {
-        currency: currency.toUpperCase(),
+        currency,
         interval,
         amountCents: cents,
         ...(providerPriceId.trim() ? { providerPriceId: providerPriceId.trim() } : {}),
@@ -373,12 +373,7 @@ function PriceEditor({
         <form onSubmit={save} className="cq-stack" aria-busy={busy}>
           <div className="cq-form-grid">
             <Field label="Currency">
-              <Input
-                value={currency}
-                onChange={(e) => setCurrency(e.target.value.toUpperCase().slice(0, 3))}
-                maxLength={3}
-                required
-              />
+              <Input value="USD" readOnly aria-readonly="true" />
             </Field>
             <Field label="Interval">
               <Select
@@ -404,7 +399,7 @@ function PriceEditor({
             </Field>
             <Field
               label="Provider price id"
-              hint="The merchant-of-record's own id. Optional until Phase 5 billing."
+              hint="The Paddle recurring price id (pri_…). Required before this price can be checked out."
             >
               <Input
                 value={providerPriceId}

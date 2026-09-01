@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deliveryFailureState, retryDelaySeconds } from './model';
+import { DeferredDeliveryError, deliveryFailureState, retryDelaySeconds } from './model';
 
 describe('durable delivery retry policy', () => {
   it('backs off exponentially and caps the delay at one hour', () => {
@@ -20,5 +20,23 @@ describe('durable delivery retry policy', () => {
     expect(deliveryFailureState({ failedAttempt: 1, retryable: false })).toEqual({
       status: 'DEAD_LETTER', delaySeconds: null,
     });
+  });
+});
+
+describe('DeferredDeliveryError', () => {
+  it('carries a whole number of seconds, never zero', () => {
+    expect(new DeferredDeliveryError('waiting', 900).retryAfterSeconds).toBe(900);
+    expect(new DeferredDeliveryError('waiting', 0.4).retryAfterSeconds).toBe(1);
+    expect(new DeferredDeliveryError('waiting', -30).retryAfterSeconds).toBe(1);
+  });
+
+  it('is not a permanent failure, so the worker cannot mistake one for the other', () => {
+    const deferred = new DeferredDeliveryError('waiting', 60);
+    expect(deferred).toBeInstanceOf(Error);
+    expect(deferred.name).toBe('DeferredDeliveryError');
+    // The worker branches on `instanceof`, so the two classes staying unrelated is
+    // the whole safety property: a deferral treated as a failure would dead-letter
+    // a valid event for being early.
+    expect(deferred.constructor.name).not.toBe('PermanentDeliveryError');
   });
 });

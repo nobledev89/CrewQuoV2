@@ -2,6 +2,8 @@ import { Router } from 'express';
 import {
   COMPANY_CREATION_ATTESTATION,
   COMPANY_RECOVERY_ROUTES,
+  billingCheckoutRequestSchema,
+  billingCheckoutResponseSchema,
   COMPANY_REQUEST_PENDING_DAYS,
   COMPANY_REQUEST_RATE_LIMIT,
   COMPANY_REQUEST_RATE_WINDOW_HOURS,
@@ -22,6 +24,7 @@ import { withTransaction } from '../../db';
 import { findUserById } from '../users/repo';
 import { requireStepUpAuth } from '../auth/stepUp';
 import { recordPlatformAudit } from '../admin/platform.repo';
+import { startRequestCheckout } from '../billing/repo';
 import { getCompanyCreationSettings } from './settings';
 import {
   countRecentRequests,
@@ -230,6 +233,31 @@ companyCreationRouter.post(
       warning: signal.level === 'WARNING' ? signal.reason : null,
     };
     res.status(201).json(body);
+  })
+);
+
+/**
+ * POST /v1/company-creation-requests/:id/checkout — pay for the additional
+ * company this request declares (§3.1.1(3), the paid arm).
+ *
+ * The route deliberately does **not** approve anything. It opens a hosted Paddle
+ * checkout; the request moves `PENDING_CHECKOUT → APPROVED` when the verified
+ * `transaction.completed` webhook is reconciled, which is the only evidence that
+ * money actually changed hands. A client-side "payment succeeded" callback is
+ * not evidence — it is a message from the browser being charged.
+ */
+companyCreationRouter.post(
+  '/:id/checkout',
+  asyncHandler(async (req, res) => {
+    const ctx = getCtx(req);
+    const id = uuidParam(req, 'id');
+    const input = billingCheckoutRequestSchema.parse(req.body);
+    const created = await startRequestCheckout({
+      requestId: id,
+      userId: ctx.userId,
+      priceId: input.priceId,
+    });
+    res.status(201).json(billingCheckoutResponseSchema.parse(created));
   })
 );
 

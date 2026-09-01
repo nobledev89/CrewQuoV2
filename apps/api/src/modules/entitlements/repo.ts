@@ -1,4 +1,4 @@
-import type { Entitlements, FeatureKey, LimitKey } from '@crewquo/shared';
+import { entitlementsSchema, type Entitlements, type FeatureKey, type LimitKey } from '@crewquo/shared';
 import { query, queryOne } from '../../db';
 import { mergeEntitlements, type EntitlementOverride, type EntitlementsBase } from './merge';
 
@@ -14,10 +14,12 @@ interface PlanRow {
  * default), plus that plan's feature keys and limit values.
  */
 async function loadBase(companyId: string): Promise<EntitlementsBase> {
-  const sub = await queryOne<{ plan_id: string }>(
-    `select plan_id from company_subscriptions where company_id = $1`,
+  const sub = await queryOne<{ plan_id: string; entitlements_snapshot: unknown }>(
+    `select plan_id, entitlements_snapshot from company_subscriptions where company_id = $1`,
     [companyId]
   );
+  const snapshot = entitlementsSchema.safeParse(sub?.entitlements_snapshot);
+  if (snapshot.success) return snapshot.data;
   const planId = sub?.plan_id ?? DEFAULT_PLAN_ID;
 
   const plan = await queryOne<PlanRow>(

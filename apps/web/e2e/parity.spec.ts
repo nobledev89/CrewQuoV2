@@ -911,9 +911,25 @@ test.describe('Web core workflows', () => {
       contractor.getByText(/still appears on this screen straight away/)
     ).toBeVisible();
 
-    await contractor.getByLabel(/^Quiet hours start/).fill('22:00');
-    await contractor.getByLabel(/^Quiet hours end/).fill('07:00');
-    await contractor.getByRole('button', { name: 'Save preferences' }).click();
+    const preferences = contractor.getByRole('form', { name: 'Delivery preferences' });
+    await preferences.evaluate((form) => {
+      const start = form.querySelector<HTMLInputElement>('[name="quiet-start"]');
+      const end = form.querySelector<HTMLInputElement>('[name="quiet-end"]');
+      if (!start || !end) throw new Error('Quiet-hours controls are missing');
+
+      /*
+       * Deliver both input events and the submit in one browser task. React may
+       * not have rendered the state updates before the submit handler runs, but a
+       * form must still submit the values visibly present in its controls. This
+       * deterministically pins the race that used to appear only after enough
+       * session churn in the serial suite.
+       */
+      start.value = '22:00';
+      start.dispatchEvent(new Event('input', { bubbles: true }));
+      end.value = '07:00';
+      end.dispatchEvent(new Event('input', { bubbles: true }));
+      (form as HTMLFormElement).requestSubmit();
+    });
     await expect(contractor.getByText('Quiet from 22:00 to 07:00')).toBeVisible();
 
     // A window that runs past midnight is the normal case and must round-trip.

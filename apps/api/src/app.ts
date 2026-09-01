@@ -49,6 +49,11 @@ import {
   rateProposalsRouter,
 } from './modules/commercial/routes';
 import { companyCreationRouter } from './modules/company-creation/routes';
+import {
+  billingRouter,
+  billingWebhookRouter,
+  publicBillingRouter,
+} from './modules/billing/routes';
 
 /**
  * Browser origins this API answers to (`docs/operating-model/access.md` §10.4).
@@ -183,6 +188,10 @@ export function buildApp(): Express {
     })
   );
 
+  // Paddle signs the exact request bytes. This route must stay above the JSON
+  // parser or even harmless whitespace normalization invalidates the signature.
+  app.use('/v1/webhooks', billingWebhookRouter);
+
   // An explicit ceiling rather than the framework default, so the limit is a
   // decision. Every payload this API accepts is a form; file content goes to
   // object storage through a presigned URL and never through here.
@@ -204,6 +213,11 @@ export function buildApp(): Express {
 
   // Public auth routes (no X-Company-Id, no bearer).
   app.use('/v1/auth', authRouter);
+
+  // The public pricing catalog. Unauthenticated on purpose — it is what the
+  // marketing site renders — and it carries plans, prices and entitlement
+  // definitions only: no tenant data, and no platform settings.
+  app.use('/v1/public', publicBillingRouter);
 
   // Authenticated routes.
   //
@@ -229,6 +243,7 @@ export function buildApp(): Express {
   app.use('/v1/companies', requireAuth, companyClosureRouter);
   app.use('/v1/companies', requireAuth, companiesRouter);
   app.use('/v1/entitlements', requireAuth, entitlementsRouter);
+  app.use('/v1/billing', requireAuth, billingRouter);
 
   // Rate engine & catalog (§6). Company-scoped — active company via X-Company-Id.
   app.use('/v1/role-catalog', requireAuth, roleCatalogRouter);

@@ -251,9 +251,18 @@ export type CompanyApprovalRoute = 'CHECKOUT' | 'ADMIN';
  * The entry state is the **server's** decision, not the caller's — otherwise a
  * client would simply ask for the free review queue instead of paying.
  *
- * Checkout is off until Gumroad lands, so every request currently routes to
- * `ADMIN` / `PENDING_REVIEW`. That is §3.1.1(3)'s "audited super-admin approval"
- * arm, not a gap in the safeguard.
+ * While the platform checkout flag is off, requests route to `ADMIN` /
+ * `PENDING_REVIEW`. That is §3.1.1(3)'s audited-super-admin arm, and it remains
+ * the exceptional path for a legitimate free/Crew second company even with
+ * checkout live.
+ *
+ * The paid arm exists as of 2026-08-31: `POST
+ * /v1/company-creation-requests/:id/checkout` opens a hosted Paddle transaction,
+ * and the verified `transaction.completed` webhook is what moves the request to
+ * `APPROVED` — never a client-side success callback, which is a message from the
+ * browser being charged rather than evidence that it was. The flag stays off
+ * until the merchant account itself is live, which is an operator action rather
+ * than a missing capability.
  */
 export function resolveCompanyApprovalRoute(input: {
   checkoutEnabled: boolean;

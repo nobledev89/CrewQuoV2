@@ -193,22 +193,39 @@ export async function recordVerifiedWebhook(input: {
   return { id: existing.id, duplicate: true };
 }
 
-export async function claimInboxEvents(workerId: string, limit = 25): Promise<InboxEvent[]> {
+export async function claimInboxEvents(
+  workerId: string,
+  providers: string[],
+  limit = 25
+): Promise<InboxEvent[]> {
+  if (providers.length === 0) return [];
   const rows = await query<InboxRow>(
     `with picked as (
        select id from webhook_inbox
-        where status = 'RECEIVED' and available_at <= now()
+        where status = 'RECEIVED' and available_at <= now() and provider = any($2::text[])
         order by available_at, received_at
-        for update skip locked limit $2
+        for update skip locked limit $3
      )
      update webhook_inbox i
         set status = 'PROCESSING', locked_at = now(), locked_by = $1, updated_at = now()
        from picked where i.id = picked.id
      returning i.id, i.provider, i.external_event_id, i.event_type, i.body_sha256,
                i.payload, i.attempts`,
-    [workerId, limit]
+    [workerId, providers, limit]
   );
   return rows.map(toInboxEvent);
+}
+
+export async function recoverStaleInboxClaims(staleMinutes = 15): Promise<number> {
+  const rows = await query<{ id: string }>(
+    `update webhook_inbox
+        set status = 'RECEIVED', locked_at = null, locked_by = null,
+            available_at = now(), last_error = 'Worker lease expired', updated_at = now()
+      where status = 'PROCESSING' and locked_at < now() - ($1 || ' minutes')::interval
+      returning id`,
+    [String(staleMinutes)]
+  );
+  return rows.length;
 }
 
 export async function completeInboxEvent(id: string, workerId: string): Promise<boolean> {
@@ -245,6 +262,62 @@ export async function failInboxEvent(input: {
   );
   if (!row) throw new AppError('CONFLICT', 'Webhook lease is no longer owned by this worker');
   return row.status;
+}
+
+/**
+ * Release the lease and make the event available again later **without counting
+ * an attempt**.
+ *
+ * Distinct from `failInboxEvent` because nothing failed: the event is valid and
+ * simply not yet applicable (see `DeferredDeliveryError`). Counting it would
+ * dead-letter a correct event for being early, which is the opposite of what the
+ * retry budget is for. `attempts` is left alone so a *real* failure after the
+ * wait still gets its full budget.
+ */
+export async function deferInboxEvent(input: {
+  id: string;
+  workerId: string;
+  delaySeconds: number;
+  reason: string;
+}): Promise<void> {
+  const row = await queryOne<{ id: string }>(
+    `update webhook_inbox
+        set status = 'RECEIVED', available_at = now() + ($3 || ' seconds')::interval,
+            locked_at = null, locked_by = null, last_error = $4, updated_at = now()
+      where id = $1 and status = 'PROCESSING' and locked_by = $2
+      returning id`,
+    [input.id, input.workerId, String(Math.max(1, Math.floor(input.delaySeconds))),
+      input.reason.slice(0, 4000)]
+  );
+  if (!row) throw new AppError('CONFLICT', 'Webhook lease is no longer owned by this worker');
+}
+
+/**
+ * Make deferred events for one subject available now, because the thing they were
+ * waiting on has just happened.
+ *
+ * Without this, a paid additional-company subscription would attach up to the
+ * deferral interval after the company was created, and the customer would spend
+ * that window on the free plan having already been charged. The fallback interval
+ * still exists; this is the fast path for the one caller that knows.
+ *
+ * `attempts` and `status` are untouched — only availability moves — so a genuine
+ * failure afterwards still gets its whole retry budget.
+ */
+export async function wakeDeferredWebhookEvents(
+  subject: { customDataKey: string; value: string },
+  runner?: Queryable
+): Promise<number> {
+  const rows = await query<{ id: string }>(
+    `update webhook_inbox
+        set available_at = now(), updated_at = now()
+      where status = 'RECEIVED' and available_at > now()
+        and payload -> 'data' -> 'custom_data' ->> $1 = $2
+      returning id`,
+    [subject.customDataKey, subject.value],
+    runner
+  );
+  return rows.length;
 }
 
 export async function replayDeliveryDeadLetter(

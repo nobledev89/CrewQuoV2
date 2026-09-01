@@ -144,11 +144,9 @@ adminCompanyCreationRouter.post(
 /**
  * POST /v1/admin/company-creation-requests/:id/record-checkout
  *
- * The `PENDING_CHECKOUT → APPROVED` edge, reachable today by an operator holding
- * a payment reference ("the customer paid, mark it") and by the Gumroad webhook
- * when that lands — the webhook will call this same transition rather than a
- * parallel one, which is the whole reason the state exists now instead of being
- * added later with billing.
+ * The `PENDING_CHECKOUT → APPROVED` edge, currently reachable by an operator
+ * holding a payment reference. The additional-company Paddle checkout must use
+ * this transition rather than inventing a parallel approval state.
  */
 adminCompanyCreationRouter.post(
   '/:id/record-checkout',

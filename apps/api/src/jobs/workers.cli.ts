@@ -1,9 +1,10 @@
 import { pool } from '../db';
-import { recoverStaleOutboxClaims } from '../modules/delivery/repo';
-import { runOutboxBatch } from '../modules/delivery/worker';
+import { recoverStaleInboxClaims, recoverStaleOutboxClaims } from '../modules/delivery/repo';
+import { runInboxBatch, runOutboxBatch } from '../modules/delivery/worker';
 import { runNotificationDeliveryBatch } from '../modules/notifications/deliveryWorker';
 import { NOTIFICATION_HANDLERS } from '../modules/notifications/handlers';
 import { recordJobRun } from './jobRuns';
+import { BILLING_INBOX_HANDLERS } from '../modules/billing/reconcile';
 
 /**
  * The process that actually drains the durable substrate.
@@ -46,8 +47,20 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 }
 
 async function pass(): Promise<{ claimed: number; succeeded: number; failed: number }> {
-  const recovered = await recoverStaleOutboxClaims();
-  if (recovered > 0) console.log(`[workers] recovered ${recovered} stale outbox lease(s)`);
+  const [recoveredOutbox, recoveredInbox] = await Promise.all([
+    recoverStaleOutboxClaims(),
+    recoverStaleInboxClaims(),
+  ]);
+  if (recoveredOutbox > 0) console.log(`[workers] recovered ${recoveredOutbox} stale outbox lease(s)`);
+  if (recoveredInbox > 0) console.log(`[workers] recovered ${recoveredInbox} stale inbox lease(s)`);
+
+  const inbox = await runInboxBatch({ workerId: WORKER_ID, handlers: BILLING_INBOX_HANDLERS });
+  if (inbox.claimed > 0) {
+    console.log(
+      `[workers] webhooks claimed=${inbox.claimed} processed=${inbox.processed} ` +
+        `deferred=${inbox.deferred} failed=${inbox.failed}`
+    );
+  }
 
   const outbox = await runOutboxBatch({ workerId: WORKER_ID, handlers: NOTIFICATION_HANDLERS });
   if (outbox.claimed > 0) {
@@ -67,9 +80,9 @@ async function pass(): Promise<{ claimed: number; succeeded: number; failed: num
   // Both halves in one set of counts, because they are scheduled as one unit and
   // a split would let one report success for the pair.
   return {
-    claimed: outbox.claimed + deliveries.claimed,
-    succeeded: outbox.delivered + deliveries.sent,
-    failed: outbox.failed + deliveries.failed,
+    claimed: inbox.claimed + outbox.claimed + deliveries.claimed,
+    succeeded: inbox.processed + outbox.delivered + deliveries.sent,
+    failed: inbox.failed + outbox.failed + deliveries.failed,
   };
 }
 

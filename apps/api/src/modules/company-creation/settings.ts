@@ -16,7 +16,7 @@ export interface CompanyCreationSettings {
    * verification unconditionally and never reads this.
    */
   requireVerifiedEmail: boolean;
-  /** Routes a paid-plan request to `PENDING_CHECKOUT`. False until Gumroad exists. */
+  /** Routes a paid-plan request to `PENDING_CHECKOUT`. Keep off until Paddle is configured. */
   checkoutEnabled: boolean;
 }
 

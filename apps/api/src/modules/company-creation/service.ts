@@ -9,7 +9,7 @@ import { findCompanyById, insertCompany, type CompanyRow } from '../companies/re
 import { insertMembership } from '../memberships/repo';
 import { recordPlatformAudit } from '../admin/platform.repo';
 import { recordAudit } from '../audit/record';
-import { enqueueOutboxEvent } from '../delivery/repo';
+import { enqueueOutboxEvent, wakeDeferredWebhookEvents } from '../delivery/repo';
 import { getCompanyCreationSettings } from './settings';
 import {
   claimAllowance,
@@ -264,6 +264,15 @@ export async function createCompanyForUser(input: {
         changes: { companyId: company.id, legalName: approval!.legal_name },
         description: `Approved request consumed by ${company.name}`,
       },
+      client
+    );
+
+    // A request approved by *payment* may have a Paddle subscription parked in the
+    // webhook inbox, waiting for exactly this company to exist. It resolves on its
+    // own eventually; waking it here is what stops somebody who has just paid
+    // spending the next quarter of an hour on the free plan.
+    await wakeDeferredWebhookEvents(
+      { customDataKey: 'crewquo_company_request_id', value: decision.requestId },
       client
     );
 

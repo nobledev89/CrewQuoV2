@@ -37,11 +37,7 @@ export const adminPlanUpdateSchema = adminPlanCreateSchema
 export type AdminPlanUpdate = z.infer<typeof adminPlanUpdateSchema>;
 
 export const adminPlanPriceSchema = z.object({
-  currency: z
-    .string()
-    .trim()
-    .toUpperCase()
-    .regex(/^[A-Z]{3}$/),
+  currency: z.literal('USD'),
   interval: priceIntervalSchema,
   amountCents: z.number().int().min(0),
   providerPriceId: z.string().optional(),
@@ -434,7 +430,8 @@ export const adminPlatformSettingsSchema = z.object({
    *    additional-company request requires verification unconditionally and never
    *    reads this flag — that user has had time.
    *  · `checkoutEnabled` routes a paid-plan request to PENDING_CHECKOUT instead
-   *    of the review queue. False until Gumroad exists.
+   *    of the review queue. Keep false until the additional-company Paddle flow
+   *    consumes that request after payment.
    */
   requireVerifiedEmailForFirstCompany: z.boolean(),
   companyCheckoutEnabled: z.boolean(),

@@ -30,6 +30,7 @@ import { env } from '../src/env';
 import { pool } from '../src/db';
 import {
   COMPANY_CLOSURE_PLAN,
+  COMPANY_REQUEST_APPROVAL_DAYS,
   SCHEDULED_JOBS,
   COMPANY_EXPORT,
   DELETION_COOLING_OFF_DAYS,
@@ -45,10 +46,11 @@ import { deriveKid, parseRetiredSecrets } from '../src/modules/auth/signingKeys'
 import { currentAccessKid, signPurposeToken } from '../src/modules/auth/tokens';
 import { readJobHealth, recordJobRun } from '../src/jobs/jobRuns';
 import { runClosurePass } from '../src/jobs/closures';
-import { runOutboxBatch } from '../src/modules/delivery/worker';
-import { recoverStaleOutboxClaims } from '../src/modules/delivery/repo';
+import { runInboxBatch, runOutboxBatch } from '../src/modules/delivery/worker';
+import { recordVerifiedWebhook, recoverStaleOutboxClaims } from '../src/modules/delivery/repo';
 import { runNotificationDeliveryBatch } from '../src/modules/notifications/deliveryWorker';
 import { NOTIFICATION_HANDLERS } from '../src/modules/notifications/handlers';
+import { BILLING_INBOX_HANDLERS } from '../src/modules/billing/reconcile';
 
 const BASE = process.env.VERIFY_API_URL ?? `http://127.0.0.1:${env.PORT}`;
 const RUN = randomUUID().slice(0, 8);
@@ -2548,7 +2550,7 @@ async function main(): Promise<void> {
     },
   });
   eq('a clean request is filed', filed.status, 201);
-  // Checkout is off until Gumroad, so everything lands in the audited-admin arm.
+  // Additional-company checkout stays off, so everything lands in the audited-admin arm.
   eq('...in the review queue, not checkout', filed.json.request.status, 'PENDING_REVIEW');
   eq('...on the admin route', filed.json.request.approvalRoute, 'ADMIN');
   const requestId = filed.json.request.id as string;
@@ -5865,6 +5867,545 @@ async function main(): Promise<void> {
         missing.length === 0, missing);
     }
   }
+
+  // ── Paddle webhook reconciliation ────────────────────────────────────────
+  section('Paddle webhook reconciliation');
+  const billingOwner = await register('billing-owner', `Billing Co ${RUN}`);
+  const paddlePriceId = `pri_verify_${RUN}`;
+  const paddleSubscriptionId = `sub_verify_${RUN}`;
+  const paddleEventId = `evt_verify_${RUN}_new`;
+  const { rows: billingPrices } = await db.query<{ id: string }>(
+    `update plan_prices set provider_price_id = $1, active = true, updated_at = now()
+      where plan_id = 'pro' and currency = 'USD' and interval = 'MONTH'
+      returning id`,
+    [paddlePriceId]
+  );
+  const planPriceId = billingPrices[0]!.id;
+  const occurredAt = new Date().toISOString();
+  const paddlePayload = {
+    event_id: paddleEventId,
+    event_type: 'subscription.created',
+    occurred_at: occurredAt,
+    data: {
+      id: paddleSubscriptionId,
+      status: 'active',
+      customer_id: `ctm_verify_${RUN}`,
+      items: [{ price: { id: paddlePriceId } }],
+      current_billing_period: { ends_at: new Date(Date.now() + 30 * 86_400_000).toISOString() },
+      trial_dates: null,
+      scheduled_change: null,
+      custom_data: {
+        crewquo_company_id: billingOwner.companyId,
+        crewquo_plan_price_id: planPriceId,
+      },
+    },
+  };
+  const bodySha256 = createHash('sha256').update(JSON.stringify(paddlePayload)).digest('hex');
+  const firstReceipt = await recordVerifiedWebhook({
+    provider: 'PADDLE', externalEventId: paddleEventId,
+    eventType: paddlePayload.event_type, bodySha256, payload: paddlePayload,
+  });
+  const duplicateReceipt = await recordVerifiedWebhook({
+    provider: 'PADDLE', externalEventId: paddleEventId,
+    eventType: paddlePayload.event_type, bodySha256, payload: paddlePayload,
+  });
+  check('the first verified Paddle event is persisted once', !firstReceipt.duplicate);
+  check('a redelivery with the same event id and body is deduplicated', duplicateReceipt.duplicate);
+
+  const billingPass = await runInboxBatch({
+    workerId: `verify-billing-${RUN}`,
+    handlers: BILLING_INBOX_HANDLERS,
+  });
+  eq('the inbox worker processes the subscription event', billingPass.processed, 1);
+  const { rows: reconciled } = await db.query<{
+    plan_id: string; status: string; provider: string; provider_subscription_id: string;
+    entitlements_snapshot: { planId?: string } | null;
+  }>(
+    `select plan_id, status, provider, provider_subscription_id, entitlements_snapshot
+       from company_subscriptions where company_id = $1`,
+    [billingOwner.companyId]
+  );
+  eq('the Paddle subscription becomes the company subscription', {
+    plan: reconciled[0]?.plan_id,
+    status: reconciled[0]?.status,
+    provider: reconciled[0]?.provider,
+    providerId: reconciled[0]?.provider_subscription_id,
+  }, { plan: 'pro', status: 'ACTIVE', provider: 'PADDLE', providerId: paddleSubscriptionId });
+  eq('the paid entitlement definition is frozen on the subscription',
+    reconciled[0]?.entitlements_snapshot?.planId, 'pro');
+
+  const olderPayload = {
+    ...paddlePayload,
+    event_id: `evt_verify_${RUN}_old`,
+    event_type: 'subscription.canceled',
+    occurred_at: new Date(Date.parse(occurredAt) - 60_000).toISOString(),
+    data: { ...paddlePayload.data, status: 'canceled' },
+  };
+  await recordVerifiedWebhook({
+    provider: 'PADDLE', externalEventId: olderPayload.event_id,
+    eventType: olderPayload.event_type,
+    bodySha256: createHash('sha256').update(JSON.stringify(olderPayload)).digest('hex'),
+    payload: olderPayload,
+  });
+  await runInboxBatch({ workerId: `verify-billing-old-${RUN}`, handlers: BILLING_INBOX_HANDLERS });
+  const { rows: afterOlder } = await db.query<{ status: string }>(
+    `select status from company_subscriptions where company_id = $1`, [billingOwner.companyId]
+  );
+  eq('an older cancellation delivered later cannot roll subscription state backward',
+    afterOlder[0]?.status, 'ACTIVE');
+
+  const billingOverview = await call('GET', '/v1/billing', {
+    token: billingOwner.token,
+    companyId: billingOwner.companyId!,
+  });
+  eq('the customer billing surface returns the reconciled state', billingOverview.status, 200);
+  eq('checkout stays off without operator enablement and Paddle configuration',
+    billingOverview.json.checkoutEnabled, false);
+
+  // ── Public pricing ────────────────────────────────────────────────────────
+  section('Public pricing');
+  const pricing = await call('GET', '/v1/public/pricing');
+  eq('the pricing catalog is readable with no session at all', pricing.status, 200);
+  check('...and lists more than one plan', (pricing.json.plans?.length ?? 0) > 1,
+    pricing.json.plans?.length);
+  const freePlan = pricing.json.plans?.find((plan: any) => plan.id === 'crew');
+  eq('...including the free plan, whose absence of a price is the product decision',
+    { found: Boolean(freePlan), prices: freePlan?.prices?.length }, { found: true, prices: 0 });
+  const pricedPlan = pricing.json.plans?.find((plan: any) => plan.prices?.length > 0);
+  eq('...and at least one plan with a real USD amount',
+    { currency: pricedPlan?.prices?.[0]?.currency, positive: pricedPlan?.prices?.[0]?.amountCents > 0 },
+    { currency: 'USD', positive: true });
+  /*
+   * Two leaks this endpoint is the likeliest place for, both asserted on the whole
+   * serialised body rather than on a field, because a field assertion only covers
+   * the field somebody remembered.
+   *
+   * A `pri_…` is Paddle's own identifier and belongs to the merchant account, not
+   * the customer; `checkoutEnabled` is a platform setting, and a public read that
+   * reports it publishes operator configuration to anybody who asks.
+   */
+  const pricingBody = JSON.stringify(pricing.json);
+  check('no provider price id reaches the public catalog', !pricingBody.includes('pri_'));
+  check('no platform setting reaches the public catalog', !pricingBody.includes('checkoutEnabled'));
+  check('...and it is the one response this API lets a cache keep',
+    (pricing.headers.get('cache-control') ?? '').includes('public'),
+    pricing.headers.get('cache-control'));
+
+  // ── The additional-company checkout (§3.1.1(3)) ───────────────────────────
+  section('Additional-company checkout');
+
+  /*
+   * The operator flag, saved and restored.
+   *
+   * Every run of this script must start from the same state — an earlier section
+   * asserts checkout is *off* — so leaving it on would make the second run
+   * disagree with the first for a reason that has nothing to do with the code.
+   */
+  const { rows: settingsBefore } = await db.query<{ value: Record<string, unknown> }>(
+    `select value from system_settings where key = 'platform.company_creation'`
+  );
+  const priorCreationSettings = settingsBefore[0]?.value ?? null;
+  await db.query(
+    `insert into system_settings (key, value) values ('platform.company_creation', $1::jsonb)
+     on conflict (key) do update set value = excluded.value, updated_at = now()`,
+    [JSON.stringify({ ...(priorCreationSettings ?? {}), checkoutEnabled: true })]
+  );
+
+  const buyer = await register('addco-buyer', `Add Co ${RUN}`);
+  await db.query(`update users set email_verified_at = now() where id = $1`, [buyer.userId]);
+  const paidFiled = await call('POST', '/v1/company-creation-requests', {
+    token: buyer.token,
+    body: {
+      legalName: `Second Add Co ${RUN}`,
+      country: 'PH',
+      intendedPlanId: 'pro',
+      attestation: true,
+      password: 'Verify-passw0rd!',
+    },
+  });
+  eq('a paid additional-company request routes to checkout rather than to review',
+    { status: paidFiled.json.request?.status, route: paidFiled.json.request?.approvalRoute },
+    { status: 'PENDING_CHECKOUT', route: 'CHECKOUT' });
+  const paidRequestId = paidFiled.json.request.id as string;
+
+  // A stranger's request id is a 404, and it is a 404 *before* anything about our
+  // merchant configuration is disclosed — the refusal order is the policy.
+  const paidStranger = await register('addco-stranger');
+  const strangerTry = await call('POST', `/v1/company-creation-requests/${paidRequestId}/checkout`, {
+    token: paidStranger.token,
+    body: { priceId: planPriceId },
+  });
+  eq('somebody else\'s request is a 404, not a 403 that confirms it exists',
+    strangerTry.status, 404);
+
+  const unconfigured = await call('POST', `/v1/company-creation-requests/${paidRequestId}/checkout`, {
+    token: buyer.token,
+    body: { priceId: planPriceId },
+  });
+  eq('the requester is told checkout is not configured, as a conflict', unconfigured.status, 409);
+  const { rows: noAttempt } = await db.query<{ n: number }>(
+    `select count(*)::int as n from billing_checkouts where company_creation_request_id = $1`,
+    [paidRequestId]
+  );
+  eq('...and no half-created attempt is left behind by the refusal', noAttempt[0]?.n, 0);
+
+  /*
+   * The transaction Paddle would have created, inserted directly.
+   *
+   * The provider call needs live credentials and is not what this script can
+   * prove; everything downstream of it is ours, and that is what is under test —
+   * a completed payment is what moves the request to APPROVED.
+   */
+  const requestTxnId = `txn_verify_${RUN}`;
+  const { rows: attemptRows } = await db.query<{ id: string }>(
+    `insert into billing_checkouts
+       (company_creation_request_id, requested_by_user_id, plan_price_id, provider,
+        provider_transaction_id, checkout_url, status)
+     values ($1, $2, $3, 'PADDLE', $4, 'https://pay.paddle.test/verify', 'PENDING')
+     returning id`,
+    [paidRequestId, buyer.userId, planPriceId, requestTxnId]
+  );
+  const attemptId = attemptRows[0]!.id;
+
+  async function deliverPaddle(payload: Record<string, unknown>): Promise<void> {
+    await recordVerifiedWebhook({
+      provider: 'PADDLE',
+      externalEventId: payload.event_id as string,
+      eventType: payload.event_type as string,
+      bodySha256: createHash('sha256').update(JSON.stringify(payload)).digest('hex'),
+      payload,
+    });
+  }
+
+  const requestCustomData = {
+    crewquo_checkout_id: attemptId,
+    crewquo_company_request_id: paidRequestId,
+    crewquo_plan_price_id: planPriceId,
+    crewquo_user_id: buyer.userId,
+  };
+  await deliverPaddle({
+    event_id: `evt_verify_${RUN}_txn`,
+    event_type: 'transaction.completed',
+    occurred_at: new Date().toISOString(),
+    data: { id: requestTxnId, custom_data: requestCustomData },
+  });
+  const txnPass = await runInboxBatch({
+    workerId: `verify-req-txn-${RUN}`,
+    handlers: BILLING_INBOX_HANDLERS,
+  });
+  eq('the completed transaction is reconciled',
+    { processed: txnPass.processed, failed: txnPass.failed }, { processed: 1, failed: 0 });
+
+  const { rows: approvedRows } = await db.query<{
+    status: string; checkout_reference: string | null; decided_by_user_id: string | null;
+    days_left: number;
+  }>(
+    `select status, checkout_reference, decided_by_user_id,
+            round(extract(epoch from (expires_at - now())) / 86400)::int as days_left
+       from company_creation_requests where id = $1`,
+    [paidRequestId]
+  );
+  eq('a paid transaction is what moves the request to APPROVED',
+    { status: approvedRows[0]?.status, reference: approvedRows[0]?.checkout_reference },
+    { status: 'APPROVED', reference: requestTxnId });
+  /*
+   * `decided_by_user_id` stays null because nobody decided: a payment cleared.
+   * Attributing it to the payer would read in the platform trail as the requester
+   * having approved their own request, which is precisely the thing §3.1.1 exists
+   * to make impossible.
+   */
+  eq('...with no human recorded as having approved it',
+    approvedRows[0]?.decided_by_user_id, null);
+  eq('...and the approval clock restarted at the full window',
+    approvedRows[0]?.days_left, COMPANY_REQUEST_APPROVAL_DAYS);
+  const { rows: attemptAfter } = await db.query<{ status: string }>(
+    `select status from billing_checkouts where id = $1`, [attemptId]
+  );
+  eq('the checkout attempt is completed', attemptAfter[0]?.status, 'COMPLETED');
+
+  const { rows: paidAudit } = await db.query<{ n: number; actor: string | null; source: string }>(
+    `select count(*)::int as n, min(actor_user_id::text) as actor,
+            min(changes ->> 'source') as source
+       from platform_audit_logs
+      where entity_id = $1 and action = 'company_creation_request.checkout_recorded'`,
+    [paidRequestId]
+  );
+  eq('the platform trail records the payment as the decider',
+    { rows: paidAudit[0]?.n, actor: paidAudit[0]?.actor, source: paidAudit[0]?.source },
+    { rows: 1, actor: null, source: 'PADDLE_TRANSACTION' });
+
+  // A redelivery under a new event id must not approve twice or fail. Paddle
+  // retries, and an audit trail that gains a row per retry is a trail that
+  // cannot answer "how many times was this approved".
+  await deliverPaddle({
+    event_id: `evt_verify_${RUN}_txn_again`,
+    event_type: 'transaction.completed',
+    occurred_at: new Date().toISOString(),
+    data: { id: requestTxnId, custom_data: requestCustomData },
+  });
+  const replayPass = await runInboxBatch({
+    workerId: `verify-req-txn2-${RUN}`,
+    handlers: BILLING_INBOX_HANDLERS,
+  });
+  const { rows: auditAfterReplay } = await db.query<{ n: number }>(
+    `select count(*)::int as n from platform_audit_logs
+      where entity_id = $1 and action = 'company_creation_request.checkout_recorded'`,
+    [paidRequestId]
+  );
+  eq('a redelivered completion is a no-op rather than a second approval',
+    { processed: replayPass.processed, failed: replayPass.failed, auditRows: auditAfterReplay[0]?.n },
+    { processed: 1, failed: 0, auditRows: 1 });
+
+  /*
+   * The subscription the payment created, arriving before the company exists.
+   *
+   * This is the ordering the whole deferral mechanism is for: the money is taken
+   * at checkout and the tenant is created by a separate, deliberate act that the
+   * approval gives the customer thirty days to perform. The retry budget is eight
+   * attempts over about seventy minutes, so retrying would dead-letter a paid
+   * subscription within the hour.
+   */
+  const requestSubId = `sub_verify_req_${RUN}`;
+  const requestSubEventId = `evt_verify_${RUN}_sub`;
+  const requestSubEvent = {
+    event_id: requestSubEventId,
+    event_type: 'subscription.created',
+    occurred_at: new Date().toISOString(),
+    data: {
+      id: requestSubId,
+      status: 'active',
+      customer_id: `ctm_verify_req_${RUN}`,
+      items: [{ price: { id: paddlePriceId } }],
+      current_billing_period: { ends_at: new Date(Date.now() + 30 * 86_400_000).toISOString() },
+      trial_dates: null,
+      scheduled_change: null,
+      custom_data: requestCustomData,
+    },
+  };
+  await deliverPaddle(requestSubEvent);
+  const deferPass = await runInboxBatch({
+    workerId: `verify-req-defer-${RUN}`,
+    handlers: BILLING_INBOX_HANDLERS,
+  });
+  eq('a paid subscription whose company does not exist yet is deferred, not failed',
+    { processed: deferPass.processed, deferred: deferPass.deferred, failed: deferPass.failed },
+    { processed: 0, deferred: 1, failed: 0 });
+  const { rows: parked } = await db.query<{ status: string; attempts: number; later: boolean }>(
+    `select status, attempts, available_at > now() as later from webhook_inbox
+      where external_event_id = $1`,
+    [requestSubEventId]
+  );
+  eq('...with its retry budget untouched and a future availability',
+    { status: parked[0]?.status, attempts: parked[0]?.attempts, later: parked[0]?.later },
+    { status: 'RECEIVED', attempts: 0, later: true });
+
+  const createdCompany = await call('POST', '/v1/me/companies', {
+    token: buyer.token,
+    body: { name: `Second Add Co ${RUN}`, currency: 'USD', requestId: paidRequestId },
+  });
+  eq('the approval creates the additional company', createdCompany.status, 201);
+  const secondCompanyId = createdCompany.json.company?.id as string;
+  const { rows: woken } = await db.query<{ ready: boolean }>(
+    `select available_at <= now() as ready from webhook_inbox where external_event_id = $1`,
+    [requestSubEventId]
+  );
+  // Without this the customer would spend the deferral interval on the free plan
+  // having already been charged, which is the worst quarter of an hour in the flow.
+  check('creating the company wakes the parked subscription immediately', woken[0]?.ready === true);
+
+  const attachPass = await runInboxBatch({
+    workerId: `verify-req-attach-${RUN}`,
+    handlers: BILLING_INBOX_HANDLERS,
+  });
+  eq('the parked subscription then applies',
+    { processed: attachPass.processed, deferred: attachPass.deferred, failed: attachPass.failed },
+    { processed: 1, deferred: 0, failed: 0 });
+  const { rows: secondSub } = await db.query<{
+    plan_id: string; status: string; provider_subscription_id: string;
+    entitlements_snapshot: { planId?: string } | null;
+  }>(
+    `select plan_id, status, provider_subscription_id, entitlements_snapshot
+       from company_subscriptions where company_id = $1`,
+    [secondCompanyId]
+  );
+  eq('...attaching the paid plan to the company it was bought for',
+    { plan: secondSub[0]?.plan_id, status: secondSub[0]?.status,
+      providerId: secondSub[0]?.provider_subscription_id,
+      snapshot: secondSub[0]?.entitlements_snapshot?.planId },
+    { plan: 'pro', status: 'ACTIVE', providerId: requestSubId, snapshot: 'pro' });
+
+  /*
+   * And the bound on waiting. A deferral that could not end would hide a paid
+   * subscription attached to nothing for ever, so an approval that can no longer
+   * become a company dead-letters instead — which is the signal an operator needs
+   * in order to refund it.
+   */
+  const lapser = await register('addco-lapser', `Lapse Co ${RUN}`);
+  await db.query(`update users set email_verified_at = now() where id = $1`, [lapser.userId]);
+  const lapsedFiled = await call('POST', '/v1/company-creation-requests', {
+    token: lapser.token,
+    body: {
+      legalName: `Lapsed Add Co ${RUN}`,
+      country: 'PH',
+      intendedPlanId: 'pro',
+      attestation: true,
+      password: 'Verify-passw0rd!',
+    },
+  });
+  const lapsedRequestId = lapsedFiled.json.request.id as string;
+  const { rows: lapsedAttempt } = await db.query<{ id: string }>(
+    `insert into billing_checkouts
+       (company_creation_request_id, requested_by_user_id, plan_price_id, provider,
+        provider_transaction_id, status)
+     values ($1, $2, $3, 'PADDLE', $4, 'PENDING') returning id`,
+    [lapsedRequestId, lapser.userId, planPriceId, `txn_verify_lapsed_${RUN}`]
+  );
+  await db.query(
+    `update company_creation_requests set expires_at = now() - interval '1 day' where id = $1`,
+    [lapsedRequestId]
+  );
+  await deliverPaddle({
+    event_id: `evt_verify_${RUN}_sub_lapsed`,
+    event_type: 'subscription.created',
+    occurred_at: new Date().toISOString(),
+    data: {
+      ...requestSubEvent.data,
+      id: `sub_verify_lapsed_${RUN}`,
+      custom_data: {
+        crewquo_checkout_id: lapsedAttempt[0]!.id,
+        crewquo_company_request_id: lapsedRequestId,
+        crewquo_plan_price_id: planPriceId,
+      },
+    },
+  });
+  const lapsedPass = await runInboxBatch({
+    workerId: `verify-req-lapsed-${RUN}`,
+    handlers: BILLING_INBOX_HANDLERS,
+  });
+  const { rows: lapsedInbox } = await db.query<{ status: string; last_error: string | null }>(
+    `select status, last_error from webhook_inbox where external_event_id = $1`,
+    [`evt_verify_${RUN}_sub_lapsed`]
+  );
+  eq('a paid subscription for an expired approval dead-letters instead of waiting for ever',
+    { failed: lapsedPass.failed, deferred: lapsedPass.deferred, status: lapsedInbox[0]?.status },
+    { failed: 1, deferred: 0, status: 'DEAD_LETTER' });
+  check('...naming the operator decision it needs',
+    (lapsedInbox[0]?.last_error ?? '').includes('operator decision'), lapsedInbox[0]?.last_error);
+
+  // One subject per attempt, and one live attempt per request — both refused by
+  // the database rather than by a comment.
+  let bothSubjects = false;
+  try {
+    await db.query(
+      `insert into billing_checkouts (company_id, company_creation_request_id, plan_price_id, provider)
+       values ($1, $2, $3, 'PADDLE')`,
+      [buyer.companyId, lapsedRequestId, planPriceId]
+    );
+  } catch { bothSubjects = true; }
+  check('a checkout attempt cannot name both a company and a request', bothSubjects);
+
+  let noSubject = false;
+  try {
+    await db.query(
+      `insert into billing_checkouts (plan_price_id, provider) values ($1, 'PADDLE')`,
+      [planPriceId]
+    );
+  } catch { noSubject = true; }
+  check('...nor neither, which would be a payment attributable to nobody', noSubject);
+
+  let secondLiveAttempt = false;
+  try {
+    await db.query(
+      `insert into billing_checkouts
+         (company_creation_request_id, plan_price_id, provider, status)
+       values ($1, $2, 'PADDLE', 'PENDING')`,
+      [lapsedRequestId, planPriceId]
+    );
+  } catch { secondLiveAttempt = true; }
+  check('a request cannot have two live checkout attempts at once', secondLiveAttempt);
+
+  await db.query(
+    priorCreationSettings === null
+      ? `delete from system_settings where key = 'platform.company_creation'`
+      : `update system_settings set value = $1::jsonb, updated_at = now()
+           where key = 'platform.company_creation'`,
+    priorCreationSettings === null ? [] : [JSON.stringify(priorCreationSettings)]
+  );
+  const { rows: settingsAfter } = await db.query<{ enabled: boolean | null }>(
+    `select (value ->> 'checkoutEnabled')::boolean as enabled from system_settings
+      where key = 'platform.company_creation'`
+  );
+  check('the operator flag is left exactly as this script found it',
+    (settingsAfter[0]?.enabled ?? false) === false, settingsAfter[0]?.enabled);
+
+  // ── Subscription self-management ──────────────────────────────────────────
+  section('Subscription self-management');
+
+  const freePlanCancel = await call('POST', '/v1/billing/subscription/cancel', {
+    token: buyer.token,
+    companyId: buyer.companyId!,
+  });
+  eq('cancelling a company with no subscription is a conflict, not a 404',
+    freePlanCancel.status, 409);
+
+  /*
+   * A plan a super admin set by hand, or comped as a trial, has no provider
+   * subscription to cancel. Offering the button anyway would be offering a button
+   * whose only possible outcome is an error — so the refusal names support, and
+   * the read that drives the screen says the same thing.
+   */
+  await db.query(
+    `insert into company_subscriptions (company_id, plan_id, status)
+     values ($1, 'pro', 'ACTIVE')
+     on conflict (company_id) do update set plan_id = 'pro', status = 'ACTIVE',
+       provider = null, provider_subscription_id = null, updated_at = now()`,
+    [buyer.companyId]
+  );
+  const supportSetCancel = await call('POST', '/v1/billing/subscription/cancel', {
+    token: buyer.token,
+    companyId: buyer.companyId!,
+  });
+  eq('a support-set plan cannot be cancelled through the provider', supportSetCancel.status, 409);
+  check('...and the refusal points at support rather than at the customer',
+    /support/i.test(supportSetCancel.json?.error?.message ?? ''),
+    supportSetCancel.json?.error?.message);
+  const supportSetOverview = await call('GET', '/v1/billing', {
+    token: buyer.token,
+    companyId: buyer.companyId!,
+  });
+  eq('...and the screen is told not to offer the controls at all',
+    { provider: supportSetOverview.json.subscription?.provider,
+      selfManageable: supportSetOverview.json.subscription?.selfManageable },
+    { provider: null, selfManageable: false });
+
+  const paddleOverview = await call('GET', '/v1/billing', {
+    token: billingOwner.token,
+    companyId: billingOwner.companyId!,
+  });
+  eq('a Paddle subscription is reported as the customer\'s own to manage',
+    { provider: paddleOverview.json.subscription?.provider,
+      selfManageable: paddleOverview.json.subscription?.selfManageable },
+    { provider: 'PADDLE', selfManageable: true });
+
+  // With no API key there is nothing to call Paddle with, and saying "Paddle
+  // refused this change" would send somebody looking at their card for a problem
+  // that is entirely ours.
+  const noCredentials = await call('POST', '/v1/billing/subscription/cancel', {
+    token: billingOwner.token,
+    companyId: billingOwner.companyId!,
+  });
+  eq('a provider-managed cancellation is refused while credentials are missing',
+    noCredentials.status, 409);
+  check('...saying so, and saying nothing was charged',
+    /not available yet/i.test(noCredentials.json?.error?.message ?? ''),
+    noCredentials.json?.error?.message);
+  const { rows: untouched } = await db.query<{ cancel_at_period_end: boolean; status: string }>(
+    `select cancel_at_period_end, status from company_subscriptions where company_id = $1`,
+    [billingOwner.companyId]
+  );
+  eq('...and the subscription is genuinely untouched by the refusal',
+    { scheduled: untouched[0]?.cancel_at_period_end, status: untouched[0]?.status },
+    { scheduled: false, status: 'ACTIVE' });
 
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);
