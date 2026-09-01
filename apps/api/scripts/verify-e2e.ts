@@ -29,6 +29,9 @@ import pg from 'pg';
 import { env } from '../src/env';
 import { pool } from '../src/db';
 import {
+  CAPABILITY_KEYS,
+  SYSTEM_BUNDLE_CAPABILITIES,
+  SYSTEM_BUNDLE_KEYS,
   COMPANY_CLOSURE_PLAN,
   COMPANY_REQUEST_APPROVAL_DAYS,
   SCHEDULED_JOBS,
@@ -6406,6 +6409,253 @@ async function main(): Promise<void> {
   eq('...and the subscription is genuinely untouched by the refusal',
     { scheduled: untouched[0]?.cancel_at_period_end, status: untouched[0]?.status },
     { scheduled: false, status: 'ACTIVE' });
+
+  // ── Capabilities (§37) — Phase 7 build order step 0 ───────────────────────
+  section('Capabilities — bundles, the role-derived default, and the owner rule');
+
+  const capOwner = await register('capowner', `CapCo ${RUN}`);
+  const capCompany = capOwner.companyId!;
+  // A fresh company is on `crew`, whose `internal_seats` is 1 — the section needs
+  // three people in one company to have anything to say about job functions.
+  await subscribe(capCompany, 'pro');
+
+  const capWorkerInvite = await call('POST', '/v1/members/invite', {
+    token: capOwner.token,
+    companyId: capCompany,
+    body: { email: `capworker+${RUN}@verify.crewquo.test`, role: 'MEMBER' },
+  });
+  const capWorker = await register('capworker', undefined, `capworker+${RUN}@verify.crewquo.test`);
+  await call('POST', `/v1/invites/${capWorkerInvite.json.inviteToken}/accept`, {
+    token: capWorker.token,
+  });
+
+  const capManagerInvite = await call('POST', '/v1/members/invite', {
+    token: capOwner.token,
+    companyId: capCompany,
+    body: { email: `capmgr+${RUN}@verify.crewquo.test`, role: 'MANAGER' },
+  });
+  const capManager = await register('capmgr', undefined, `capmgr+${RUN}@verify.crewquo.test`);
+  await call('POST', `/v1/invites/${capManagerInvite.json.inviteToken}/accept`, {
+    token: capManager.token,
+  });
+
+  const capMembers = await call('GET', '/v1/members', {
+    token: capOwner.token,
+    companyId: capCompany,
+  });
+  const idOf = (email: string): string =>
+    capMembers.json.data.find((m: any) => m.email === email)?.membershipId as string;
+  const ownerMembershipId = idOf(capOwner.email);
+  const workerMembershipId = idOf(capWorker.email);
+  const managerMembershipId = idOf(capManager.email);
+
+  // The catalog, and the assertion that matters most about it: the seed and the
+  // code agree at runtime, not only in the unit test that reads the SQL file.
+  const catalog = await call('GET', '/v1/capabilities', {
+    token: capOwner.token,
+    companyId: capCompany,
+  });
+  eq('the capability catalog is readable', catalog.status, 200);
+  eq('...and holds §37\'s 29 keys', catalog.json.capabilities.length, CAPABILITY_KEYS.length);
+  eq(
+    '...matching the code exactly',
+    catalog.json.capabilities.map((c: any) => c.key).sort(),
+    [...CAPABILITY_KEYS].sort()
+  );
+  eq(
+    '...with the six system bundles',
+    catalog.json.bundles.filter((b: any) => b.isSystem).map((b: any) => b.key).sort(),
+    [...SYSTEM_BUNDLE_KEYS].sort()
+  );
+  const seededSupervisor = catalog.json.bundles.find((b: any) => b.key === 'supervisor');
+  eq(
+    '...and the Supervisor bundle the database holds is the one the code declares',
+    [...seededSupervisor.capabilities].sort(),
+    [...SYSTEM_BUNDLE_CAPABILITIES.supervisor].sort()
+  );
+
+  // Behaviour preservation, which is the whole promise of this migration.
+  const { rows: assignedBundles } = await db.query<{ n: string }>(
+    `select count(*)::int as n from memberships where company_id = $1 and bundle_key is not null`,
+    [capCompany]
+  );
+  eq('a new company has no bundle assigned to anybody', Number(assignedBundles[0]?.n), 0);
+
+  const workerCaps = await call('GET', `/v1/members/${workerMembershipId}/capabilities`, {
+    token: capOwner.token,
+    companyId: capCompany,
+  });
+  eq('a MEMBER derives the Worker bundle', workerCaps.json.capabilities.effectiveBundleKey, 'worker');
+  check('...and is marked as derived rather than assigned',
+    workerCaps.json.capabilities.bundleIsDerived === true &&
+      workerCaps.json.capabilities.bundleKey === null);
+  eq(
+    '...holding exactly the worker floor',
+    [...workerCaps.json.capabilities.capabilities].sort(),
+    [...SYSTEM_BUNDLE_CAPABILITIES.worker].sort()
+  );
+
+  const managerCaps = await call('GET', `/v1/members/${managerMembershipId}/capabilities`, {
+    token: capOwner.token,
+    companyId: capCompany,
+  });
+  eq('a MANAGER derives Project Manager', managerCaps.json.capabilities.effectiveBundleKey, 'project_manager');
+  check('...which can read commercial figures',
+    managerCaps.json.capabilities.capabilities.includes('commercial.read'));
+
+  // The owner rule. `access.md` §13.3 refused platform support access, so a
+  // company that locks its owner out has nobody to unlock it.
+  const ownerCaps = await call('GET', `/v1/members/${ownerMembershipId}/capabilities`, {
+    token: capOwner.token,
+    companyId: capCompany,
+  });
+  eq('an OWNER holds every capability', ownerCaps.json.capabilities.capabilities.length, CAPABILITY_KEYS.length);
+  check('...and is reported as locked', ownerCaps.json.capabilities.locked === true);
+  const restrainOwner = await call('PATCH', `/v1/members/${ownerMembershipId}/capabilities`, {
+    token: capOwner.token,
+    companyId: capCompany,
+    body: { bundleKey: 'worker' },
+  });
+  eq('...so restricting an owner is refused rather than silently ignored', restrainOwner.status, 403);
+
+  // Assignment.
+  const toSupervisor = await call('PATCH', `/v1/members/${workerMembershipId}/capabilities`, {
+    token: capOwner.token,
+    companyId: capCompany,
+    body: { bundleKey: 'supervisor' },
+  });
+  eq('a member can be given the Supervisor bundle', toSupervisor.status, 200);
+  check('...which lets them close a day',
+    toSupervisor.json.capabilities.capabilities.includes('diary.close'));
+  check('...and deliberately does NOT let them read margin',
+    !toSupervisor.json.capabilities.capabilities.includes('commercial.read'));
+  check('...and is now an assignment rather than a derivation',
+    toSupervisor.json.capabilities.bundleIsDerived === false &&
+      toSupervisor.json.capabilities.bundleKey === 'supervisor');
+
+  // The caller's own resolved set follows, which is what a route will read.
+  const workerSelf = await call('GET', '/v1/capabilities', {
+    token: capWorker.token,
+    companyId: capCompany,
+  });
+  check('the member\'s own resolved set agrees', workerSelf.json.mine.includes('diary.close'));
+  check('...including the absence', !workerSelf.json.mine.includes('commercial.read'));
+
+  const withOverrides = await call('PATCH', `/v1/members/${workerMembershipId}/capabilities`, {
+    token: capOwner.token,
+    companyId: capCompany,
+    body: {
+      overrides: [
+        { capabilityKey: 'commercial.read', granted: true, note: 'covers for finance on Fridays' },
+        { capabilityKey: 'diary.close', granted: false },
+      ],
+    },
+  });
+  eq('an override grants outside the bundle', withOverrides.status, 200);
+  check('...adding the granted key',
+    withOverrides.json.capabilities.capabilities.includes('commercial.read'));
+  check('...and removing the revoked one',
+    !withOverrides.json.capabilities.capabilities.includes('diary.close'));
+  check('...while the bundle assignment is untouched',
+    withOverrides.json.capabilities.effectiveBundleKey === 'supervisor');
+
+  // Whole-set replacement: an empty array clears, rather than meaning "no change".
+  const clearedOverrides = await call('PATCH', `/v1/members/${workerMembershipId}/capabilities`, {
+    token: capOwner.token,
+    companyId: capCompany,
+    body: { overrides: [] },
+  });
+  eq('an empty override list clears the exceptions', clearedOverrides.json.capabilities.overrides.length, 0);
+  check('...restoring the bundle answer',
+    clearedOverrides.json.capabilities.capabilities.includes('diary.close') &&
+      !clearedOverrides.json.capabilities.capabilities.includes('commercial.read'));
+
+  const backToDerived = await call('PATCH', `/v1/members/${workerMembershipId}/capabilities`, {
+    token: capOwner.token,
+    companyId: capCompany,
+    body: { bundleKey: null },
+  });
+  eq('clearing the bundle returns the membership to role-derived',
+    backToDerived.json.capabilities.effectiveBundleKey, 'worker');
+  check('...and says so', backToDerived.json.capabilities.bundleIsDerived === true);
+
+  // Refusals.
+  const unknownBundle = await call('PATCH', `/v1/members/${workerMembershipId}/capabilities`, {
+    token: capOwner.token,
+    companyId: capCompany,
+    body: { bundleKey: 'wizard' },
+  });
+  eq('an unknown bundle is refused', unknownBundle.status, 422);
+
+  const duplicateOverride = await call('PATCH', `/v1/members/${workerMembershipId}/capabilities`, {
+    token: capOwner.token,
+    companyId: capCompany,
+    body: {
+      overrides: [
+        { capabilityKey: 'diary.close', granted: true },
+        { capabilityKey: 'diary.close', granted: false },
+      ],
+    },
+  });
+  eq('two overrides for one key are refused, so array order never decides a permission',
+    duplicateOverride.status, 422);
+
+  const capEmptyPatch = await call('PATCH', `/v1/members/${workerMembershipId}/capabilities`, {
+    token: capOwner.token,
+    companyId: capCompany,
+    body: {},
+  });
+  eq('an empty patch is refused rather than audited as a no-op', capEmptyPatch.status, 422);
+
+  const memberEdits = await call('PATCH', `/v1/members/${managerMembershipId}/capabilities`, {
+    token: capWorker.token,
+    companyId: capCompany,
+    body: { bundleKey: 'admin' },
+  });
+  eq('a MEMBER cannot grant themselves or anybody else a bundle', memberEdits.status, 403);
+
+  const memberReads = await call('GET', `/v1/members/${managerMembershipId}/capabilities`, {
+    token: capWorker.token,
+    companyId: capCompany,
+  });
+  eq('...but may read who can do what, which is not a secret from colleagues',
+    memberReads.status, 200);
+
+  // Tenant boundary: a membership in another company answers exactly as one that
+  // never existed, so the response reveals no cross-tenant existence.
+  const capSameTenant = await call('GET', `/v1/members/${ownerMembershipId}/capabilities`, {
+    token: capManager.token,
+    companyId: capCompany,
+  });
+  eq('a membership in this company is found', capSameTenant.status, 200);
+  const capOutsider = await register('capoutsider', `Outsider ${RUN}`);
+  const capCrossTenant = await call('GET', `/v1/members/${workerMembershipId}/capabilities`, {
+    token: capOutsider.token,
+    companyId: capOutsider.companyId!,
+  });
+  eq('another company\'s membership is not found rather than forbidden', capCrossTenant.status, 404);
+  const capMissing = await call('GET', `/v1/members/${randomUUID()}/capabilities`, {
+    token: capOwner.token,
+    companyId: capCompany,
+  });
+  eq('...answering identically to a membership that never existed', capMissing.status, 404);
+
+  // The trail records what the person could do, not what the request said.
+  const capTrail = await call('GET', '/v1/audit-logs', {
+    token: capOwner.token,
+    companyId: capCompany,
+  });
+  const capAudit = capTrail.json.data.find(
+    (r: any) => r.action === 'membership.capabilities_updated'
+  );
+  check('a capability change is audited', Boolean(capAudit));
+  check('...recording the resolved sets rather than the patch body',
+    Array.isArray(capAudit?.changes?.capabilities?.from) &&
+      Array.isArray(capAudit?.changes?.capabilities?.to),
+    capAudit?.changes);
+  check('...and is a distinct action from a role change',
+    capTrail.json.data.some((r: any) => r.action === 'membership.capabilities_updated') &&
+      capAudit.action !== 'membership.updated');
 
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);

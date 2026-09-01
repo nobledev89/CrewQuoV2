@@ -27,6 +27,10 @@ import {
   membersRouter,
   providersRouter,
 } from './modules/engagements/routes';
+import {
+  capabilitiesRouter,
+  memberCapabilitiesRouter,
+} from './modules/capabilities/routes';
 import { invitesRouter } from './modules/invites/routes';
 import { projectsRouter } from './modules/projects/routes';
 import {
@@ -243,6 +247,7 @@ export function buildApp(): Express {
   app.use('/v1/companies', requireAuth, companyClosureRouter);
   app.use('/v1/companies', requireAuth, companiesRouter);
   app.use('/v1/entitlements', requireAuth, entitlementsRouter);
+  app.use('/v1/capabilities', requireAuth, capabilitiesRouter);
   app.use('/v1/billing', requireAuth, billingRouter);
 
   // Rate engine & catalog (§6). Company-scoped — active company via X-Company-Id.
@@ -255,6 +260,9 @@ export function buildApp(): Express {
   app.use('/v1/engagements', requireAuth, engagementsRouter);
   app.use('/v1/providers', requireAuth, providersRouter);
   app.use('/v1/clients', requireAuth, clientsRouter);
+  // Mounted before `membersRouter` so `/:membershipId/capabilities` is matched
+  // by the router that owns it rather than falling through to the role handler.
+  app.use('/v1/members', requireAuth, memberCapabilitiesRouter);
   app.use('/v1/members', requireAuth, membersRouter);
   app.use('/v1/invites', invitesRouter);
   app.use('/v1/projects', requireAuth, projectsRouter);

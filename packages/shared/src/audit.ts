@@ -63,6 +63,13 @@ export const AUDIT_ACTIONS = [
   'company.created',
   'company.updated',
   'membership.updated',
+  /*
+   * Capability assignment (§37). Distinct from `membership.updated`, which is a
+   * change of *role* — the four roles are the tenancy relationship and a bundle
+   * is the job function. Collapsing them would make "why can this person suddenly
+   * close a day" unanswerable from the action alone.
+   */
+  'membership.capabilities_updated',
   'membership.removed',
   'user.updated',
   'invoice.created',
