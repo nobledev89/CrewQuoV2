@@ -1,7 +1,8 @@
 import type { LimitKey, LimitUsage } from '@crewquo/shared';
-import { LIMIT_KEYS } from '@crewquo/shared';
+import { LIMIT_KEYS, bytesToGb } from '@crewquo/shared';
 import { queryOne } from '../../db';
 import { countActiveSubcontractors, countClients } from '../engagements/repo';
+import { evidenceUploadsThisMonth, storageBytesForCompany } from '../storage/repo';
 
 /**
  * Live usage per limit key. Some meters depend on tables introduced in later
@@ -24,6 +25,17 @@ export async function getUsage(companyId: string, key: LimitKey): Promise<number
       return countActiveSubcontractors(companyId);
     case 'clients':
       return countClients(companyId);
+    /**
+     * The first meter here whose unit is not a count (§43, Phase 7). Bytes are
+     * summed in the database and converted **once**, here at the boundary, so a
+     * caller of `withinLimit` passes gigabytes and never bytes — see `bytesToGb`
+     * for why that distinction is worth a named function.
+     */
+    case 'storage_gb':
+      return bytesToGb(await storageBytesForCompany(companyId));
+    /** And the first windowed one: the month is the company's own, not the server's. */
+    case 'evidence_uploads_per_month':
+      return evidenceUploadsThisMonth(companyId);
     // audit_retention_days is a config value, not a meter.
     case 'audit_retention_days':
       return 0;

@@ -80,6 +80,17 @@ export interface LogFields {
    * being traceable in logs is that the diagnosis needs no personal data at all.
    */
   deletionRequestId?: string;
+
+  /**
+   * The stored file a scanning or derivative line is about (0027).
+   *
+   * Its own field, for exactly the reason the one above gives. Note what is
+   * *not* here and never will be: the original filename. A filename is customer
+   * prose — `Ridley_Redundancy_Consultation_Floor3.pdf` is a fact about
+   * somebody's job — and it would travel as an ordinary string field without
+   * looking like personal data to whoever added it.
+   */
+  storedFileId?: string;
 }
 
 /**

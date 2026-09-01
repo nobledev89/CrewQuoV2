@@ -31,6 +31,7 @@ import {
   capabilitiesRouter,
   memberCapabilitiesRouter,
 } from './modules/capabilities/routes';
+import { filesRouter } from './modules/storage/routes';
 import { invitesRouter } from './modules/invites/routes';
 import { projectsRouter } from './modules/projects/routes';
 import {
@@ -248,6 +249,7 @@ export function buildApp(): Express {
   app.use('/v1/companies', requireAuth, companiesRouter);
   app.use('/v1/entitlements', requireAuth, entitlementsRouter);
   app.use('/v1/capabilities', requireAuth, capabilitiesRouter);
+  app.use('/v1/files', requireAuth, filesRouter);
   app.use('/v1/billing', requireAuth, billingRouter);
 
   // Rate engine & catalog (§6). Company-scoped — active company via X-Company-Id.

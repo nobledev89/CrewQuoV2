@@ -26,3 +26,4 @@ export * from './data-export';
 export * from './deletion';
 export * from './billing';
 export * from './capabilities';
+export * from './storage';

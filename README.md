@@ -47,7 +47,7 @@ pnpm install
 # 2. Configure environment (required — the compose file reads this file)
 cp .env.example .env          # then edit if needed
 
-# 3. Start the local stack: Postgres + the API, both in Docker
+# 3. Start the local stack: Postgres, MinIO and the API, all in Docker
 docker compose --env-file .env -f infra/docker-compose.yml up -d --build
 
 # 4. Migrate and seed, from the host, against the container
@@ -118,10 +118,44 @@ docker compose --env-file .env -f infra/docker-compose.yml stop api
 pnpm --filter @crewquo/api dev     # tsx watch, on the host, where file events work
 ```
 
-That costs nothing in data locality. Postgres is the only thing in this stack that
-stores anything, and it is still the container — where the API process runs is a
-development-comfort choice, not a data one.
+That costs nothing in data locality. The two things in this stack that store
+anything — Postgres and, since 0027, MinIO — are both still containers on this
+machine; where the API *process* runs is a development-comfort choice, not a data
+one.
 
+
+### File storage (local MinIO, R2 in production)
+
+Uploaded evidence, documents and receipts live in an S3-compatible object store.
+Locally that is the **MinIO** service in the compose file, on the same reasoning
+as the local Postgres: until CrewQuo is production ready, all customer-shaped
+data stays on this machine (owner decision, 2026-09-01). Cloudflare R2 is the
+production target and speaks the same API, so there is one client and no
+abstraction layer.
+
+Its browser console is at http://localhost:9001 (`STORAGE_ACCESS_KEY_ID` /
+`STORAGE_SECRET_ACCESS_KEY`). The bucket is created on first use, so there is
+nothing to set up.
+
+**The one thing to get right is the pair of endpoints.** A presigned URL is
+signed *against a host*: the API reaches the store at `STORAGE_ENDPOINT`
+(`http://minio:9000` inside the compose network) while the browser that follows
+the URL reaches it at `STORAGE_PUBLIC_ENDPOINT` (`http://127.0.0.1:9000` on the
+host). Signing the internal name produces a signature that verifies perfectly
+and resolves nowhere — a failure with no error message anywhere in the code. In
+production both are the same R2 hostname and the public one can be left unset.
+
+Uploads are three steps and the bytes never pass through the API:
+`POST /v1/files/presign` → the client `PUT`s straight to the store →
+`POST /v1/files/:id/complete`. Completion sets `SCANNING`, **not** `READY`: the
+API never sees the bytes, so the content-type check runs in the `work` pass,
+which downloads the original to build previews anyway. Run it after uploading, or
+files stay in `SCANNING`:
+
+```bash
+pnpm --filter @crewquo/api build   # the job entry points are compiled, not tsx
+pnpm --filter @crewquo/api work
+```
 ## Useful commands
 
 | Command | What it does |
@@ -133,7 +167,7 @@ development-comfort choice, not a data one.
 | `pnpm db:migrate` | Apply pending SQL migrations |
 | `pnpm db:seed` | Run the seed script |
 | `pnpm --filter @crewquo/web dev` | Run the web console — **always** http://localhost:3000, guarded; leave it running |
-| `docker compose --env-file .env -f infra/docker-compose.yml up -d` | Start the local stack (Postgres + API) |
+| `docker compose --env-file .env -f infra/docker-compose.yml up -d` | Start the local stack (Postgres + MinIO + API) |
 | `docker compose --env-file .env -f infra/docker-compose.yml logs -f api` | Follow the API log |
 | `docker compose --env-file .env -f infra/docker-compose.yml down` | Stop the stack (the data volume survives) |
 | `pnpm --filter @crewquo/api build` | Compile the API server and production job entry points to `apps/api/dist` |

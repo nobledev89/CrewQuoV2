@@ -44,7 +44,29 @@ import {
   totpCounterBytes,
   totpTruncate,
 } from '@crewquo/shared';
+import sharpModule from 'sharp';
 import { COMPANY_QUERIES, PERSONAL_QUERIES } from '../src/modules/data-export/queries';
+import { runStorageBatch } from '../src/modules/storage/worker';
+import { storageBytesForCompany } from '../src/modules/storage/repo';
+
+/**
+ * `sharp` as a callable, resolved once.
+ *
+ * The storage section needs a real decodable image, and making one here beats
+ * checking a fixture in: the derivative assertions are about pixels, and the
+ * first attempt used a hand-written 1×1 PNG that libpng refused outright. The
+ * pipeline survived it exactly as designed — original stored, preview skipped —
+ * and proved nothing about resizing.
+ */
+function sharpFactory(): (input: unknown) => {
+  png: () => { toBuffer: () => Promise<Buffer> };
+} {
+  const mod = sharpModule as unknown as Record<string, unknown>;
+  const callable = (mod.default ?? mod) as (input: unknown) => {
+    png: () => { toBuffer: () => Promise<Buffer> };
+  };
+  return callable;
+}
 import { deriveKid, parseRetiredSecrets } from '../src/modules/auth/signingKeys';
 import { currentAccessKid, signPurposeToken } from '../src/modules/auth/tokens';
 import { readJobHealth, recordJobRun } from '../src/jobs/jobRuns';
@@ -6656,6 +6678,323 @@ async function main(): Promise<void> {
   check('...and is a distinct action from a role change',
     capTrail.json.data.some((r: any) => r.action === 'membership.capabilities_updated') &&
       capAudit.action !== 'membership.updated');
+
+  // ── Storage service (§22.1) — Phase 7 build order step 3 ──────────────────
+  section('Storage — presign, PUT, scan, derivatives and the meter');
+
+  const stOwner = await register('stowner', `StorageCo ${RUN}`);
+  const stCompany = stOwner.companyId!;
+  await subscribe(stCompany, 'pro');
+
+  // A real image, made here rather than checked in: the derivative assertions are
+  // about pixels, and a fixture whose bytes nobody can decode proves nothing. The
+  // first attempt used a hand-written 1×1 PNG and libpng refused it — which the
+  // pipeline survived exactly as designed, storing the original and skipping the
+  // preview, and told us nothing about resizing.
+  const stPhoto = await sharpFactory()({
+    create: { width: 2400, height: 1600, channels: 3, background: { r: 40, g: 90, b: 140 } },
+  })
+    .png()
+    .toBuffer();
+  const stChecksum = createHash('sha256').update(stPhoto).digest('hex');
+
+  const stPresign = await call('POST', '/v1/files/presign', {
+    token: stOwner.token,
+    companyId: stCompany,
+    body: {
+      kind: 'IMAGE',
+      filename: 'floor-3-before.png',
+      contentType: 'image/png',
+      byteSize: stPhoto.byteLength,
+      clientId: randomUUID(),
+    },
+  });
+  eq('a presign reserves an upload', stPresign.status, 201);
+  check('...against a key derived from the company, never from the caller',
+    typeof stPresign.json.uploadUrl === 'string' &&
+      stPresign.json.uploadUrl.includes(`/co/${stCompany}/`),
+    stPresign.json.uploadUrl?.slice(0, 120));
+  check('...signed for the host the browser can actually reach',
+    stPresign.json.uploadUrl.startsWith('http://127.0.0.1:9000/'),
+    stPresign.json.uploadUrl?.slice(0, 60));
+
+  const stPut = await fetch(stPresign.json.uploadUrl as string, {
+    method: 'PUT',
+    headers: stPresign.json.requiredHeaders as Record<string, string>,
+    body: stPhoto,
+  });
+  eq('the bytes go straight to the store, never through the API', stPut.status, 200);
+
+  // A replay must find its own row. Without this a retry from a bad connection
+  // mints a second key and leaves an orphaned byte-charge for an object nothing
+  // references — the one failure here that costs a customer money quietly.
+  const stReplayId = randomUUID();
+  const stFirst = await call('POST', '/v1/files/presign', {
+    token: stOwner.token,
+    companyId: stCompany,
+    body: { kind: 'IMAGE', filename: 'r.png', contentType: 'image/png', byteSize: 100, clientId: stReplayId },
+  });
+  const stReplay = await call('POST', '/v1/files/presign', {
+    token: stOwner.token,
+    companyId: stCompany,
+    body: { kind: 'IMAGE', filename: 'r.png', contentType: 'image/png', byteSize: 100, clientId: stReplayId },
+  });
+  eq('a replayed presign returns the same file', stReplay.json.fileId, stFirst.json.fileId);
+  check('...and says it replayed rather than pretending to be new',
+    stReplay.json.replayed === true && stFirst.json.replayed === false);
+  const { rows: stOneRow } = await db.query<{ n: string }>(
+    `select count(*)::int as n from stored_files where client_id = $1`,
+    [stReplayId]
+  );
+  eq('...leaving exactly one row and one bucket key', Number(stOneRow[0]?.n), 1);
+
+  const stComplete = await call('POST', `/v1/files/${stPresign.json.fileId}/complete`, {
+    token: stOwner.token,
+    companyId: stCompany,
+    body: { checksumSha256: stChecksum },
+  });
+  eq('completing moves the file to SCANNING, not to READY', stComplete.json.file.status, 'SCANNING');
+
+  // The whole reason SCANNING exists (§13.5): the API never receives the bytes,
+  // so it cannot sniff a content type, and the worker that downloads the original
+  // for derivatives is the only place the check can actually run.
+  const stBatch = await runStorageBatch();
+  check('the worker scans what completion handed it', stBatch.scanned >= 1, stBatch);
+
+  const stAfter = await call('GET', `/v1/files/${stPresign.json.fileId}`, {
+    token: stOwner.token,
+    companyId: stCompany,
+  });
+  eq('...and it is the worker that sets READY', stAfter.json.file.status, 'READY');
+  eq('...with two derivatives beside a retained original',
+    (stAfter.json.derivatives as { variant: string }[]).map((d) => d.variant).sort(),
+    ['THUMB', 'WEB']);
+  const stWeb = (stAfter.json.derivatives as { variant: string; byteSize: number }[]).find(
+    (d) => d.variant === 'WEB'
+  );
+  const stThumb = (stAfter.json.derivatives as { variant: string; byteSize: number }[]).find(
+    (d) => d.variant === 'THUMB'
+  );
+  check('...both smaller than the original, which is retained at full size',
+    stWeb!.byteSize < stAfter.json.file.byteSize && stThumb!.byteSize < stWeb!.byteSize,
+    { original: stAfter.json.file.byteSize, web: stWeb?.byteSize, thumb: stThumb?.byteSize });
+
+  // Running the pass twice must not make a third derivative. The partial unique
+  // index is what makes that true rather than hoped for.
+  await runStorageBatch();
+  const { rows: stDerivCount } = await db.query<{ n: string }>(
+    `select count(*)::int as n from stored_files where derivative_of = $1`,
+    [stPresign.json.fileId]
+  );
+  eq('a second pass produces no second derivative', Number(stDerivCount[0]?.n), 2);
+
+  const stDownload = await call('GET', `/v1/files/${stPresign.json.fileId}/download`, {
+    token: stOwner.token,
+    companyId: stCompany,
+  });
+  eq('a download link is minted per request', stDownload.status, 200);
+  const stFetched = await fetch(stDownload.json.url as string);
+  eq('...and it actually resolves to the bytes', stFetched.status, 200);
+  eq('...serving them as the type they really are',
+    stFetched.headers.get('content-type'), 'image/png');
+
+  // ── The case the scanner exists for ──────────────────────────────────────
+  //
+  // A Windows executable declared as a photograph. The declared type is a claim
+  // by the client and was never evidence; this is the only check that looks at
+  // what the bytes actually say.
+  const stExe = Buffer.from('4d5a90000300000004000000ffff0000b8000000', 'hex');
+  const stEvilPresign = await call('POST', '/v1/files/presign', {
+    token: stOwner.token,
+    companyId: stCompany,
+    body: { kind: 'IMAGE', filename: 'innocent.jpg', contentType: 'image/jpeg', byteSize: stExe.byteLength },
+  });
+  eq('an executable renamed .jpg gets past the declared-type check', stEvilPresign.status, 201);
+  await fetch(stEvilPresign.json.uploadUrl as string, {
+    method: 'PUT',
+    headers: stEvilPresign.json.requiredHeaders as Record<string, string>,
+    body: stExe,
+  });
+  await call('POST', `/v1/files/${stEvilPresign.json.fileId}/complete`, {
+    token: stOwner.token,
+    companyId: stCompany,
+  });
+  await runStorageBatch();
+  const stEvil = await call('GET', `/v1/files/${stEvilPresign.json.fileId}`, {
+    token: stOwner.token,
+    companyId: stCompany,
+  });
+  eq('...and is refused by the scanner that reads its bytes', stEvil.json.file.status, 'FAILED');
+  check('...with a reason a person can act on',
+    /not the type it claims/i.test(stEvil.json.file.failureReason ?? ''),
+    stEvil.json.file.failureReason);
+  const stEvilDownload = await call('GET', `/v1/files/${stEvilPresign.json.fileId}/download`, {
+    token: stOwner.token,
+    companyId: stCompany,
+  });
+  eq('...and can never be downloaded', stEvilDownload.status, 409);
+
+  // ── Refusals at the edge, before any bytes move ──────────────────────────
+  const stSvg = await call('POST', '/v1/files/presign', {
+    token: stOwner.token,
+    companyId: stCompany,
+    body: { kind: 'IMAGE', filename: 'x.svg', contentType: 'image/svg+xml', byteSize: 500 },
+  });
+  eq('an SVG is not an image here, because an SVG can execute script', stSvg.status, 422);
+
+  const stHuge = await call('POST', '/v1/files/presign', {
+    token: stOwner.token,
+    companyId: stCompany,
+    body: { kind: 'IMAGE', filename: 'x.jpg', contentType: 'image/jpeg', byteSize: 60 * 1024 * 1024 },
+  });
+  eq('an oversized image is refused before a single byte moves', stHuge.status, 422);
+
+  // ── The meter, and whose gigabyte it is ──────────────────────────────────
+  const stEnt = await call('GET', '/v1/entitlements', { token: stOwner.token, companyId: stCompany });
+  const stUsage = (stEnt.json.usage as { key: string; used: number; value: number | null }[]).find(
+    (u) => u.key === 'storage_gb'
+  );
+  check('storage usage is reported as a fraction of a gigabyte, not rounded to zero',
+    stUsage !== undefined && stUsage.used > 0 && stUsage.used < 1, stUsage);
+  const { rows: stBytes } = await db.query<{ total: string }>(
+    `select coalesce(sum(byte_size), 0)::bigint as total from stored_files
+      where company_id = $1 and status in ('PENDING','SCANNING','READY')`,
+    [stCompany]
+  );
+  check('...and matches the bytes the database actually holds',
+    Math.abs(stUsage!.used - Number(stBytes[0]?.total) / 1024 ** 3) < 1e-9,
+    { reported: stUsage?.used, bytes: stBytes[0]?.total });
+
+  /*
+   * The owner decision of 2026-09-01 made executable: a subcontractor uploading to
+   * a hiring company's project consumes the HIRING company's allowance. As §22.1
+   * specified it — scoped to the uploader — a free subcontractor's one gigabyte
+   * would have paid for a paying customer's evidence pack.
+   */
+  const stSubInvite = await call('POST', '/v1/providers', {
+    token: stOwner.token,
+    companyId: stCompany,
+    body: { name: `StorageSub ${RUN}`, email: `stsub+${RUN}@verify.crewquo.test` },
+  });
+  const stSub = await register('stsub', undefined, `stsub+${RUN}@verify.crewquo.test`);
+  await call('POST', `/v1/invites/${stSubInvite.json.inviteToken}/accept`, { token: stSub.token });
+  const stSubMemberships = await call('GET', '/v1/me/memberships', { token: stSub.token });
+  const stSubCompany = ((stSubMemberships.json.memberships ?? []) as { companyId: string }[]).find(
+    (m) => m.companyId !== stSub.companyId
+  )?.companyId as string;
+
+  const stProject = await call('POST', '/v1/projects', {
+    token: stOwner.token,
+    companyId: stCompany,
+    body: { name: `Riverside ${RUN}` },
+  });
+  const stEngagements = await call('GET', '/v1/engagements', {
+    token: stOwner.token,
+    companyId: stCompany,
+  });
+  const stEdge = (stEngagements.json.data as { id: string; providerCompanyId: string }[]).find(
+    (e) => e.providerCompanyId === stSubCompany
+  );
+  await call('POST', `/v1/projects/${stProject.json.project.id}/assignments`, {
+    token: stOwner.token,
+    companyId: stCompany,
+    body: { providerCompanyId: stSubCompany, engagementId: stEdge?.id },
+  });
+
+  const stBeforeOwner = await storageBytesForCompany(stCompany);
+  const stBeforeSub = await storageBytesForCompany(stSubCompany);
+  const stSubUpload = await call('POST', '/v1/files/presign', {
+    token: stSub.token,
+    companyId: stSubCompany,
+    body: {
+      kind: 'IMAGE',
+      filename: 'sub-photo.png',
+      contentType: 'image/png',
+      byteSize: 4096,
+      projectId: stProject.json.project.id,
+    },
+  });
+  eq('a subcontractor may upload to the project it is assigned to', stSubUpload.status, 201);
+  eq('...and the bytes are charged to the company that owns the project',
+    (await storageBytesForCompany(stCompany)) - stBeforeOwner, 4096);
+  eq('...not to the free plan of the company that took the photograph',
+    (await storageBytesForCompany(stSubCompany)) - stBeforeSub, 0);
+  check('...with the key under the project owner, so a prefix delete is one operation',
+    stSubUpload.json.uploadUrl.includes(`/co/${stCompany}/proj/${stProject.json.project.id}/`),
+    stSubUpload.json.uploadUrl?.slice(0, 140));
+
+  // ── Tenant boundary ──────────────────────────────────────────────────────
+  const stOutsider = await register('stoutsider', `Outsider ${RUN}`);
+  const stForeignRead = await call('GET', `/v1/files/${stPresign.json.fileId}`, {
+    token: stOutsider.token,
+    companyId: stOutsider.companyId!,
+  });
+  eq('another company\'s file is not found, never forbidden', stForeignRead.status, 404);
+  const stForeignProject = await call('POST', '/v1/files/presign', {
+    token: stOutsider.token,
+    companyId: stOutsider.companyId!,
+    body: {
+      kind: 'IMAGE',
+      filename: 'x.png',
+      contentType: 'image/png',
+      byteSize: 100,
+      projectId: stProject.json.project.id,
+    },
+  });
+  eq('...and a forged project id answers the same as one that never existed',
+    stForeignProject.status, 404);
+
+  // ── The Phase 3 receipt, finally uploadable ──────────────────────────────
+  const stReceipt = await call('POST', '/v1/files/presign', {
+    token: stSub.token,
+    companyId: stSubCompany,
+    body: {
+      kind: 'DOCUMENT',
+      filename: 'taxi.pdf',
+      contentType: 'application/pdf',
+      byteSize: 8,
+      projectId: stProject.json.project.id,
+    },
+  });
+  await fetch(stReceipt.json.uploadUrl as string, {
+    method: 'PUT',
+    headers: stReceipt.json.requiredHeaders as Record<string, string>,
+    body: Buffer.from('%PDF-1.4', 'ascii'),
+  });
+  await call('POST', `/v1/files/${stReceipt.json.fileId}/complete`, {
+    token: stSub.token,
+    companyId: stSubCompany,
+  });
+
+  const stEarly = await call('POST', '/v1/expenses', {
+    token: stSub.token,
+    companyId: stSubCompany,
+    body: { projectId: stProject.json.project.id, amountCents: 4200, receiptFileId: stReceipt.json.fileId },
+  });
+  eq('a receipt still being scanned cannot be attached yet', stEarly.status, 409);
+
+  await runStorageBatch();
+  const stExpense = await call('POST', '/v1/expenses', {
+    token: stSub.token,
+    companyId: stSubCompany,
+    body: { projectId: stProject.json.project.id, amountCents: 4200, receiptFileId: stReceipt.json.fileId },
+  });
+  eq('the Phase 3 deferred receipt upload finally works', stExpense.status, 201);
+  eq('...and the expense points at the stored file, not at a URL it invented',
+    stExpense.json.expense.receiptFileId, stReceipt.json.fileId);
+  eq('...leaving the superseded receipt_url column exactly as null as it has always been',
+    stExpense.json.expense.receiptUrl, null);
+
+  const stStolenReceipt = await call('POST', '/v1/expenses', {
+    token: stSub.token,
+    companyId: stSubCompany,
+    body: {
+      projectId: stProject.json.project.id,
+      amountCents: 100,
+      receiptFileId: stPresign.json.fileId,
+    },
+  });
+  eq('a receipt belonging to another company cannot be attached', stStolenReceipt.status, 404);
 
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);

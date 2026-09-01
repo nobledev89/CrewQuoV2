@@ -506,6 +506,11 @@ function NewExpense({
         amountCents: cents,
         category: category.trim() || null,
         description: description.trim() || null,
+        // Receipt capture is Phase 7.6's screen; the storage service and the
+        // column landed in 7.0 (0027) so the contract is settled before a UI
+        // shapes it. Explicitly null rather than omitted, so this reads as a
+        // decision and not as a field somebody forgot.
+        receiptFileId: null,
       });
       setAmount('');
       setCategory('');

@@ -5,6 +5,7 @@ import { runNotificationDeliveryBatch } from '../modules/notifications/deliveryW
 import { NOTIFICATION_HANDLERS } from '../modules/notifications/handlers';
 import { recordJobRun } from './jobRuns';
 import { BILLING_INBOX_HANDLERS } from '../modules/billing/reconcile';
+import { runStorageBatch } from '../modules/storage/worker';
 
 /**
  * The process that actually drains the durable substrate.
@@ -59,6 +60,20 @@ async function pass(): Promise<{ claimed: number; succeeded: number; failed: num
     console.log(
       `[workers] webhooks claimed=${inbox.claimed} processed=${inbox.processed} ` +
         `deferred=${inbox.deferred} failed=${inbox.failed}`
+    );
+  }
+
+  /*
+   * Storage scanning and derivatives (0027). A third consumer of this pass rather
+   * than a fourth scheduler, for the reason §14 step 1 records: the failure mode
+   * of deferred work is not a crash, it is silence, and every new schedule is one
+   * more thing that can stop quietly.
+   */
+  const storage = await runStorageBatch();
+  if (storage.scanned > 0 || storage.expired > 0) {
+    console.log(
+      `[workers] files scanned=${storage.scanned} ready=${storage.ready} ` +
+        `failed=${storage.failed} derivatives=${storage.derivatives} expired=${storage.expired}`
     );
   }
 

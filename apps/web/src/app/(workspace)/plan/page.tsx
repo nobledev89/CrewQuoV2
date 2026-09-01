@@ -36,6 +36,8 @@ const LIMIT_LABELS: Record<LimitKey, string> = {
   internal_seats: 'Team seats',
   clients: 'Portal clients',
   audit_retention_days: 'Audit retention (days)',
+  storage_gb: 'File storage (GB)',
+  evidence_uploads_per_month: 'Evidence uploads per month',
 };
 
 const FEATURE_LABELS: Record<FeatureKey, string> = {

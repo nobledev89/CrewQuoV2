@@ -86,6 +86,13 @@ export const expenseViewSchema = z.object({
   category: z.string().nullable(),
   description: z.string().nullable(),
   receiptUrl: z.string().nullable(),
+  /**
+   * The stored receipt (0027), which supersedes `receiptUrl` — that column has
+   * held null since 0004 with the comment "upload deferred" and nothing ever
+   * wrote to it. Kept in the view because a client written against it should see
+   * the same null it always saw rather than a missing field.
+   */
+  receiptFileId: z.string().uuid().nullable(),
   status: workStatusSchema,
   rejectReason: z.string().nullable(),
   createdAt: z.string(),
@@ -98,6 +105,8 @@ export const createExpenseSchema = z.object({
   amountCents: z.number().int().min(0),
   category: z.string().trim().max(80).nullable().default(null),
   description: z.string().trim().max(500).nullable().default(null),
+  /** A file already uploaded through /v1/files. Never a URL the caller invents. */
+  receiptFileId: z.string().uuid().nullable().default(null),
 });
 export type CreateExpense = z.infer<typeof createExpenseSchema>;
 
@@ -106,6 +115,7 @@ export const updateExpenseSchema = z
     amountCents: z.number().int().min(0),
     category: z.string().trim().max(80).nullable(),
     description: z.string().trim().max(500).nullable(),
+    receiptFileId: z.string().uuid().nullable(),
   })
   .partial();
 export type UpdateExpense = z.infer<typeof updateExpenseSchema>;

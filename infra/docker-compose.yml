@@ -13,8 +13,8 @@
 #
 # WHY THE WEB APP IS NOT HERE. Next.js hot reload through a Windows bind mount is
 # markedly slower than on the host, and unlike the API the web app stores nothing —
-# so containerising it would cost the dev loop and buy no data locality. Postgres is
-# the only thing in this stack that holds anything.
+# so containerising it would cost the dev loop and buy no data locality. Postgres and
+# MinIO are the two things in this stack that hold anything, and both are here.
 services:
   postgres:
     image: postgres:16
@@ -37,6 +37,42 @@ services:
       timeout: 5s
       retries: 10
 
+
+  # The local object store — the 2026-09-01 owner decision, and the same shape as
+  # the database above: customer-shaped data stays on this machine until CrewQuo
+  # is production ready. Cloudflare R2 remains the production target and remains
+  # unapplied, because provisioning a bucket *is* the act of handing a third party
+  # customer files while /privacy still labels its subprocessor list a preview.
+  #
+  # MinIO speaks the same S3 API R2 does, so the application holds one client and
+  # no abstraction layer, and the first real R2 request is not the first exercise
+  # of the code path.
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    container_name: crewquo-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${STORAGE_ACCESS_KEY_ID:-crewquo}
+      MINIO_ROOT_PASSWORD: ${STORAGE_SECRET_ACCESS_KEY:-crewquo-local-secret}
+    ports:
+      # THE ONE THING THAT MAKES PRESIGNED URLS WORK, AND THE EASIEST TO GET WRONG.
+      # A presigned URL is signed *against a host*. The API signs from inside this
+      # network, where the store is `minio:9000`; the browser that follows the URL
+      # is on the host, where it is `127.0.0.1:9000`. Sign the internal name and you
+      # get a signature that verifies perfectly and resolves nowhere. That is why
+      # `STORAGE_PUBLIC_ENDPOINT` exists separately from `STORAGE_ENDPOINT`, and why
+      # the published port number matches the internal one — a mismatch there would
+      # be a second way to produce the same unresolvable URL.
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - crewquo_minio:/data
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
   api:
     build:
       # The repo root, because the API's dependency on `@crewquo/shared` is a
@@ -53,6 +89,11 @@ services:
         # connections is an API that crash-loops for the first few seconds and fills
         # the log with failures that are not failures.
         condition: service_healthy
+      minio:
+        # `service_started` is enough here, unlike Postgres: nothing queries the
+        # store at import, and an upload that arrives before the store is ready
+        # fails one request rather than crash-looping the process.
+        condition: service_started
     # The repo-root .env, loaded wholesale — and this is the second attempt, because
     # the first one was wrong in a way worth keeping a note about.
     #
@@ -77,6 +118,10 @@ services:
       DATABASE_URL: postgres://crewquo:crewquo@postgres:5432/crewquo
       NODE_ENV: development
       PORT: 4000
+      # Server-to-server, inside this network. The browser-facing half stays as
+      # .env has it (127.0.0.1:9000) — see the ports comment on the minio service.
+      # Getting these two the same way round is the whole trick.
+      STORAGE_ENDPOINT: http://minio:9000
     ports:
       # Same address the host process used, so nothing else has to change: the web
       # app's NEXT_PUBLIC_API_URL, `verify:e2e` and the Playwright suite all keep
@@ -103,3 +148,4 @@ services:
 
 volumes:
   crewquo_pgdata:
+  crewquo_minio:

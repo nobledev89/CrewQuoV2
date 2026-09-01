@@ -30,6 +30,7 @@ import { findEngagementEdge, type EngagementEdgeRow } from '../engagements/repo'
 import { getEffectiveTimeframeDefinitions, listResolveCandidates } from '../rates/repo';
 import { pickEffectiveCard } from '../rates/resolve';
 import { findCompanyById } from '../companies/repo';
+import { findFile } from '../storage/repo';
 import { recordAudit } from '../audit/record';
 import { enqueueOutboxEvent } from '../delivery/repo';
 import {
@@ -55,6 +56,27 @@ import {
 
 function edgeOf(row: EngagementEdgeRow): EngagementEdge {
   return { clientCompanyId: row.client_company_id, providerCompanyId: row.provider_company_id };
+}
+
+/**
+ * A receipt must be a file this company uploaded and the store has accepted.
+ *
+ * Three separate refusals rather than one, because they send somebody to three
+ * different places: a file that is not theirs is a 404 (never a 403 — a forged id
+ * must not confirm somebody else's file exists), a file still scanning is a
+ * conflict they can retry in a moment, and a rejected file is a permanent no.
+ * `null` detaches and is always allowed.
+ */
+async function assertUsableReceipt(fileId: string | null, companyId: string): Promise<void> {
+  if (!fileId) return;
+  const file = await findFile(fileId);
+  if (!file || file.company_id !== companyId) throw new AppError('NOT_FOUND', 'Receipt not found');
+  if (file.status === 'SCANNING' || file.status === 'PENDING') {
+    throw new AppError('CONFLICT', 'That receipt is still being processed.');
+  }
+  if (file.status !== 'READY') {
+    throw new AppError('VALIDATION', 'That receipt could not be stored, so it cannot be attached.');
+  }
 }
 
 /**
@@ -428,6 +450,12 @@ expensesRouter.post(
     const ctx = getCompanyCtx(req);
     const input = createExpenseSchema.parse(req.body);
     const edge = await providerContextForProject(input.projectId, ctx.companyId);
+    // A receipt is attached by id, never by URL: the file must already exist, be
+    // READY, and belong to a company allowed to reach this project. Accepting a
+    // URL would let an expense point anywhere, including at somebody else's
+    // bucket — which is what `receipt_url` would have permitted had it ever been
+    // populated (0027 supersedes it).
+    await assertUsableReceipt(input.receiptFileId, ctx.companyId);
     const expense = await insertExpense({
       engagementId: edge.id,
       projectId: input.projectId,
@@ -436,6 +464,7 @@ expensesRouter.post(
       amountCents: input.amountCents,
       category: input.category,
       description: input.description,
+      receiptFileId: input.receiptFileId,
     });
     res.status(201).json({ expense });
   })
@@ -453,6 +482,7 @@ expensesRouter.patch(
       throw new AppError('CONFLICT', `Cannot edit a ${expense.status} expense`);
     }
     const patch = updateExpenseSchema.parse(req.body);
+    if ('receiptFileId' in patch) await assertUsableReceipt(patch.receiptFileId ?? null, ctx.companyId);
     res.json({ expense: await updateExpenseFields(expense.id, patch) });
   })
 );

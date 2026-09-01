@@ -271,6 +271,7 @@ interface ExpenseRow {
   category: string | null;
   description: string | null;
   receipt_url: string | null;
+  receipt_file_id: string | null;
   status: WorkStatus;
   reject_reason: string | null;
   created_at: Date;
@@ -288,6 +289,7 @@ function toExpenseView(r: ExpenseRow): ExpenseView {
     category: r.category,
     description: r.description,
     receiptUrl: r.receipt_url,
+    receiptFileId: r.receipt_file_id,
     status: r.status,
     rejectReason: r.reject_reason,
     createdAt: r.created_at.toISOString(),
@@ -296,7 +298,7 @@ function toExpenseView(r: ExpenseRow): ExpenseView {
 }
 
 const EXPENSE_COLS = `id, engagement_id, project_id, provider_company_id, logged_by_user_id,
-  amount_cents, category, description, receipt_url, status, reject_reason, created_at, updated_at`;
+  amount_cents, category, description, receipt_url, receipt_file_id, status, reject_reason, created_at, updated_at`;
 
 export async function getExpense(id: string): Promise<ExpenseView | null> {
   const row = await queryOne<ExpenseRow>(`select ${EXPENSE_COLS} from expenses where id = $1`, [id]);
@@ -338,11 +340,13 @@ export async function insertExpense(input: {
   amountCents: number;
   category: string | null;
   description: string | null;
+  /** The Phase 3 deferred receipt, arriving with the 0027 storage service. */
+  receiptFileId: string | null;
 }): Promise<ExpenseView> {
   const row = await queryOne<ExpenseRow>(
     `insert into expenses (engagement_id, project_id, provider_company_id, logged_by_user_id,
-                           amount_cents, category, description)
-     values ($1,$2,$3,$4,$5,$6,$7) returning ${EXPENSE_COLS}`,
+                           amount_cents, category, description, receipt_file_id)
+     values ($1,$2,$3,$4,$5,$6,$7,$8) returning ${EXPENSE_COLS}`,
     [
       input.engagementId,
       input.projectId,
@@ -351,6 +355,7 @@ export async function insertExpense(input: {
       input.amountCents,
       input.category,
       input.description,
+      input.receiptFileId,
     ]
   );
   return toExpenseView(row!);
@@ -358,13 +363,19 @@ export async function insertExpense(input: {
 
 export async function updateExpenseFields(
   id: string,
-  patch: { amountCents?: number; category?: string | null; description?: string | null }
+  patch: {
+    amountCents?: number;
+    category?: string | null;
+    description?: string | null;
+    receiptFileId?: string | null;
+  }
 ): Promise<ExpenseView> {
   const row = await queryOne<ExpenseRow>(
     `update expenses set
        amount_cents = coalesce($2, amount_cents),
        category = case when $3::boolean then $4 else category end,
        description = case when $5::boolean then $6 else description end,
+       receipt_file_id = case when $7::boolean then $8::uuid else receipt_file_id end,
        updated_at = now()
      where id = $1 returning ${EXPENSE_COLS}`,
     [
@@ -374,6 +385,11 @@ export async function updateExpenseFields(
       patch.category ?? null,
       'description' in patch,
       patch.description ?? null,
+      // The same present-vs-null distinction the two above use: detaching a
+      // receipt and leaving it alone are different acts, and one JSON null has to
+      // say both unless the presence of the key is what decides.
+      'receiptFileId' in patch,
+      patch.receiptFileId ?? null,
     ]
   );
   return toExpenseView(row!);

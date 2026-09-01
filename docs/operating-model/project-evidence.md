@@ -6,7 +6,8 @@ every one of them sits on: the §37 capability model, and the offline/sync
 contract decision #22 requires settled *before* these APIs harden.
 **Phase:** 7 · **Status:** **adopted** — §13's four load-bearing questions were
 answered by the owner on 2026-09-01, every one as recommended; three remain open
-and none of them blocks the build. Step 0 (the capability layer) is shipped
+and none of them blocks the build. Steps 0 and 3 of §14 — the capability layer
+and the storage service — are shipped
 · **Last updated:** 2026-09-01
 **Plan refs:** §21 (locations), §22 (evidence + the storage layer), §23 (site
 diary), §24 (documents), §37 (capabilities), §39 (`capture_gps_on_evidence`),
@@ -753,11 +754,11 @@ a queue.**
 | **0** ✅ | **Capability layer (§37, item 7.1) — shipped 2026-09-01.** `capabilities`, bundles, items, `memberships.bundle_key`, overrides, `resolveCapabilities`, `hasCapability` in `policies.ts`. Null bundle derives from role, so no existing membership changes behaviour. Every later route in this phase needs it, and retrofitting authorization is the expensive kind. | **nothing** |
 | **1** | **Project locations (§21, item 7.2).** Tree, depth cap 4, cycle rejection, retire-not-delete, and the reference check written as one function later phases extend rather than a hand-written list per phase — assets (Phase 8) and schedule assignments (Phase 11) both point here. | **nothing** |
 | **2** | **The offline/sync contract (7.7).** Client ids, idempotency, expected versions, per-field diary merge, tombstones, the three timestamps. Settled before the evidence APIs harden, which is decision #22's whole reason for putting it in this phase. Exercised from the browser. | **nothing** |
-| **3** | **Storage service (§22.1, item 7.0).** `stored_files`, presign → PUT → complete → scan → READY, `sharp` derivatives, authorized presigned downloads, the byte meter. | **unblocked 2026-09-01** |
+| **3** ✅ | **Storage service (§22.1, item 7.0) — shipped 2026-09-01.** `stored_files`, presign → PUT → complete → scan → READY, `sharp` derivatives, authorized presigned downloads, the byte meter. | **shipped 2026-09-01** |
 | **4** | **Evidence (§22).** Records, batch upload and batch metadata, gallery / timeline / table, filters, sticky selection. | step 3 |
 | **5** | **Documents (§24).** Categories, `supersedes_id` versioning, expiry dates, and `document.expiring` emitted for Phase 12's ladder. | step 3 |
 | **6** | **Site diary (§23).** Entry, structured attendance, prefill from schedule and time logs, Close Day, post-close amendment with a required reason and the amendment count everywhere. | steps 0, 1, 2 |
-| **7** | **Retro-fit the Phase 3 expense receipt upload.** `expenses.receipt_url` has been null since `0004` with the comment *"upload deferred"*. It is the smallest real consumer of the storage service and therefore its best first proof. | step 3 |
+| **7** ✅ | **Retro-fit the Phase 3 expense receipt upload — shipped 2026-09-01 with step 3.** `expenses.receipt_url` has been null since `0004` with the comment *"upload deferred"*. It is the smallest real consumer of the storage service and therefore its best first proof. | **shipped** |
 
 **Steps 0–2 are also the answer to "what does Phase 7 do while the owner is
 deciding".** They are three of the eight items, they need no bucket and no

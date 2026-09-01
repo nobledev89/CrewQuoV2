@@ -164,6 +164,36 @@ const EnvSchema = z.object({
   PADDLE_ENVIRONMENT: z.enum(['sandbox', 'production']).default('sandbox'),
 
   /**
+   * Object storage (§22.1, and the owner decision of 2026-09-01).
+   *
+   * S3-compatible, because that is what MinIO speaks locally and what R2 speaks in
+   * production — one client, no abstraction layer, and the first real R2 request is
+   * not the first exercise of the code path.
+   *
+   * **The two endpoints are the whole trick and the easiest thing here to get
+   * wrong.** A presigned URL is signed *against a host*. `STORAGE_ENDPOINT` is where
+   * this process reaches the store; `STORAGE_PUBLIC_ENDPOINT` is where the browser
+   * that follows the URL reaches it, and locally those differ — the API is in a
+   * container where the store is `minio:9000`, the browser is on the host where it
+   * is `127.0.0.1:9000`. Signing the internal name produces a signature that
+   * verifies perfectly and resolves nowhere. In production both are the same R2
+   * hostname, so `STORAGE_PUBLIC_ENDPOINT` defaults to `STORAGE_ENDPOINT` and needs
+   * setting only where they genuinely differ.
+   *
+   * All optional, on the same reasoning as Resend and Sentry: without them the
+   * storage service refuses uploads with a configuration error and says so, rather
+   * than an unconfigured environment quietly looking like a working one.
+   */
+  STORAGE_ENDPOINT: z.string().url().optional(),
+  STORAGE_PUBLIC_ENDPOINT: z.string().url().optional(),
+  STORAGE_BUCKET: z.string().min(1).default('crewquo-files'),
+  STORAGE_REGION: z.string().min(1).default('auto'),
+  STORAGE_ACCESS_KEY_ID: z.string().min(1).optional(),
+  STORAGE_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+  /** Minutes a presigned upload or download URL stays valid. Short on purpose. */
+  STORAGE_URL_TTL_MINUTES: z.coerce.number().int().min(1).max(60).default(10),
+
+  /**
    * Error tracking (`docs/operating-model/observability-data-lifecycle.md` §13.3).
    *
    * Optional on the same reasoning as the Resend pair: without a DSN the tracker is

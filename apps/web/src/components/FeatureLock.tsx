@@ -51,6 +51,8 @@ const LIMIT_COPY: Record<LimitKey, string> = {
   internal_seats: 'team seats',
   clients: 'portal clients',
   audit_retention_days: 'days of audit retention',
+  storage_gb: 'gigabytes of file storage',
+  evidence_uploads_per_month: 'evidence uploads this month',
 };
 
 /** The "23 / 23" state: the action is real, the allowance is spent. */
