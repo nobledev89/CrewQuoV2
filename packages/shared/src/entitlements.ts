@@ -54,6 +54,33 @@ export const FEATURE_KEYS = [
    * That is the intended shape of the free tier.
    */
   'asset_tracking',
+  /**
+   * Phase 9 (§43). **Two of these three follow the 2026-09-01 rule and one
+   * deliberately does not** — `sustainability.md` §0 finding 9, and the first noun
+   * that rule does not fit.
+   *
+   * `sustainability` and `carbon_engine` are read over a **project**, so they are
+   * checked against `projects.owner_company_id` exactly as `asset_tracking` and the
+   * three Phase 7 keys are. The project owner is who publishes the figure, quotes
+   * it to a client and answers for it.
+   *
+   * `custom_factors` is **not project-scoped at all**, and transferring the rule by
+   * analogy would have been wrong. A factor set is company reference data, imported
+   * once and used across every project that company owns; there is no project to
+   * find an owner of. It is checked against the **importing company's own plan**,
+   * or a subcontractor importing its own factors while working on somebody else's
+   * job would consume the project owner's allowance for data the project owner
+   * cannot even see.
+   *
+   * The split matters because `carbon_engine` gates the *calculation* while
+   * `sustainability` gates the *reading*: a company can hold the section and its
+   * mass balance without buying the engine that multiplies those masses by factors,
+   * which is what §43's table describes when it lists them on the same tiers but as
+   * separate keys.
+   */
+  'sustainability',
+  'carbon_engine',
+  'custom_factors',
   'invoicing',
   'audit_visibility',
   'api_access',
@@ -85,6 +112,21 @@ export const LIMIT_KEYS = [
    */
   'storage_gb',
   'evidence_uploads_per_month',
+  /**
+   * Phase 9 (§43). **Checked against the importing company, never against a project
+   * owner** — the other half of `custom_factors` above, and the only limit in this
+   * catalog whose subject is reference data rather than work.
+   *
+   * Enforced at the top of the importer, **before a byte is parsed** (packet §10),
+   * because the importer's cost is per row rather than per request: one upload is
+   * the most expensive authenticated operation in the product, and a ceiling
+   * checked after parsing is a ceiling that has already been paid for.
+   *
+   * Like `storage_gb`, **no plan sets a value and an unset limit is silently
+   * unlimited.** §43 proposes figures for storage and proposes none for factor sets,
+   * so choosing one here would be a pricing judgement made by a code change.
+   */
+  'factor_sets',
 ] as const;
 export const limitKeySchema = z.enum(LIMIT_KEYS);
 export type LimitKey = z.infer<typeof limitKeySchema>;

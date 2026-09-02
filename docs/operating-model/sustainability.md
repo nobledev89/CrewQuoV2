@@ -6,7 +6,8 @@ product carbon factor library, project activities, the persisted
 `avoided_emissions_claims`, and `sustainability_settings` — together with the
 data-completeness score (§28.3) that Phase 8 deliberately withheld and this phase
 owes.
-**Phase:** 9 · **Status:** draft · **Last updated:** 2026-09-02
+**Phase:** 9 · **Status:** **adopted** — §14 fully built, all ten steps shipped, and its
+one open decision (§13.1, Scope 2 basis) built as recommended · **Last updated:** 2026-09-02
 **Plan refs:** §26 (factor architecture), §27 (the calculation service), §28
 (metrics and data quality), §38.1 (the organisation dashboard), §39 (the settings
 table that governs six behaviours already shipped as parameters), §41 (all ten

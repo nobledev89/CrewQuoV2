@@ -45,6 +45,7 @@ import { EvidencePanel } from './EvidencePanel';
 import { DocumentsPanel } from './DocumentsPanel';
 import { DiaryPanel } from './DiaryPanel';
 import { AssetsPanel } from './AssetsPanel';
+import { SustainabilityPanel } from './SustainabilityPanel';
 import { ProjectStatusBadge, WorkStatusBadge } from '@/components/Status';
 import { formatCents, formatDate, formatPct, titleCase, totalHours } from '@/lib/format';
 
@@ -318,6 +319,24 @@ function ProjectDetail() {
           } satisfies RailSection,
         ]
       : []),
+    /*
+     * §28's section, and it is listed on the same rule the assets one is: the
+     * feature is the PROJECT OWNER'S, so `ent.has` cannot decide it for a
+     * subcontractor reading somebody else's job. The assets count already carries
+     * that answer — the API returned it or refused it — and `sustainability` sits
+     * a tier above `asset_tracking` on every plan, so a project whose owner has
+     * the second may not have the first. The panel itself renders the refusal,
+     * which is the honest place for it: a section that answers 403 is worse than
+     * one that says which plan key is missing.
+     */
+    ...(ent.has('sustainability') || !isProjectOwner
+      ? [
+          {
+            id: 'sustainability',
+            label: 'Sustainability',
+          } satisfies RailSection,
+        ]
+      : []),
     { id: 'reports', label: 'Reports' },
     ...(canManage ? [{ id: 'settings', label: 'Settings' } satisfies RailSection] : []),
   ];
@@ -458,6 +477,14 @@ function ProjectDetail() {
               canWrite={caps.can('asset.write')}
               canSetDestination={caps.can('asset.destination.set')}
               onCountChanged={bumpCount}
+            />
+          ) : null}
+
+          {active === 'sustainability' ? (
+            <SustainabilityPanel
+              projectId={p.id}
+              canWrite={caps.can('sustainability.write')}
+              onChanged={bumpCount}
             />
           ) : null}
 

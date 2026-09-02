@@ -86,6 +86,28 @@ export const NOTIFICATION_KINDS = [
    * thing that looks.
    */
   'asset.storage_ageing',
+  /**
+   * Sustainability (§26–§28, `sustainability.md` §5–§6). Three kinds, and the
+   * shape of the table is decided by what is deliberately absent from it.
+   *
+   * **`sustainability.calculations_superseded` is not a kind**, and that is the
+   * deliberate half. It is the most frequent event in the domain and the least
+   * actionable: it fires because somebody corrected a weight, which is a thing
+   * they did on purpose and already know about. Notifying would train every
+   * recipient to ignore the channel, which is how the genuinely actionable
+   * `claim_blocked` item gets missed. It is audit-only.
+   *
+   * **`sustainability.claim_blocked` is the one that earns its place.** Every
+   * other kind in this catalog reports something that happened; this reports
+   * something that *didn't* — an avoided-emissions claim that could not be made,
+   * with the reason and the quantity. §41.1's "no factor, no number — say so
+   * instead" is a rule about the report, and a rule about the report alone means
+   * the first time anybody learns the claim is missing is when the report is
+   * generated, which is after the client meeting is booked.
+   */
+  'sustainability.factor_set_imported',
+  'sustainability.factor_set_deactivated',
+  'sustainability.claim_blocked',
   'delivery.dead_lettered',
   // Account security (`docs/operating-model/access.md` §6). The first kinds in
   // this catalog that belong to a *person* rather than to a company, which is why
@@ -241,6 +263,52 @@ export const NOTIFICATION_KIND_SPECS: Readonly<Record<NotificationKind, Notifica
    * the act it is asking for.
    */
   'asset.storage_ageing': { requiresAction: true, urgency: 'NORMAL', defaultChannels: ['EMAIL'] },
+
+  /*
+   * A factor set landed. Informational, to the importing user only, and in-app
+   * only: nobody else in the company is waiting for it, and an email about a
+   * spreadsheet somebody just uploaded themselves is the definition of noise.
+   */
+  /*
+   * §6 of the packet calls this LOW, and this catalog has two urgencies rather
+   * than three — NORMAL and URGENT. That is not a gap being papered over: URGENT
+   * is defined here as "bypasses batching and quiet hours", so everything that is
+   * not that is NORMAL, and LOW versus NORMAL was never a difference this code
+   * acts on. What the packet meant by LOW is expressed by the two fields that DO
+   * act: no action required, and no channel — it lands in the inbox and nowhere
+   * else.
+   */
+  'sustainability.factor_set_imported': {
+    requiresAction: false, urgency: 'NORMAL', defaultChannels: [],
+  },
+  /*
+   * A set was deactivated WHILE LIVE CALCULATIONS CITE IT. Email as well as
+   * in-app, because it is the one factor event with a consequence somebody else
+   * has to know about — the projects named in the item will select a different
+   * set the next time anything recalculates, and their published figures will
+   * move.
+   *
+   * Deactivating a set nothing cites raises no notification at all: the event
+   * carries the count and the handler returns early on zero, which is the
+   * difference between a warning and a log line.
+   */
+  'sustainability.factor_set_deactivated': {
+    requiresAction: false, urgency: 'NORMAL', defaultChannels: ['EMAIL'],
+  },
+  /*
+   * A claim that could not be made. **The one sustainability kind that sets
+   * `requiresAction`**, because it is the one with something to do about it, and
+   * the doing closes it: adding a product factor, or stating a displacement
+   * assumption, is exactly the act the item asks for.
+   *
+   * Digested rather than immediate, and the digest is per project per day rather
+   * than per movement — a single clearance of 400 chairs with no factor would
+   * otherwise generate 400 identical items. The idempotency key on the event is
+   * what enforces that; this row only has to not be `neverDigest`.
+   */
+  'sustainability.claim_blocked': {
+    requiresAction: true, urgency: 'NORMAL', defaultChannels: ['EMAIL'],
+  },
   /*
    * **The one kind in the product that must never be digested**, and the packet
    * says so in a row written for exactly this line. Changing a closed day alters a

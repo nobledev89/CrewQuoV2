@@ -13,9 +13,20 @@ import { MEMBERSHIP_ROLES } from './enums';
 const worker = SYSTEM_BUNDLE_CAPABILITIES.worker;
 
 describe('the capability catalog', () => {
-  it('holds §37\'s 29 keys, with no duplicates', () => {
-    expect(CAPABILITY_KEYS).toHaveLength(29);
-    expect(new Set(CAPABILITY_KEYS).size).toBe(29);
+  /**
+   * §37's 29 keys, plus the one Phase 9 added.
+   *
+   * The count is asserted rather than the list because a *number* is what makes an
+   * accidental addition fail: §44's authorization suite is one test per rule, and a
+   * key that arrives without a rule is a permission nobody decided to grant. Phase
+   * 9's `sustainability.write` is the deliberate thirtieth — `sustainability.md` §0
+   * finding 10 records why none of the three existing sustainability keys could
+   * cover a supervisor recording a fuel fill.
+   */
+  it("holds §37's 29 keys plus sustainability.write, with no duplicates", () => {
+    expect(CAPABILITY_KEYS).toHaveLength(30);
+    expect(new Set(CAPABILITY_KEYS).size).toBe(30);
+    expect(CAPABILITY_KEYS).toContain('sustainability.write');
   });
 
   it('every bundle grants only real keys', () => {

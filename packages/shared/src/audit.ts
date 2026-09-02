@@ -199,6 +199,35 @@ export const AUDIT_ACTIONS = [
   'asset.movement_removed',
   'destination_org.created',
   'destination_org.updated',
+  /*
+   * Sustainability (§26–§28). Five actions, and the shape of the list is decided
+   * by who did what.
+   *
+   * `factor_set.imported` and `factor_set.deactivated` are acts of a person, and
+   * an import is a single act however many thousand rows it wrote — the same
+   * reasoning `asset.imported` applies, one noun over.
+   *
+   * `carbon.recalculated` is the exception in this whole catalog: **the actor is
+   * frequently nobody.** A recalculation triggered by tombstoning a movement has a
+   * person behind it; one triggered by a factor-set re-import across forty projects
+   * does not have one per project. The trail records what changed and by how much
+   * (the per-bucket delta rides in `changes`), because a year later the question is
+   * "why did this number move", and the superseded rows can only answer what it
+   * was.
+   *
+   * There is deliberately no `carbon.calculated`. Every read of a project's
+   * sustainability section can produce calculations where none existed, and an
+   * audit row per read is a trail nobody can find anything in.
+   */
+  'factor_set.imported',
+  'factor_set.deactivated',
+  'product_factor.created',
+  'product_factor.updated',
+  'carbon.recalculated',
+  'activity.recorded',
+  'activity.updated',
+  'activity.removed',
+  'sustainability_settings.updated',
 ] as const;
 export const auditActionSchema = z.enum(AUDIT_ACTIONS);
 export type AuditAction = z.infer<typeof auditActionSchema>;
@@ -211,6 +240,10 @@ export const AUDIT_ENTITY_TYPES = [
   'SITE_DIARY_ENTRY',
   'PROJECT_ASSET',
   'ASSET_MOVEMENT',
+  'EMISSION_FACTOR_SET',
+  'PRODUCT_CARBON_FACTOR',
+  'PROJECT_ACTIVITY',
+  'SUSTAINABILITY_SETTINGS',
   'DESTINATION_ORGANISATION',
   'TIME_LOG',
   'EXPENSE',

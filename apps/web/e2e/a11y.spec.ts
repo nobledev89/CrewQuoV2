@@ -88,6 +88,15 @@ const WORKSPACE_ROUTES = [
   '/portal',
   '/notifications',
   '/audit',
+  /*
+   * Phase 9's three (§38.1, §26, §39). The owner fixture is on `business`, which
+   * carries `sustainability`, `carbon_engine` and `custom_factors` — so all three
+   * render their real state rather than a feature lock, which is the only version
+   * of them worth scanning.
+   */
+  '/sustainability',
+  '/sustainability/factors',
+  '/sustainability/settings',
   '/settings',
   '/security',
   '/profile',
@@ -286,7 +295,16 @@ test.describe('WCAG 2.2 AA — automated', () => {
       await settled(page);
       await expectNoViolations(page, '/projects/[id] (overview)');
 
-      for (const section of ['Locations', 'Site diary', 'Photos & evidence', 'Documents']) {
+      for (const section of [
+        'Locations',
+        'Site diary',
+        'Photos & evidence',
+        'Documents',
+        // Phase 9's section, swept with the rest: it is a figure strip, four tables
+        // and a drawer, and its densest surface — the trace — is behind a toggle
+        // that the sweep below opens.
+        'Sustainability',
+      ]) {
         await page
           .getByRole('navigation', { name: 'Project' })
           .getByRole('button', { name: section })
@@ -310,6 +328,20 @@ test.describe('WCAG 2.2 AA — automated', () => {
       await page.getByRole('button', { name: 'Movements' }).first().click();
       await settled(page);
       await expectNoViolations(page, '/projects/[id] (Assets & materials)');
+
+      /*
+       * And Sustainability with its working shown, for the reason Assets is swept
+       * expanded: the calculation trace is the densest table in the phase and it is
+       * not in the DOM until somebody asks for it.
+       */
+      await page
+        .getByRole('navigation', { name: 'Project' })
+        .getByRole('button', { name: 'Sustainability' })
+        .click();
+      await settled(page);
+      await page.getByRole('button', { name: 'Show the working' }).click();
+      await settled(page);
+      await expectNoViolations(page, '/projects/[id] (Sustainability, working shown)');
     });
 
     /**

@@ -55,7 +55,16 @@ async function focused(page: Page) {
 async function tabUntil(
   page: Page,
   predicate: (f: Awaited<ReturnType<typeof focused>>) => boolean,
-  max = 40
+  /*
+   * Raised from 40 when Phase 9 added three links to the sidebar (§38.1, §26, §39).
+   *
+   * The cap counts presses **from the top of the page**, so every nav item the
+   * product gains costs one — which makes a fixed number a budget that shrinks as
+   * the product grows, and makes its failure read as "the control is unreachable"
+   * when the control moved four stops further down. The trail below is what told
+   * the two apart; the number is generous now for the same reason.
+   */
+  max = 80
 ): Promise<{ found: boolean; presses: number; trail: string[] }> {
   // The trail is kept so a failure says where Tab actually went. Without it the report
   // is "not reachable in 40 presses", which is true of an unreachable control, of a

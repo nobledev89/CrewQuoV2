@@ -21,6 +21,7 @@ const LIMIT_LABELS: Record<LimitKey, string> = {
   audit_retention_days: 'Audit history (days)',
   storage_gb: 'File storage (GB)',
   evidence_uploads_per_month: 'Evidence uploads per month',
+  factor_sets: 'Imported factor sets',
 };
 
 const FEATURE_LABELS: Record<FeatureKey, string> = {
@@ -33,6 +34,9 @@ const FEATURE_LABELS: Record<FeatureKey, string> = {
   project_documents: 'Project documents',
   site_diary: 'Site diary',
   asset_tracking: 'Asset & material tracking',
+  sustainability: 'Sustainability & carbon reporting',
+  carbon_engine: 'Carbon engine',
+  custom_factors: 'Custom emission factors',
   invoicing: 'Invoicing',
   audit_visibility: 'Client-visible audit trail',
   api_access: 'API access',

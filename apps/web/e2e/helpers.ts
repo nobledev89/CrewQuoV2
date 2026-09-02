@@ -412,6 +412,83 @@ export async function seedProjectSections(email: string, projectId: string): Pro
     quantity: 8,
     movedOn: '2026-03-06',
   });
+
+  /*
+   * Sustainability (§26–§28), and the fixture is chosen so the section renders
+   * every one of its states rather than a plausible-looking subset.
+   *
+   * The factor set is **obviously synthetic and named as such**, which is the
+   * packet's §13.6: §45's licensing gate on the published UK Government factors is
+   * unanswered, and a fixture that looked real would be the fabricated row §26.2
+   * forbids wearing a test label.
+   *
+   * A product factor and a stated displacement assumption are both present, so the
+   * avoided figure and its claim table exist. Without them the section renders
+   * correctly and proves only the empty case — which is the argument this function
+   * makes twice already, about a gallery with no tiles and a register with no
+   * movements.
+   */
+  const factorCsv = [
+    'Category,Activity,Material,Treatment,Vehicle,Fuel,Unit,kg CO2e',
+    'Waste,Reuse,Operator chair,REUSE,,,tonne,21.28',
+    'Fuels,Diesel,,,,DIESEL,litre,2.5',
+    'Transport,Van,,,VAN,DIESEL,km,0.25',
+  ].join('\n');
+  await post('/v1/factor-sets/import', {
+    format: 'CSV',
+    content: factorCsv,
+    mapping: {
+      category: 'Category',
+      activity: 'Activity',
+      material: 'Material',
+      treatment: 'Treatment',
+      vehicleType: 'Vehicle',
+      fuelType: 'Fuel',
+      unit: 'Unit',
+      kgCo2ePerUnit: 'kg CO2e',
+    },
+    set: {
+      name: `CrewQuo Test Factors 2026 ${RUN}`,
+      sourceOrganisation: 'CrewQuo — synthetic test data',
+      reportingYear: 2026,
+      version: 'v1.0',
+      validFrom: '2026-01-01',
+      region: 'GB',
+    },
+    dryRun: false,
+  });
+  await post('/v1/product-factors', {
+    itemCategory: 'FURNITURE',
+    assetTypeId: typeByCode.OPERATOR_CHAIR,
+    kgCo2ePerItem: 72,
+    lifecycleBoundary: 'A1_A3',
+    source: 'CrewQuo — synthetic test data',
+    verificationStatus: 'EPD_VERIFIED',
+  });
+  const stateAssumption = await fetch(`${API_URL}/v1/sustainability-settings`, {
+    method: 'PATCH',
+    headers,
+    body: JSON.stringify({
+      defaultDisplacementBasis: 'USER_DEFINED',
+      defaultDisplacementPct: 80,
+    }),
+  });
+  if (!stateAssumption.ok) {
+    throw new Error(`settings failed: ${stateAssumption.status} ${await stateAssumption.text()}`);
+  }
+  await post(`/v1/projects/${projectId}/activities`, {
+    kind: 'VEHICLE_DISTANCE',
+    activityDate: '2026-03-04',
+    distanceKm: 240,
+    vehicleCategory: 'VAN',
+    fuelType: 'DIESEL',
+    purpose: 'COLLECTION',
+    source: 'DOCUMENTED',
+  });
+  // The activity write recalculates on its own; this is the belt-and-braces run
+  // that also applies the factor set imported above to the movements recorded
+  // before it existed (§41.3: a newer set never reaches a project on its own).
+  await post(`/v1/projects/${projectId}/carbon/recalculate`, {});
 }
 
 /** An access token and the active company for one account, over HTTP. */
@@ -588,6 +665,75 @@ export async function acceptInviteAsNewUser(
   await expect(page).toHaveURL(/\/invite\//);
   await page.getByRole('button', { name: 'Accept invitation' }).click();
   await expect(page.getByText('Invitation accepted')).toBeVisible();
+}
+
+/**
+ * Invite an existing account into a company as a MEMBER, and accept, over HTTP.
+ *
+ * Headless rather than through the UI because the thing under test is what the
+ * invitee can *see* afterwards, not the invite flow — which has its own coverage in
+ * the parity suite. Two round trips beats six page loads before the first assertion.
+ */
+export async function inviteAndAccept(inviterEmail: string, inviteeEmail: string): Promise<void> {
+  const inviter = await apiSession(inviterEmail);
+  const invite = await fetch(`${API_URL}/v1/members/invite`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${inviter.token}`,
+      'X-Company-Id': inviter.companyId,
+    },
+    body: JSON.stringify({ email: inviteeEmail, role: 'MEMBER' }),
+  });
+  if (!invite.ok) throw new Error(`invite failed: ${invite.status} ${await invite.text()}`);
+  const { inviteToken } = (await invite.json()) as { inviteToken: string };
+
+  const invitee = await login(inviteeEmail);
+  const accept = await fetch(`${API_URL}/v1/invites/${inviteToken}/accept`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${invitee}` },
+  });
+  if (!accept.ok) throw new Error(`accept failed: ${accept.status} ${await accept.text()}`);
+}
+
+/**
+ * Assign a capability bundle to a membership (§37).
+ *
+ * At the database, like `subscribe` and `makeSuperAdmin`: there IS an endpoint for
+ * this, and using it would need the fixture to hold an admin session and know the
+ * membership id — three round trips to establish a state, when the state is the
+ * precondition rather than the thing under test.
+ */
+export async function setBundle(
+  companyName: string,
+  email: string,
+  bundleKey: string
+): Promise<void> {
+  const db = new Client({ connectionString: databaseUrl() });
+  await db.connect();
+  try {
+    const { rowCount } = await db.query(
+      `update memberships m set bundle_key = $3
+         from companies c, users u
+        where m.company_id = c.id and m.user_id = u.id
+          and c.name = $1 and u.email = $2`,
+      [companyName, email, bundleKey]
+    );
+    if (rowCount === 0) throw new Error(`No membership for ${email} in "${companyName}"`);
+  } finally {
+    await db.end();
+  }
+}
+
+/** An access token for one account. */
+async function login(email: string): Promise<string> {
+  const res = await fetch(`${API_URL}/v1/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password: PASSWORD }),
+  });
+  if (!res.ok) throw new Error(`login ${email} failed: ${res.status}`);
+  return ((await res.json()) as { tokens: { accessToken: string } }).tokens.accessToken;
 }
 
 /** Read the one-time invite link the create-provider / create-client flow returns. */

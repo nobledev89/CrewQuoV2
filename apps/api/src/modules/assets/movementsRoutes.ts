@@ -22,6 +22,19 @@ import { assertCapability } from '../capabilities/guards';
 import { hasFeature } from '../entitlements/guards';
 import { recordAudit } from '../audit/record';
 import { recordRevision } from '../revisions/record';
+/*
+ * Phase 9's finding 6 (`sustainability.md` §0), wired into the movement ledger.
+ *
+ * Tombstoning a movement, correcting its quantity or continuing it out of storage
+ * all change what `massBalance.ts` returns — and would leave `carbon_calculations`
+ * untouched, `superseded_by` still null, still counted. The two halves of the same
+ * §28 section would then disagree about whether the material exists, invisibly,
+ * because every query still returns a plausible number.
+ *
+ * `recalculateAfterWrite` never throws into the caller: recording where material
+ * went must not be refused because a factor set is misconfigured.
+ */
+import { recalculateAfterWrite } from '../sustainability/engine';
 import {
   findDestinationOrg,
   findMovement,
@@ -264,7 +277,14 @@ assetMovementsRouter.post(
 
           const outcomeState = await recomputeOutcomeState(access.assetId, quantity, client);
           await auditMovement(client, ctx, access, row, 'asset.movement_recorded');
-          return movementResult(row, access, outcomeState);
+          const result = movementResult(row, access, outcomeState);
+          await recalculateAfterWrite({
+            projectId: access.projectId,
+            trigger: 'MOVEMENT_RECORDED',
+            triggeringId: row.id,
+            actorUserId: ctx.userId,
+          });
+          return result;
         });
       }
     );
@@ -366,6 +386,18 @@ movementsRouter.post(
           await auditMovement(client, ctx, access, row, 'asset.movement_continued');
 
           const result = movementResult(row, access, outcomeState);
+          /*
+           * The continuation half of finding 6, and the one that would be hardest to
+           * spot: the storage leg stops counting toward pending mass and the new leg
+           * starts counting toward its destination, so the carbon roll-up moves
+           * without a single row being deleted.
+           */
+          await recalculateAfterWrite({
+            projectId: access.projectId,
+            trigger: 'CONTINUATION_RECORDED',
+            triggeringId: row.id,
+            actorUserId: ctx.userId,
+          });
           return remainder > 0
             ? {
                 ...result,
@@ -469,6 +501,13 @@ movementsRouter.patch(
       return movementResult(row, access, outcomeState);
     });
 
+    await recalculateAfterWrite({
+      projectId: access.projectId,
+      trigger: 'WEIGHT_CORRECTED',
+      triggeringId: id,
+      actorUserId: ctx.userId,
+    });
+
     res.json(updated);
   })
 );
@@ -523,6 +562,18 @@ movementsRouter.delete(
         client
       );
       await auditMovement(client, ctx, access, row, 'asset.movement_removed');
+    });
+
+    /*
+     * Step 12 of the §12 acceptance script, and the one no other step would catch:
+     * the project's emissions figure must FALL when a movement is deleted, and the
+     * carbon roll-up must agree with the mass balance afterwards.
+     */
+    await recalculateAfterWrite({
+      projectId: access.projectId,
+      trigger: 'MOVEMENT_TOMBSTONED',
+      triggeringId: id,
+      actorUserId: ctx.userId,
     });
 
     res.status(204).end();

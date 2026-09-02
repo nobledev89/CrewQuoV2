@@ -957,6 +957,155 @@ async function onDiaryAmended(event: OutboxEvent): Promise<void> {
 }
 
 /**
+ * A factor set landed (§26.2, packet §6).
+ *
+ * **To the importing user only, and in-app only.** Nobody else in the company is
+ * waiting for it, and an email about a spreadsheet somebody just uploaded
+ * themselves is the definition of noise. The item exists so the import has a
+ * durable receipt with its row counts on it — the same reason `notifications.md`
+ * requires every kind to have one: email is never the only copy.
+ *
+ * The counts are **by category** because "1,842 rows imported" is unreadable and
+ * "freight 210 · fuels 96 · waste 148" is what an operator checks a workbook
+ * against. No factor values travel: §11 excludes them, and a factor value is
+ * commercially sensitive third-party data even when the set is a government one.
+ */
+async function onFactorSetImported(event: OutboxEvent): Promise<void> {
+  const companyId = required(event.payload, 'companyId');
+  const actorUserId = optional(event.payload, 'actorUserId');
+  if (actorUserId === null) return;
+
+  const name = required(event.payload, 'name');
+  const version = required(event.payload, 'version');
+  const rowCount = Number(event.payload.rowCount ?? 0);
+  const counts = event.payload.countsByCategory;
+  const breakdown =
+    counts !== null && typeof counts === 'object'
+      ? Object.entries(counts as Record<string, number>)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 6)
+          .map(([category, n]) => `${category} ${n}`)
+          .join(' · ')
+      : '';
+
+  await dispatchNotification({
+    kind: 'sustainability.factor_set_imported',
+    companyId,
+    recipientUserIds: [actorUserId],
+    title: `${name} ${version} imported — ${rowCount} factor${rowCount === 1 ? '' : 's'}`,
+    body: breakdown === '' ? 'The set is active and available to select.' : `${breakdown}.`,
+    subjectType: 'EMISSION_FACTOR_SET',
+    subjectId: event.aggregateId,
+    actionUrl: `/sustainability/factors?set=${event.aggregateId}`,
+    topic: event.topic,
+    aggregateId: event.aggregateId,
+  });
+}
+
+/**
+ * A set was deactivated **while live calculations cite it** (packet §6).
+ *
+ * The only factor event with a consequence somebody else has to know about: the
+ * projects citing it will select a different set the next time anything
+ * recalculates, and their published figures will move. So it earns an email as well
+ * as an in-app item, and it goes to everyone who could have done it rather than to
+ * the person who did.
+ *
+ * A set nothing cites raises no event at all — the enqueuing side returns early on
+ * zero, which is the difference between a warning and a log line.
+ */
+async function onFactorSetDeactivated(event: OutboxEvent): Promise<void> {
+  const companyId = required(event.payload, 'companyId');
+  const name = required(event.payload, 'name');
+  const version = required(event.payload, 'version');
+  const cited = Number(event.payload.citedByCalculations ?? 0);
+
+  await dispatchNotification({
+    kind: 'sustainability.factor_set_deactivated',
+    companyId,
+    recipientUserIds: await capabilityRecipients(companyId, 'sustainability.factors.manage'),
+    title: `${name} ${version} deactivated — ${cited} live calculation${cited === 1 ? '' : 's'} cite it`,
+    body: 'Those figures are unchanged and still cite this set. Anything recalculated from now on will select a different one, so the numbers can move.',
+    subjectType: 'EMISSION_FACTOR_SET',
+    subjectId: event.aggregateId,
+    actionUrl: `/sustainability/factors?set=${event.aggregateId}`,
+    topic: event.topic,
+    aggregateId: event.aggregateId,
+  });
+}
+
+/**
+ * A claim that could not be made — **the one sustainability kind that earns its
+ * place** (packet §5).
+ *
+ * Every other kind in this catalog reports something that happened; this reports
+ * something that *didn't*. §41.1's "no factor, no number — say so instead" is a rule
+ * about the report, and a rule about the report alone means the first time anybody
+ * learns the claim is missing is when the report is generated, which is after the
+ * client meeting is booked.
+ *
+ * **Three reasons, two recipient cohorts, because they have different fixes.** A
+ * missing product factor is the factor library's problem and goes to whoever
+ * curates it. An unstated displacement assumption is a decision about how this
+ * organisation reports, and is resolved by somebody stating an assumption rather
+ * than by adding data.
+ *
+ * The body names the asset type and the total quantity and nothing else: no
+ * description, no serial, no destination organisation. The payload allowlist
+ * enforces that upstream, so there is nothing here to leak even by accident.
+ */
+async function onClaimBlocked(event: OutboxEvent): Promise<void> {
+  const companyId = required(event.payload, 'companyId');
+  const projectId = required(event.payload, 'projectId');
+  const reason = required(event.payload, 'reason');
+
+  const subjects = Array.isArray(event.payload.subjects)
+    ? (event.payload.subjects as { subject?: unknown; quantity?: unknown }[])
+    : [];
+  const described = subjects
+    .filter((s) => typeof s.subject === 'string')
+    .map((s) => `${Number(s.quantity ?? 0)} × ${String(s.subject)}`)
+    .join(', ');
+  if (described === '') {
+    throw new PermanentDeliveryError(
+      'claim_blocked payload named nothing — there is no item to raise'
+    );
+  }
+
+  const copy =
+    reason === 'DISPLACEMENT_UNKNOWN'
+      ? {
+          title: `No avoided-emissions claim for ${described} — no displacement assumption`,
+          body: 'CrewQuo will not assume that reused material displaced a purchase. State a displacement assumption in sustainability settings and the claim can be made.',
+          capability: 'sustainability.read' as const,
+        }
+      : reason === 'GENERIC_NOT_ALLOWED'
+        ? {
+            title: `No avoided-emissions claim for ${described} — only a generic factor is available`,
+            body: 'A generic product factor exists but generic factors are switched off for this company. Add a product-specific factor, or turn generics on knowing the report will label the figure as an estimate.',
+            capability: 'sustainability.factors.manage' as const,
+          }
+        : {
+            title: `No avoided-emissions claim for ${described} — no product carbon factor`,
+            body: 'Add an embodied-carbon factor for this item and the claim can be made. Until then the material is reported as reused with no carbon benefit attached.',
+            capability: 'sustainability.factors.manage' as const,
+          };
+
+  await dispatchNotification({
+    kind: 'sustainability.claim_blocked',
+    companyId,
+    recipientUserIds: await capabilityRecipients(companyId, copy.capability),
+    title: copy.title,
+    body: copy.body,
+    subjectType: 'PROJECT',
+    subjectId: projectId,
+    actionUrl: `/projects/${projectId}?section=sustainability`,
+    topic: event.topic,
+    aggregateId: event.aggregateId,
+  });
+}
+
+/**
  * The registered consumers. A topic with no handler here is simply not claimed by
  * this worker — `claimOutboxEvents` filters on the registered topic list, so an
  * unconsumed event waits rather than being marked delivered by a worker that did
@@ -985,6 +1134,19 @@ export const NOTIFICATION_HANDLERS: ReadonlyMap<string, DeliveryHandler> = new M
   ['diary.amended', onDiaryAmended],
   ['asset.lines_recorded', onAssetLinesRecorded],
   ['asset.storage_ageing', onAssetStorageAgeing],
+  ['sustainability.factor_set_imported', onFactorSetImported],
+  ['sustainability.factor_set_deactivated', onFactorSetDeactivated],
+  ['sustainability.claim_blocked', onClaimBlocked],
+  /*
+   * `sustainability.calculations_superseded` is deliberately absent, and the absence
+   * is the design (packet §6). It is the most frequent event in the domain and the
+   * least actionable: it fires because somebody corrected a weight, which is a thing
+   * they did on purpose and already know about. Notifying would train every
+   * recipient to ignore the channel, which is how the genuinely actionable
+   * `claim_blocked` item gets missed. The event still lands in the outbox and in the
+   * audit trail carrying its per-bucket delta, which is where the answer to "why did
+   * this number move" lives.
+   */
   ['auth.token_reuse', onAuthSecurityEvent],
   ['auth.session_revoked', onAuthSecurityEvent],
   ['auth.mfa_enrolled', onAuthSecurityEvent],

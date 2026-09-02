@@ -10772,6 +10772,811 @@ async function main(): Promise<void> {
     [agBalance.json.massBalance.inStorageKg, agBalance.json.massBalance.pendingKg], [0, 0]);
 
 
+  // ── The carbon engine (§26–§28) — the Phase 9 §12 acceptance script ───────
+  //
+  // Fifteen steps, in the order `docs/operating-model/sustainability.md` §12
+  // writes them, on the Phase 8 fixture it names: 42 operator chairs removed, 30
+  // donated, 12 recycled, plus 8 desks in storage — 933.0 kg handled, 693.0 kg
+  // allocated, 240.0 kg pending.
+  //
+  // A project of its own for the reason the mass-balance section made one: the
+  // figures below are exact, and "whatever the suite has recorded by now" is not a
+  // number anything can be asserted against.
+  //
+  // ── THE MILESTONE'S TWO FIGURES, AND WHY THIS FIXTURE DOES NOT PRODUCE THEM ─
+  //
+  // §28.4 illustrates the two-headline layout with "3.84 tCO₂e / 27.42 tCO₂e", and
+  // the phase milestone quotes it. Those figures belong to §28.1's illustration,
+  // which is a 21.72-TONNE project; the fixture §12 requires this script to
+  // continue is 0.933 t — a factor of twenty-three smaller. Producing 27.42 t of
+  // avoided emissions from 30 chairs would need an embodied-carbon factor around
+  // 1,142 kgCO₂e per chair, against a realistic 70–80, which is precisely the
+  // fabricated number §41.1 and locked decision #16 forbid.
+  //
+  // So what is proved here is the milestone's SHAPE on real figures: two headlines
+  // side by side, never netted, with every number traceable to a factor and a
+  // version. The figures are asserted exactly, and they are the fixture's own.
+  section('Sustainability — the two headlines, the gaps, and the claim nobody made');
+
+  const suOwner = await register('suowner', `SustainCo ${RUN}`);
+  const suCompany = suOwner.companyId!;
+  // Business rather than Pro: `custom_factors` is what lets Ama import, and §43
+  // puts it a tier above `sustainability` and `carbon_engine`.
+  await subscribe(suCompany, 'business');
+  const suCtx = { token: suOwner.token, companyId: suCompany };
+
+  const suClientRes = await call('POST', '/v1/clients', {
+    ...suCtx,
+    body: { name: `Kingsway Estates ${RUN}`, email: `kingsway+${RUN}@verify.crewquo.test` },
+  });
+  const suProject = (await call('POST', '/v1/projects', {
+    ...suCtx,
+    body: {
+      name: `Kingsway House — Floor 6 ${RUN}`,
+      clientCompanyId: suClientRes.json.client.clientCompanyId,
+      engagementId: suClientRes.json.client.engagementId,
+    },
+  })).json.project.id as string;
+
+  const suDest = await call('GET', '/v1/destination-types', { ...suCtx });
+  const suByCode = Object.fromEntries(
+    (suDest.json.destinationTypes as { code: string }[]).map((d) => [d.code, d])
+  ) as Record<string, any>;
+
+  const suChairs = (await call('POST', `/v1/projects/${suProject}/assets`, {
+    ...suCtx,
+    body: {
+      assetTypeId: CHAIR, quantity: 42, weightBasis: 'UNIT', unitWeightKg: 16.5,
+      weightSource: 'USER_ESTIMATE',
+    },
+  })).json.asset.id as string;
+  const suDonation = (await call('POST', `/v1/assets/${suChairs}/movements`, {
+    ...suCtx,
+    body: { destinationTypeId: suByCode.DONATION.id, quantity: 30, movedOn: '2027-03-04' },
+  })).json.movement.id as string;
+  await call('POST', `/v1/assets/${suChairs}/movements`, {
+    ...suCtx,
+    body: { destinationTypeId: suByCode.RECYCLING.id, quantity: 12, movedOn: '2027-03-05' },
+  });
+  const suDesks = (await call('POST', `/v1/projects/${suProject}/assets`, {
+    ...suCtx,
+    body: {
+      assetTypeId: DESK, quantity: 8, weightBasis: 'UNIT', unitWeightKg: 30,
+      weightSource: 'USER_ESTIMATE',
+    },
+  })).json.asset.id as string;
+  await call('POST', `/v1/assets/${suDesks}/movements`, {
+    ...suCtx,
+    body: { destinationTypeId: suByCode.STORAGE.id, quantity: 8, movedOn: '2027-03-06' },
+  });
+
+  const suMass = await call('GET', `/v1/projects/${suProject}/mass-balance`, { ...suCtx });
+  eq('the Phase 8 fixture is intact — 933 kg handled, 693 allocated, 240 pending',
+    [suMass.json.massBalance.handledKg, suMass.json.massBalance.allocatedKg,
+     suMass.json.massBalance.pendingKg],
+    [933, 693, 240]);
+
+  // ── 1. Empty. Absent, not zero ───────────────────────────────────────────
+  //
+  // §41.1 asserted at the top of the phase, where it is easiest to break: a project
+  // with no factor set has not emitted nothing, it has been measured by nobody.
+  const suEmpty = await call('GET', `/v1/projects/${suProject}/carbon`, { ...suCtx });
+  eq('before any factor set exists the section still answers', suEmpty.status, 200);
+  eq('...with the full view, because the reader holds sustainability.read',
+    suEmpty.json.carbon.view, 'FULL');
+  eq('...and BOTH headlines are null rather than 0.00 tCO₂e',
+    [suEmpty.json.carbon.projectEmissionsKgCo2e, suEmpty.json.carbon.avoidedKgCo2e],
+    [null, null]);
+  eq('...with no factor set to name', suEmpty.json.carbon.factorSet, null);
+  check('...and the mass balance beside it is unaffected',
+    suMass.json.massBalance.handledKg === 933, suMass.json.massBalance);
+
+  // ── 2. Import ────────────────────────────────────────────────────────────
+  //
+  // A small, obviously synthetic set, named as such (packet §13.6). §45's licensing
+  // gate on the published UK Government factors is unanswered and this suite does
+  // not wait for it: a fixture that LOOKED real would be the fabricated row §26.2
+  // forbids, wearing a test label.
+  const suCsv = [
+    'Category,Activity,Material,Treatment,Vehicle,Fuel,Unit,kg CO2e,WTT',
+    'Waste,Recycling,Operator chair,RECYCLING,,,tonne,21.28,',
+    'Waste,Reuse,Operator chair,REUSE,,,tonne,21.28,',
+    'Waste,Landfill,,LANDFILL,,,tonne,587.0,',
+    'Fuels,Diesel,,,,DIESEL,litre,2.5,0.6',
+    'Transport,Van,,,VAN,DIESEL,km,0.25,0.05',
+    'Electricity,Grid electricity,,,,,kWh,0.2,',
+  ].join('\n');
+  const suMapping = {
+    category: 'Category', activity: 'Activity', material: 'Material', treatment: 'Treatment',
+    vehicleType: 'Vehicle', fuelType: 'Fuel', unit: 'Unit',
+    kgCo2ePerUnit: 'kg CO2e', wttKgCo2ePerUnit: 'WTT',
+  };
+  const suSetBody = {
+    name: `CrewQuo Test Factors 2027 ${RUN}`,
+    sourceOrganisation: 'CrewQuo — synthetic test data',
+    reportingYear: 2027,
+    version: 'v1.0',
+    validFrom: '2027-01-01',
+    region: 'GB',
+  };
+
+  const suPreview = await call('POST', '/v1/factor-sets/preview', {
+    ...suCtx, body: { format: 'CSV', content: suCsv },
+  });
+  eq('the mapping preview reads the file without importing it', suPreview.status, 200);
+  eq('...and guesses the columns it recognises',
+    [suPreview.json.suggestedMapping.unit, suPreview.json.suggestedMapping.kgCo2ePerUnit],
+    ['Unit', 'kg CO2e']);
+  eq('...counting the rows', suPreview.json.rowCount, 6);
+
+  const suDry = await call('POST', '/v1/factor-sets/import', {
+    ...suCtx,
+    body: { format: 'CSV', content: suCsv, mapping: suMapping, set: suSetBody, dryRun: true },
+  });
+  eq('the dry run reports what would be added', suDry.json.diff.toAdd, 6);
+  eq('...by category', suDry.json.diff.countsByCategory,
+    { Waste: 3, Fuels: 1, Transport: 1, Electricity: 1 });
+  eq('...and refuses nothing', suDry.json.diff.failures, []);
+  const { rows: suNoSetYet } = await db.query<{ n: string }>(
+    `select count(*)::text as n from emission_factor_sets where company_id = $1`, [suCompany]);
+  eq('...having changed nothing at all', suNoSetYet[0]?.n, '0');
+
+  const suImport = await call('POST', '/v1/factor-sets/import', {
+    ...suCtx,
+    body: { format: 'CSV', content: suCsv, mapping: suMapping, set: suSetBody, dryRun: false },
+  });
+  eq('the confirmed import lands atomically', suImport.status, 201);
+  eq('...with every row', suImport.json.imported, 6);
+  const suSetId = suImport.json.factorSet.id as string;
+  eq('...and the set names itself as synthetic, so it cannot be mistaken for published data',
+    suImport.json.factorSet.sourceOrganisation, 'CrewQuo — synthetic test data');
+
+  await drainWorkers();
+  const { rows: suImportNote } = await db.query<{ title: string; recipient_user_id: string }>(
+    `select title, recipient_user_id from notifications
+      where kind = 'sustainability.factor_set_imported' and subject_id = $1`, [suSetId]);
+  eq('...and the importing user, and only they, get the receipt', suImportNote.length, 1);
+  eq('...addressed to the person who imported it', suImportNote[0]?.recipient_user_id, suOwner.userId);
+  check('...carrying the counts by category rather than a bare row count',
+    String(suImportNote[0]?.title ?? '').includes('6 factors'), suImportNote[0]);
+
+  // ── 3. Duplicate refused (finding 2) ─────────────────────────────────────
+  const suDupe = await call('POST', '/v1/factor-sets/import', {
+    ...suCtx,
+    body: { format: 'CSV', content: suCsv, mapping: suMapping, set: suSetBody, dryRun: false },
+  });
+  eq('the identical file is refused by name and version', suDupe.status, 409);
+  eq('...naming the reason', suDupe.json.error?.details?.reason, 'SET_ALREADY_EXISTS');
+  const { rows: suOneSet } = await db.query<{ n: string }>(
+    `select count(*)::text as n from emission_factor_sets where company_id = $1`, [suCompany]);
+  eq('...with no second copy', suOneSet[0]?.n, '1');
+  const { rows: suSixFactors } = await db.query<{ n: string }>(
+    `select count(*)::text as n from emission_factors where factor_set_id = $1`, [suSetId]);
+  eq('...and no partial rows', suSixFactors[0]?.n, '6');
+
+  // ── 4. Waste treatment, and finding 8's first silence ────────────────────
+  const suRecalc1 = await call('POST', `/v1/projects/${suProject}/carbon/recalculate`, { ...suCtx });
+  eq('an explicit recalculation applies the newly imported set', suRecalc1.status, 200);
+
+  const suCarbon1 = await call('GET', `/v1/projects/${suProject}/carbon`, { ...suCtx });
+  const suCalcs1 = await call('GET', `/v1/projects/${suProject}/carbon/calculations`, { ...suCtx });
+  const treatment1 = (suCalcs1.json.calculations as any[]).filter((c) => c.bucket === 'WASTE_TREATMENT');
+  eq('12 chairs recycled and 30 donated each produce a treatment row', treatment1.length, 2);
+  const recycled = treatment1.find((c) => c.inputs.destinationCode === 'RECYCLING');
+  eq('...recycling is 0.198 t × 21.28 kgCO₂e/t', Number(recycled.kgCo2e.toFixed(5)), 4.21344);
+  eq('...citing the set, its version, its reporting year and the factor value it used',
+    [recycled.citation.factorSetVersion, recycled.citation.factorReportingYear,
+     recycled.citation.factorKgCo2ePerUnit],
+    ['v1.0', 2027, 21.28]);
+  eq('...and it is Scope 3 category 5, waste generated in operations',
+    [recycled.scope, recycled.scope3Category], ['SCOPE_3', 5]);
+  const donated = treatment1.find((c) => c.inputs.destinationCode === 'DONATION');
+  eq('30 donated chairs produce a REUSE treatment emission, not a gap',
+    Number(donated.kgCo2e.toFixed(5)), 10.5336);
+  check('...and no treatment gap is reported about them — a reuse factor was found',
+    !(suCarbon1.json.carbon.gaps as string[]).some(
+      (g) => g.includes('waste-treatment factor') && g.includes('Operator chair')),
+    suCarbon1.json.carbon.gaps);
+  check('...nor about the 8 desks in storage, which were never a waste treatment',
+    !(suCarbon1.json.carbon.gaps as string[]).some((g) => g.includes('Desk')),
+    suCarbon1.json.carbon.gaps);
+
+  // ── 5. A disclosed gap — finding 8's second silence ──────────────────────
+  const PLASTIC = await asType('PLASTIC');
+  const suPlastic = (await call('POST', `/v1/projects/${suProject}/assets`, {
+    ...suCtx,
+    body: {
+      assetTypeId: PLASTIC, quantity: 1, weightBasis: 'TOTAL', totalWeightKg: 1200,
+      weightSource: 'WEIGHBRIDGE',
+    },
+  })).json.asset.id as string;
+  await call('POST', `/v1/assets/${suPlastic}/movements`, {
+    ...suCtx,
+    body: { destinationTypeId: suByCode.ENERGY_RECOVERY.id, quantity: 1, movedOn: '2027-03-07' },
+  });
+
+  const suCarbon2 = await call('GET', `/v1/projects/${suProject}/carbon`, { ...suCtx });
+  const suGaps2 = suCarbon2.json.carbon.gaps as string[];
+  check('a treatment key with no factor in the set is disclosed by material and mass',
+    suGaps2.some((g) => g.includes('No waste-treatment factor exists for Plastic')
+      && g.includes('1.20 t')),
+    suGaps2);
+  check('...naming the set it looked in',
+    suGaps2.some((g) => g.includes(suSetBody.name)), suGaps2);
+  check('...and no number is invented for it',
+    !(suCalcs1.json.calculations as any[]).some((c) => c.inputs.destinationCode === 'ENERGY_RECOVERY'),
+    suCalcs1.json.calculations);
+
+  // ── 6. Displacement unknown by default — finding 1's regression test ─────
+  //
+  // THE STEP THIS PACKET WAS WRITTEN FOR. §39's DDL said `not null default 100`;
+  // the owner decided on 2026-08-18 that displacement defaults to UNKNOWN, never
+  // 100%. Built literally, every one of the 30 donated chairs below would carry a
+  // maximal avoided-emissions claim with ASSUMED_FULL recorded as the basis of an
+  // assumption nobody made.
+  const suSettings0 = await call('GET', '/v1/sustainability-settings', { ...suCtx });
+  eq('a company begins with an UNKNOWN displacement basis',
+    suSettings0.json.settings.defaultDisplacementBasis, 'UNKNOWN');
+  eq('...and no percentage at all, because UNKNOWN cannot carry one',
+    suSettings0.json.settings.defaultDisplacementPct, null);
+
+  eq('the avoided headline is absent, not zero, with no assumption stated',
+    suCarbon2.json.carbon.avoidedKgCo2e, 0);
+  const { rows: suNoClaims } = await db.query<{ n: string }>(
+    `select count(*)::text as n from avoided_emissions_claims a
+       join carbon_calculations c on c.id = a.calculation_id
+      where c.project_id = $1`, [suProject]);
+  eq('...and NO claim row exists for the 30 donated chairs', suNoClaims[0]?.n, '0');
+  check('...with the reason said in words rather than left as a silence',
+    suGaps2.some((g) => g.includes('No displacement assumption has been stated')), suGaps2);
+
+  await drainWorkers();
+  const { rows: suBlocked } = await db.query<{ title: string }>(
+    `select title from notifications where kind = 'sustainability.claim_blocked'
+       and company_id = $1 order by created_at desc limit 1`, [suCompany]);
+  check('...and an Action Centre item says which claim could not be made',
+    String(suBlocked[0]?.title ?? '').includes('no displacement assumption'), suBlocked[0]);
+
+  // A percentage cannot be stored without a basis that means one.
+  const suBadPair = await call('PATCH', '/v1/sustainability-settings', {
+    ...suCtx, body: { defaultDisplacementBasis: 'ASSUMED_FULL', defaultDisplacementPct: 80 },
+  });
+  eq('ASSUMED_FULL carrying a stray percentage is refused', suBadPair.status, 422);
+  const suBadPair2 = await call('PATCH', '/v1/sustainability-settings', {
+    ...suCtx, body: { defaultDisplacementBasis: 'USER_DEFINED' },
+  });
+  eq('...and USER_DEFINED with no percentage is refused just as firmly', suBadPair2.status, 422);
+
+  // ── 7. A claim, stated ───────────────────────────────────────────────────
+  const suFactor = await call('POST', '/v1/product-factors', {
+    ...suCtx,
+    body: {
+      itemCategory: 'FURNITURE', assetTypeId: CHAIR,
+      kgCo2ePerItem: 72, lifecycleBoundary: 'A1_A3',
+      source: 'CrewQuo — synthetic test data', verificationStatus: 'EPD_VERIFIED',
+    },
+  });
+  eq('an EPD-verified product factor is recorded', suFactor.status, 201);
+  eq('...and is not an estimate, which is derived rather than accepted',
+    suFactor.json.productFactor.isEstimate, false);
+
+  // The collection that made the reuse possible, linked to the movement it enabled.
+  const suVan = await call('POST', `/v1/projects/${suProject}/activities`, {
+    ...suCtx,
+    body: {
+      kind: 'VEHICLE_DISTANCE', activityDate: '2027-03-04', distanceKm: 240,
+      vehicleCategory: 'VAN', fuelType: 'DIESEL', purpose: 'COLLECTION',
+      assetMovementId: suDonation, source: 'DOCUMENTED',
+    },
+  });
+  eq('a van collection is recorded against the project', suVan.status, 201);
+  await call('POST', `/v1/projects/${suProject}/activities`, {
+    ...suCtx,
+    body: { kind: 'FUEL', activityDate: '2027-03-05', litres: 180, fuelType: 'DIESEL' },
+  });
+  await call('POST', `/v1/projects/${suProject}/activities`, {
+    ...suCtx,
+    body: { kind: 'ELECTRICITY', activityDate: '2027-03-05', kwh: 1200 },
+  });
+
+  const suStated = await call('PATCH', '/v1/sustainability-settings', {
+    ...suCtx, body: { defaultDisplacementBasis: 'USER_DEFINED', defaultDisplacementPct: 80 },
+  });
+  eq('an explicit, attributable assumption is accepted', suStated.status, 200);
+  check('...and says it does not restate figures already published',
+    String(suStated.json.notice ?? '').includes('already issued'), suStated.json.notice);
+
+  await call('POST', `/v1/projects/${suProject}/carbon/recalculate`, { ...suCtx });
+  const suCarbon3 = await call('GET', `/v1/projects/${suProject}/carbon`, { ...suCtx });
+
+  eq('the 30 donated chairs now carry an avoided-emissions claim',
+    (suCarbon3.json.carbon.claims as unknown[]).length, 1);
+  const suClaim = (suCarbon3.json.carbon.claims as any[])[0];
+  eq('...30 × 80% × 72 kgCO₂e is the baseline', suClaim.baselineKgCo2e, 1728);
+  eq('...the 240 km collection linked to the movement is deducted as enabling emissions',
+    suClaim.enablingKgCo2e, 72);
+  eq('...leaving 1,656 kgCO₂e avoided', suClaim.netAvoidedKgCo2e, 1656);
+  eq('...recording the basis and the percentage together',
+    [suClaim.displacementBasis, suClaim.displacementPct], ['USER_DEFINED', 80]);
+  eq('...and the system boundary taken from the factor', suClaim.systemBoundary, 'A1_A3');
+  check('...with the baseline and alternative scenarios stated in words',
+    suClaim.baselineScenario.length > 0 && suClaim.alternativeScenario.length > 0, suClaim);
+  check('...and the methodology warning travelling ON the claim, not in an appendix',
+    suClaim.methodology.includes('not a reduction'), suClaim.methodology);
+
+  // ── THE MILESTONE: two figures, side by side, never netted ──────────────
+  //
+  // 450 kg diesel + 108 kg its well-to-tank + 60 km-based + 12 kg its WTT +
+  // 240 kg electricity = 870 kg of operational emissions, plus 14.74704 kg of
+  // waste treatment.
+  eq('PROJECT GHG EMISSIONS — every activity and every treatment, current rows only',
+    Number(suCarbon3.json.carbon.projectEmissionsKgCo2e.toFixed(5)), 884.74704);
+  eq('ESTIMATED AVOIDED EMISSIONS — reported separately and never deducted',
+    suCarbon3.json.carbon.avoidedKgCo2e, 1656);
+  check('...and the response carries no combined or net figure anywhere (§27.5)',
+    !('net' in suCarbon3.json.carbon) && !('totalKgCo2e' in suCarbon3.json.carbon),
+    Object.keys(suCarbon3.json.carbon));
+
+  const suScopes = Object.fromEntries(
+    (suCarbon3.json.carbon.byScope as { scope: string; kgCo2e: number }[])
+      .map((s) => [s.scope, Number(s.kgCo2e.toFixed(5))])
+  );
+  eq('Scope 1 is the company’s own diesel and its own van', suScopes.SCOPE_1, 510);
+  eq('Scope 2 is the electricity, on a location basis', suScopes.SCOPE_2, 240);
+  eq('Scope 3 is well-to-tank plus the two waste treatments', suScopes.SCOPE_3, 134.74704);
+  const suElec = (await call('GET', `/v1/projects/${suProject}/carbon/calculations`, { ...suCtx }))
+    .json.calculations.find((c: any) => c.inputs.activityKind === 'ELECTRICITY');
+  eq('...and the electricity row LABELS its basis rather than leaving it assumed',
+    suElec.inputs.scope2Basis, 'LOCATION_BASED');
+
+  // ── 8. Retained in use with no claim — finding 7 ─────────────────────────
+  const suExtra = (await call('POST', `/v1/projects/${suProject}/assets`, {
+    ...suCtx,
+    body: {
+      assetTypeId: CHAIR, quantity: 10, weightBasis: 'UNIT', unitWeightKg: 16.5,
+      weightSource: 'USER_ESTIMATE',
+    },
+  })).json.asset.id as string;
+  await call('POST', `/v1/assets/${suExtra}/movements`, {
+    ...suCtx,
+    body: { destinationTypeId: suByCode.RELOCATED.id, quantity: 4, movedOn: '2027-03-08' },
+  });
+  await call('POST', `/v1/assets/${suExtra}/movements`, {
+    ...suCtx,
+    body: { destinationTypeId: suByCode.RETAINED.id, quantity: 6, movedOn: '2027-03-08' },
+  });
+
+  const suCarbon4 = await call('GET', `/v1/projects/${suProject}/carbon`, { ...suCtx });
+  eq('relocated material claims — it was used instead of something being bought',
+    (suCarbon4.json.carbon.claims as unknown[]).length, 2);
+  eq('...4 × 80% × 72 with nothing enabling it', Number(
+    (suCarbon4.json.carbon.claims as any[]).find((c: any) => c.enablingKgCo2e === 0).netAvoidedKgCo2e
+  ), 230.4);
+  const suGaps4 = suCarbon4.json.carbon.gaps as string[];
+  check('retained material claims nothing, and the section says so in words',
+    suGaps4.some((g) => g.includes('was retained in use by the client')
+      && g.includes('no replacement was displaced')), suGaps4);
+  check('...over the 99 kg that displaced nothing, not the 495 kg that did',
+    suGaps4.some((g) => g.includes('99.0 kg was retained in use')), suGaps4);
+
+  // ── 9. The firewall (locked decision #17, §44) ───────────────────────────
+  //
+  // Asserted over the STRUCTURE of every carbon response rather than over one
+  // chosen figure: a total mixing AVOIDED with anything else would have to appear
+  // as a key, and there is no key it could appear under.
+  const suFirewallBodies = [suCarbon1, suCarbon2, suCarbon3, suCarbon4, suCalcs1];
+  check('no carbon response anywhere in this run carries a netted total',
+    suFirewallBodies.every((r) => {
+      const text = JSON.stringify(r.json);
+      return !/"net"|"netKgCo2e"|"totalCarbon"|"combinedKgCo2e"/.test(text);
+    }),
+    suFirewallBodies.map((r) => Object.keys(r.json)));
+  const suBuckets = Object.fromEntries(
+    (suCarbon4.json.carbon.byBucket as { bucket: string; kgCo2e: number }[])
+      .map((b) => [b.bucket, b.kgCo2e])
+  );
+  eq('the AVOIDED bucket is reported on its own',
+    Number((suBuckets.AVOIDED ?? 0).toFixed(1)), 1886.4);
+  check('...and the two inventory buckets sum to the headline without it',
+    Math.abs(
+      ((suBuckets.PROJECT_EMISSIONS ?? 0) + (suBuckets.WASTE_TREATMENT ?? 0))
+      - suCarbon4.json.carbon.projectEmissionsKgCo2e
+    ) < 1e-9,
+    suBuckets);
+  const { rows: suNoCrossBucket } = await db.query<{ n: string }>(
+    `select count(*)::text as n from carbon_calculations
+      where project_id = $1 and bucket = 'AVOIDED' and scope is not null`, [suProject]);
+  eq('...and no persisted AVOIDED row carries a scope it could be summed into',
+    suNoCrossBucket[0]?.n, '0');
+
+  // ── 10. Denied ───────────────────────────────────────────────────────────
+  const suSup = await register('susup', undefined, `susup+${RUN}@verify.crewquo.test`);
+  const suSupInvite = await call('POST', '/v1/members/invite', {
+    ...suCtx, body: { email: suSup.email, role: 'MEMBER' },
+  });
+  await call('POST', `/v1/invites/${suSupInvite.json.inviteToken}/accept`, { token: suSup.token });
+  await db.query(
+    `update memberships set bundle_key = 'supervisor' where company_id = $1 and user_id = $2`,
+    [suCompany, suSup.userId]
+  );
+  const suSupCtx = { token: suSup.token, companyId: suCompany };
+
+  const suSupCarbon = await call('GET', `/v1/projects/${suProject}/carbon`, { ...suSupCtx });
+  eq('a supervisor reads the section', suSupCarbon.status, 200);
+  eq('...as the mass-only view', suSupCarbon.json.carbon.view, 'MASS_ONLY');
+  check('...with the carbon keys ABSENT rather than nulled, so nothing can render 0.00 tCO₂e',
+    !('projectEmissionsKgCo2e' in suSupCarbon.json.carbon)
+      && !('avoidedKgCo2e' in suSupCarbon.json.carbon)
+      && !('completeness' in suSupCarbon.json.carbon),
+    Object.keys(suSupCarbon.json.carbon));
+  const suSupMass = await call('GET', `/v1/projects/${suProject}/mass-balance`, { ...suSupCtx });
+  eq('...while the masses still render for them', suSupMass.json.massBalance.handledKg, 2298);
+
+  const suSupImport = await call('POST', '/v1/factor-sets/import', {
+    ...suSupCtx,
+    body: { format: 'CSV', content: suCsv, mapping: suMapping, set: suSetBody, dryRun: true },
+  });
+  eq('...and a factor import is refused on capability', suSupImport.status, 403);
+
+  const suOutsider = await register('suout', `Outsider Ltd ${RUN}`);
+  await subscribe(suOutsider.companyId!, 'business');
+  const suForged = await call('GET', `/v1/projects/${suProject}/carbon`, {
+    token: suOutsider.token, companyId: suOutsider.companyId!,
+  });
+  eq('a second company forging this project’s id gets the same answer an unknown id gets',
+    suForged.status, 404);
+
+  // ── 11. Correction, and the supersession trail ───────────────────────────
+  const suBeforeCorrection = suCarbon4.json.carbon.projectEmissionsKgCo2e as number;
+  await call('PATCH', `/v1/assets/${suChairs}`, {
+    ...suCtx, body: { unitWeightKg: 18 },
+  });
+  const suCarbon5 = await call('GET', `/v1/projects/${suProject}/carbon`, { ...suCtx });
+  check('correcting a weight moves the emissions figure',
+    suCarbon5.json.carbon.projectEmissionsKgCo2e !== suBeforeCorrection,
+    [suBeforeCorrection, suCarbon5.json.carbon.projectEmissionsKgCo2e]);
+
+  const { rows: suSuperseded } = await db.query<{ n: string }>(
+    `select count(*)::text as n from carbon_calculations
+      where project_id = $1 and superseded_by is not null`, [suProject]);
+  check('...superseding the rows it replaced rather than editing them',
+    Number(suSuperseded[0]?.n ?? 0) > 0, suSuperseded[0]);
+  const { rows: suOneCurrent } = await db.query<{ n: string }>(
+    `select count(*)::text as n from carbon_calculations c
+      where c.project_id = $1 and c.superseded_by is null
+        and c.source_type = 'ASSET_MOVEMENT' and c.bucket = 'WASTE_TREATMENT'`, [suProject]);
+  eq('...leaving exactly one current row per treated movement', suOneCurrent[0]?.n, '2');
+
+  const suTrace = await call('GET',
+    `/v1/projects/${suProject}/carbon/calculations?includeSuperseded=true`, { ...suCtx });
+  check('...and the superseded rows stay readable, and stay out of every sum',
+    (suTrace.json.calculations as any[]).some((c) => c.supersededBy !== null),
+    (suTrace.json.calculations as any[]).length);
+
+  const { rows: suDelta } = await db.query<{ payload: any }>(
+    `select payload from delivery_outbox
+      where topic = 'sustainability.calculations_superseded' and aggregate_id = $1
+      order by created_at desc limit 1`, [suProject]);
+  eq('...with the trigger recorded', suDelta[0]?.payload?.trigger, 'WEIGHT_CORRECTED');
+  check('...and the per-bucket delta, which is the only place "why did the number move" is answered',
+    typeof suDelta[0]?.payload?.deltaByBucket?.WASTE_TREATMENT === 'number',
+    suDelta[0]?.payload);
+
+  await drainWorkers();
+  const { rows: suNoSupersessionNotice } = await db.query<{ n: string }>(
+    `select count(*)::text as n from notifications
+      where kind like 'sustainability.calculations%'`);
+  eq('...and supersession notifies NOBODY, which is the deliberate half of §6',
+    suNoSupersessionNotice[0]?.n, '0');
+
+  // ── 12. Tombstone — finding 6, which no other step would catch ───────────
+  const { rows: suRecycleMovement } = await db.query<{ id: string }>(
+    `select m.id from asset_movements m
+       join destination_types d on d.id = m.destination_type_id
+      where m.asset_id = $1 and d.code = 'RECYCLING' and m.deleted_at is null`, [suChairs]);
+  const suBeforeTombstone = suCarbon5.json.carbon.projectEmissionsKgCo2e as number;
+
+  const suDelete = await call('DELETE', `/v1/movements/${suRecycleMovement[0]!.id}`, { ...suCtx });
+  eq('a movement is tombstoned', suDelete.status, 204);
+
+  const suCarbon6 = await call('GET', `/v1/projects/${suProject}/carbon`, { ...suCtx });
+  const suMass6 = await call('GET', `/v1/projects/${suProject}/mass-balance`, { ...suCtx });
+  check('the project’s emissions figure FALLS — the calculation did not stand',
+    (suCarbon6.json.carbon.projectEmissionsKgCo2e as number) < suBeforeTombstone,
+    [suBeforeTombstone, suCarbon6.json.carbon.projectEmissionsKgCo2e]);
+  const { rows: suNoOrphan } = await db.query<{ n: string }>(
+    `select count(*)::text as n from carbon_calculations
+      where project_id = $1 and superseded_by is null and source_id = $2`,
+    [suProject, suRecycleMovement[0]!.id]);
+  eq('...and no current calculation is left pointing at the deleted movement',
+    suNoOrphan[0]?.n, '0');
+
+  const { rows: suAgree } = await db.query<{ kg: string | null }>(
+    `select sum(coalesce(m.weight_kg, m.quantity * a.unit_weight_kg))::text as kg
+       from asset_movements m
+       join project_assets a on a.id = m.asset_id
+       join destination_types d on d.id = m.destination_type_id
+      where a.project_id = $1 and m.deleted_at is null and a.deleted_at is null
+        and d.ghg_treatment_key is not null`, [suProject]);
+  const treatedRows = (await call('GET', `/v1/projects/${suProject}/carbon/calculations`, { ...suCtx }))
+    .json.calculations.filter((c: any) => c.bucket === 'WASTE_TREATMENT');
+  check('...so the carbon roll-up and the mass balance agree about what exists',
+    treatedRows.every((c: any) => c.sourceId !== suRecycleMovement[0]!.id),
+    { treatedRows: treatedRows.length, treatedMassKg: suAgree[0]?.kg, mass: suMass6.json.massBalance.allocatedKg });
+
+  // ── 13. Reproducibility (§41.3) — the one assertion Priya depends on ─────
+  const suFigureBefore2028 = suCarbon6.json.carbon.projectEmissionsKgCo2e as number;
+  const suCalcsBefore2028 = (await call('GET',
+    `/v1/projects/${suProject}/carbon/calculations`, { ...suCtx })).json.calculations as any[];
+
+  const su2028 = await call('POST', '/v1/factor-sets/import', {
+    ...suCtx,
+    body: {
+      format: 'CSV',
+      content: suCsv.replace(/21\.28/g, '15.00').replace(/2\.5,0\.6/, '1.9,0.4'),
+      mapping: suMapping,
+      set: {
+        ...suSetBody,
+        name: `CrewQuo Test Factors 2028 ${RUN}`,
+        reportingYear: 2028,
+        validFrom: '2028-01-01',
+      },
+      dryRun: false,
+    },
+  });
+  eq('a 2028 set is imported and is active', su2028.status, 201);
+  check('...and says so rather than leaving the reader to assume it restates last year',
+    String(su2028.json.notice ?? '').includes('unchanged'), su2028.json.notice);
+
+  const suCarbon7 = await call('GET', `/v1/projects/${suProject}/carbon`, { ...suCtx });
+  eq('the 2027 project’s figures are UNCHANGED by a newer set',
+    suCarbon7.json.carbon.projectEmissionsKgCo2e, suFigureBefore2028);
+  const suCalcsAfter2028 = (await call('GET',
+    `/v1/projects/${suProject}/carbon/calculations`, { ...suCtx })).json.calculations as any[];
+  eq('...still citing 2027, row for row',
+    suCalcsAfter2028.map((c) => c.citation.factorReportingYear).filter((y) => y !== null),
+    suCalcsBefore2028.map((c) => c.citation.factorReportingYear).filter((y) => y !== null));
+  eq('...and reproducing the same numbers',
+    suCalcsAfter2028.map((c) => c.kgCo2e), suCalcsBefore2028.map((c) => c.kgCo2e));
+
+  // Even a deliberate recalculation keeps 2027 work on 2027 factors: selection is
+  // by the date the work happened, not by the newest set on the shelf.
+  await call('POST', `/v1/projects/${suProject}/carbon/recalculate`, { ...suCtx });
+  const suCarbon8 = await call('GET', `/v1/projects/${suProject}/carbon`, { ...suCtx });
+  eq('...and an explicit recalculation still selects the 2027 set for 2027 work',
+    suCarbon8.json.carbon.projectEmissionsKgCo2e, suFigureBefore2028);
+
+  // ── 14. Offline (§8) ─────────────────────────────────────────────────────
+  const suClientId = randomUUID();
+  const suOffline1 = await call('POST', `/v1/projects/${suProject}/activities`, {
+    ...suCtx,
+    body: {
+      kind: 'FUEL', activityDate: '2027-03-09', litres: 40, fuelType: 'DIESEL',
+      clientId: suClientId, capturedAt: '2027-03-09T07:14:00.000Z',
+    },
+  });
+  eq('an activity captured on a dropped connection lands once', suOffline1.status, 201);
+  const suOffline2 = await call('POST', `/v1/projects/${suProject}/activities`, {
+    ...suCtx,
+    body: {
+      kind: 'FUEL', activityDate: '2027-03-09', litres: 40, fuelType: 'DIESEL',
+      clientId: suClientId, capturedAt: '2027-03-09T07:14:00.000Z',
+    },
+  });
+  eq('...and a retry with the same client id returns the first answer', suOffline2.status, 201);
+  eq('...byte for byte', suOffline2.json.activity.id, suOffline1.json.activity.id);
+  const { rows: suOneActivity } = await db.query<{ n: string }>(
+    `select count(*)::text as n from project_activities
+      where project_id = $1 and client_id = $2 and deleted_at is null`, [suProject, suClientId]);
+  eq('...with exactly one row in the table', suOneActivity[0]?.n, '1');
+  eq('...keeping the device’s clock distinct from the server’s',
+    suOffline1.json.activity.capturedAt, '2027-03-09T07:14:00.000Z');
+
+  const suActivityId = suOffline1.json.activity.id as string;
+  const suStale = await call('PATCH', `/v1/activities/${suActivityId}`, {
+    ...suCtx, body: { litres: 45, expectedRevision: 99 },
+  });
+  eq('an expected-version mismatch is a conflict, not a merge', suStale.status, 409);
+  eq('...showing what is on the server beside what was captured',
+    suStale.json.error?.details?.current?.litres, 40);
+  eq('...and naming the reason a device can switch on',
+    suStale.json.error?.details?.reason, 'STALE_REVISION');
+
+  // ── 15. Completeness, with five components ───────────────────────────────
+  //
+  // The debt Phase 8 named and deferred: four of §28.3's five components were
+  // computable then and the fifth needed an avoided-emissions claim to exist.
+  const suFinal = await call('GET', `/v1/projects/${suProject}/carbon`, { ...suCtx });
+  const suComponents = suFinal.json.carbon.completeness.components as any[];
+  eq('the score renders with all five components broken out', suComponents.length, 5);
+  eq('...named for a person rather than as enum keys',
+    suComponents.map((c) => c.component).sort(),
+    ['AVOIDED_MASS_ON_SPECIFIC_FACTOR', 'LINES_WITH_SUPPORT', 'LINES_WITH_WEIGHT',
+     'MASS_DOCUMENTED_OR_VERIFIED', 'MASS_WITH_FINAL_DESTINATION'].sort());
+  check('...each with its weight and its measured value, not a bare percentage',
+    suComponents.every((c) => typeof c.weight === 'number' && typeof c.measured === 'number'
+      && typeof c.total === 'number' && typeof c.label === 'string'),
+    suComponents);
+  check('...the five weights summing to 1, read from the settings row',
+    Math.abs(suComponents.reduce((s, c) => s + c.weight, 0) - 1) < 1e-9, suComponents);
+  eq('...and the fifth is the one Phase 8 could not compute',
+    suComponents.find((c) => c.component === 'AVOIDED_MASS_ON_SPECIFIC_FACTOR').value, 1);
+  check('...with a score at last', typeof suFinal.json.carbon.completeness.pct === 'number',
+    suFinal.json.carbon.completeness);
+  eq('...and the threshold §38.1 attaches it to any figure below',
+    suFinal.json.carbon.completeness.warnBelow, 80);
+
+  // The weights are the settings row's, and editing them moves the score.
+  const suScoreBefore = suFinal.json.carbon.completeness.pct as number;
+  await call('PATCH', '/v1/sustainability-settings', {
+    ...suCtx,
+    body: {
+      dataQualityWeights: {
+        LINES_WITH_WEIGHT: 0.6, MASS_WITH_FINAL_DESTINATION: 0.1,
+        MASS_DOCUMENTED_OR_VERIFIED: 0.1, LINES_WITH_SUPPORT: 0.1,
+        AVOIDED_MASS_ON_SPECIFIC_FACTOR: 0.1,
+      },
+    },
+  });
+  const suReweighted = await call('GET', `/v1/projects/${suProject}/carbon`, { ...suCtx });
+  check('the weights come from §39 rather than from constants — editing them moves the score',
+    suReweighted.json.carbon.completeness.pct !== suScoreBefore,
+    [suScoreBefore, suReweighted.json.carbon.completeness.pct]);
+
+  const suPhase8Gaps = suFinal.json.carbon.gaps as string[];
+  check('every Phase 8 gap sentence still renders, unchanged',
+    suPhase8Gaps.some((g) => g.includes('of project weight is estimated')), suPhase8Gaps);
+  const suGenericSentences = suPhase8Gaps.filter((g) => g.includes('generic product factor'));
+  check('...and the fifth component’s sentence appears at most once, never twice over',
+    suGenericSentences.length <= 1, suGenericSentences);
+
+  // ── The organisation dashboard (§38.1) ───────────────────────────────────
+  section('Organisation sustainability dashboard — click-through, and no vanity metrics');
+
+  const suDash = await call('GET', '/v1/sustainability/dashboard', { ...suCtx });
+  eq('the dashboard answers', suDash.status, 200);
+  check('...with rows before totals, so every figure can be clicked through to its records',
+    (suDash.json.dashboard.projects as any[]).some((p) => p.projectId === suProject),
+    (suDash.json.dashboard.projects as any[]).map((p) => p.projectName));
+  const suDashRow = (suDash.json.dashboard.projects as any[]).find((p) => p.projectId === suProject);
+  eq('...carrying this project’s two figures, separately',
+    [Number(suDashRow.projectEmissionsKgCo2e.toFixed(5)),
+     Number(suDashRow.avoidedKgCo2e.toFixed(1))],
+    [Number((suFinal.json.carbon.projectEmissionsKgCo2e as number).toFixed(5)),
+     Number((suFinal.json.carbon.avoidedKgCo2e as number).toFixed(1))]);
+  check('...and its completeness, attached to the figure rather than presented as fact',
+    typeof suDashRow.completenessPct === 'number', suDashRow);
+  check('...with the totals never netting the two',
+    !('net' in suDash.json.dashboard.totals), Object.keys(suDash.json.dashboard.totals));
+  check('...naming which factor sets the period spans (§38.2, one phase early)',
+    (suDash.json.dashboard.factorSetNames as string[]).some((n) => n.includes('2027')),
+    suDash.json.dashboard.factorSetNames);
+  check('...and the methodology warning travelling with the avoided figure here too',
+    String(suDash.json.dashboard.methodologyWarning).includes('not a reduction'),
+    suDash.json.dashboard.methodologyWarning);
+
+  const suDashDenied = await call('GET', '/v1/sustainability/dashboard', { ...suSupCtx });
+  eq('a supervisor is refused the dashboard, which aggregates across projects',
+    suDashDenied.status, 403);
+
+  const suOutsiderDash = await call('GET', '/v1/sustainability/dashboard', {
+    token: suOutsider.token, companyId: suOutsider.companyId!,
+  });
+  eq('an unrelated company sees a dashboard of its own projects',
+    (suOutsiderDash.json.dashboard.projects as unknown[]).length, 0);
+  eq('...and no rate at all, because there is nothing to divide by',
+    suOutsiderDash.json.dashboard.rates.diverted, null);
+
+  // ── Settings, factors, and the refusals that are answers ─────────────────
+  section('Sustainability settings and factor curation');
+
+  const suPlatformFactor = await call('PATCH', `/v1/product-factors/${suFactor.json.productFactor.id}`, {
+    ...suCtx, body: { kgCo2ePerItem: 68 },
+  });
+  eq('a company may refine its own product factor as better data arrives',
+    suPlatformFactor.status, 200);
+  check('...and is told that claims already made still cite what they used',
+    String(suPlatformFactor.json.notice ?? '').includes('still cite the value they used'),
+    suPlatformFactor.json.notice);
+
+  const suDupFactor = await call('POST', '/v1/product-factors', {
+    ...suCtx,
+    body: {
+      itemCategory: 'FURNITURE', assetTypeId: CHAIR, kgCo2ePerItem: 90,
+      lifecycleBoundary: 'A1_A3', source: 'Another source', verificationStatus: 'EPD_VERIFIED',
+    },
+  });
+  eq('a second EPD factor for the same item is refused — a duplicate can outrank itself',
+    suDupFactor.status, 409);
+  const suGenericFactor = await call('POST', '/v1/product-factors', {
+    ...suCtx,
+    body: {
+      itemCategory: 'FURNITURE', assetTypeId: CHAIR, kgCo2ePerItem: 90,
+      lifecycleBoundary: 'A1_A3', source: 'Sector average',
+      verificationStatus: 'GENERIC_ESTIMATE',
+    },
+  });
+  eq('...but a generic estimate for the same item is not, because the tier walk chooses',
+    suGenericFactor.status, 201);
+  eq('...and it is an estimate whatever the caller thinks',
+    suGenericFactor.json.productFactor.isEstimate, true);
+
+  const suResolve = await call('GET',
+    `/v1/product-factors/resolve?assetTypeId=${CHAIR}&itemCategory=FURNITURE`, { ...suCtx });
+  eq('the resolver walks §26.3’s tiers and prefers the verified EPD',
+    [suResolve.json.resolution.kind, suResolve.json.resolution.tier], ['RESOLVED', 1]);
+
+  const suDeleteCited = await call('DELETE', `/v1/factor-sets/${suSetId}`, { ...suCtx });
+  eq('a cited factor set cannot be deleted', suDeleteCited.status, 409);
+  check('...and the refusal points at deactivation, which is the operation that exists',
+    String(suDeleteCited.json.error?.message ?? '').includes('Deactivate'),
+    suDeleteCited.json.error);
+
+  const suDeactivate = await call('PATCH', `/v1/factor-sets/${suSetId}`, {
+    ...suCtx, body: { active: false },
+  });
+  eq('deactivating it is allowed', suDeactivate.status, 200);
+  const suAfterDeactivate = await call('GET', `/v1/projects/${suProject}/carbon`, { ...suCtx });
+  eq('...and changes no existing calculation',
+    suAfterDeactivate.json.carbon.projectEmissionsKgCo2e,
+    suFinal.json.carbon.projectEmissionsKgCo2e);
+
+  await drainWorkers();
+  const { rows: suDeactivateNote } = await db.query<{ title: string }>(
+    `select title from notifications where kind = 'sustainability.factor_set_deactivated'
+       and company_id = $1`, [suCompany]);
+  check('...while warning the people who could have done it, naming the count',
+    String(suDeactivateNote[0]?.title ?? '').includes('live calculation'), suDeactivateNote[0]);
+  await call('PATCH', `/v1/factor-sets/${suSetId}`, { ...suCtx, body: { active: true } });
+
+  const suEditYear = await call('PATCH', `/v1/factor-sets/${suSetId}`, {
+    ...suCtx, body: { reportingYear: 2029 },
+  });
+  eq('a set’s selection keys cannot be edited — a correction is a new version',
+    suEditYear.status, 422);
+
+  const suBadUnit = await call('POST', '/v1/factor-sets/import', {
+    ...suCtx,
+    body: {
+      format: 'CSV',
+      content: 'Category,Activity,Unit,kg CO2e\nFuels,Petrol,gallons,2.3',
+      mapping: { category: 'Category', activity: 'Activity', unit: 'Unit', kgCo2ePerUnit: 'kg CO2e' },
+      set: { ...suSetBody, name: `Bad units ${RUN}`, version: 'v9' },
+      dryRun: false,
+    },
+  });
+  eq('an unrecognised unit is a terminal refusal, not a coercion', suBadUnit.status, 422);
+  check('...naming the value and the units that are accepted',
+    String(suBadUnit.json.error?.message ?? '').includes('gallons')
+      && String(suBadUnit.json.error?.message ?? '').includes('tonne.km'),
+    suBadUnit.json.error);
+
+  const suNegative = await call('POST', '/v1/factor-sets/import', {
+    ...suCtx,
+    body: {
+      format: 'CSV',
+      content: 'Category,Activity,Unit,kg CO2e\nWaste,Reuse,tonne,-3\nWaste,Recycling,tonne,0',
+      mapping: { category: 'Category', activity: 'Activity', unit: 'Unit', kgCo2ePerUnit: 'kg CO2e' },
+      set: { ...suSetBody, name: `Negative ${RUN}`, version: 'v9' },
+      dryRun: true,
+    },
+  });
+  eq('a negative factor is refused', suNegative.json.diff.failures.length, 1);
+  check('...and a zero is accepted, because a published set legitimately carries one',
+    String(suNegative.json.diff.failures[0]?.message ?? '').includes('negative'),
+    suNegative.json.diff.failures);
+
+  // GPS: the Phase 7 question, closed by its own recommendation.
+  const suGps = await call('GET', '/v1/sustainability-settings', { ...suCtx });
+  eq('capture_gps_on_evidence ships false, and Phase 9 builds nothing that reads it',
+    suGps.json.settings.captureGpsOnEvidence, false);
+  eq('...and §29.3’s disclaimer is here for Phase 10 to render',
+    String(suGps.json.settings.reportDisclaimer).includes('location-based'), true);
+  check('...claiming no verification or certification anywhere in it',
+    !/verified|certified|ISO/i.test(String(suGps.json.settings.reportDisclaimer)),
+    suGps.json.settings.reportDisclaimer);
+
+
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);
   if (failures.length === 0) {

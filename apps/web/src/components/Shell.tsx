@@ -84,7 +84,18 @@ const VIEW_NAV: Record<WorkspaceView, NavGroup[]> = {
     },
     {
       label: 'Reports',
-      items: [{ href: '/audit', label: 'Audit trail', icon: 'list', feature: 'audit_visibility' }],
+      items: [
+        /*
+         * Phase 9 (§38.1). Gated on `sustainability` rather than on
+         * `carbon_engine`: the dashboard renders masses and rates for a company
+         * that reads the section without buying the engine that multiplies them,
+         * and a link to a screen the plan refuses is a promise the API breaks.
+         */
+        { href: '/sustainability', label: 'Sustainability', icon: 'gauge', feature: 'sustainability' },
+        { href: '/sustainability/factors', label: 'Emission factors', icon: 'list', feature: 'sustainability' },
+        { href: '/sustainability/settings', label: 'Assumptions', icon: 'settings', feature: 'sustainability' },
+        { href: '/audit', label: 'Audit trail', icon: 'list', feature: 'audit_visibility' },
+      ],
     },
     {
       label: 'Company',

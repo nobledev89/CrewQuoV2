@@ -20,6 +20,9 @@ const FEATURES: Array<[key: string, name: string, category: string]> = [
   ['project_documents', 'Project documents', 'evidence'],
   ['site_diary', 'Site diary', 'evidence'],
   ['asset_tracking', 'Asset & material tracking', 'sustainability'],
+  ['sustainability', 'Sustainability', 'sustainability'],
+  ['carbon_engine', 'Carbon engine', 'sustainability'],
+  ['custom_factors', 'Custom emission factors', 'sustainability'],
   ['invoicing', 'Invoicing', 'billing'],
   ['audit_visibility', 'Audit trail visibility', 'portal'],
   ['api_access', 'API access', 'platform'],
@@ -42,6 +45,15 @@ const LIMITS: Array<[key: string, name: string, unit: string]> = [
    */
   ['storage_gb', 'File storage', 'gigabytes'],
   ['evidence_uploads_per_month', 'Evidence uploads per month', 'count/month'],
+  /*
+   * Phase 9 (§43), and the same shape as the two above: the catalog row lands, the
+   * per-plan VALUE deliberately does not. §43 proposes figures for storage and
+   * proposes none for factor sets, so picking one here would be a pricing judgement
+   * made by a seed file. The enforcement is built and charged to the IMPORTING
+   * company (sustainability.md §0 finding 9); turning it on is one number per plan
+   * below and no code change anywhere.
+   */
+  ['factor_sets', 'Imported emission factor sets', 'count'],
 ];
 
 type PlanSeed = {
@@ -128,6 +140,11 @@ const PLANS: PlanSeed[] = [
       'project_documents',
       'site_diary',
       'asset_tracking',
+      // §43's placement: sustainability and the carbon engine from Pro upward.
+      // Custom factors sit a tier higher, on the row §43 shares with client
+      // reporting — a Pro company reads the shared library and does not import.
+      'sustainability',
+      'carbon_engine',
     ],
     limits: { active_subcontractors: 30, internal_seats: 8, clients: null, audit_retention_days: 90 },
     prices: [
@@ -157,6 +174,9 @@ const PLANS: PlanSeed[] = [
       'project_documents',
       'site_diary',
       'asset_tracking',
+      'sustainability',
+      'carbon_engine',
+      'custom_factors',
     ],
     limits: {
       active_subcontractors: 150,

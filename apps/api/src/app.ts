@@ -53,6 +53,15 @@ import {
   destinationTypesRouter,
   movementsRouter,
 } from './modules/assets/movementsRoutes';
+import { sustainabilitySettingsRouter } from './modules/sustainability/settings';
+import { factorSetsRouter } from './modules/sustainability/factorsRoutes';
+import { productFactorsRouter } from './modules/sustainability/productFactors';
+import {
+  activitiesRouter,
+  projectActivitiesRouter,
+} from './modules/sustainability/activities';
+import { projectCarbonRouter } from './modules/sustainability/projectCarbon';
+import { orgSustainabilityRouter } from './modules/sustainability/dashboard';
 import { invitesRouter } from './modules/invites/routes';
 import { projectsRouter } from './modules/projects/routes';
 import {
@@ -295,6 +304,11 @@ export function buildApp(): Express {
   app.use('/v1/projects', requireAuth, projectDocumentsRouter);
   app.use('/v1/projects', requireAuth, projectDiaryRouter);
   app.use('/v1/projects', requireAuth, projectMassBalanceRouter);
+  // Phase 9's two project routers, both before `projectsRouter` for the reason the
+  // ones above are: a future `/:something` route inside it would otherwise swallow
+  // them silently.
+  app.use('/v1/projects', requireAuth, projectCarbonRouter);
+  app.use('/v1/projects', requireAuth, projectActivitiesRouter);
   app.use('/v1/projects', requireAuth, projectAssetsRouter);
   app.use('/v1/projects', requireAuth, projectsRouter);
   app.use('/v1/locations', requireAuth, locationsRouter);
@@ -309,6 +323,13 @@ export function buildApp(): Express {
   app.use('/v1/asset-types', requireAuth, assetTypesRouter);
   app.use('/v1/destination-types', requireAuth, destinationTypesRouter);
   app.use('/v1/destination-organisations', requireAuth, destinationOrgsRouter);
+  // Sustainability (§26–§28, §38.1, §39). Company-scoped reference data and
+  // settings; the project-scoped halves are mounted on /v1/projects above.
+  app.use('/v1/sustainability-settings', requireAuth, sustainabilitySettingsRouter);
+  app.use('/v1/factor-sets', requireAuth, factorSetsRouter);
+  app.use('/v1/product-factors', requireAuth, productFactorsRouter);
+  app.use('/v1/activities', requireAuth, activitiesRouter);
+  app.use('/v1/sustainability', requireAuth, orgSustainabilityRouter);
   app.use('/v1/work-context', requireAuth, workContextRouter);
   app.use('/v1/time-logs', requireAuth, timeLogsRouter);
   app.use('/v1/expenses', requireAuth, expensesRouter);

@@ -36,10 +36,36 @@ export async function getUsage(companyId: string, key: LimitKey): Promise<number
     /** And the first windowed one: the month is the company's own, not the server's. */
     case 'evidence_uploads_per_month':
       return evidenceUploadsThisMonth(companyId);
+    /**
+     * Phase 9 (§43, `sustainability.md` §0 finding 9). **The company's OWN sets,
+     * never the platform library**, which is the whole of what makes this key
+     * different from every other one here.
+     *
+     * A factor set is company reference data used across every project that company
+     * owns, so the ceiling is charged to the company that imported it and to nobody
+     * else — unlike `storage_gb`, which is charged to the project owner rather than
+     * to the uploader. The platform library is `company_id is null` and is read-only
+     * to everybody, so counting it would charge every customer for rows they cannot
+     * delete.
+     *
+     * Inactive sets count. A deactivated set still holds its factor rows and is
+     * still what a report generated last quarter cites; if the ceiling ignored them,
+     * "deactivate and import another" would be an unlimited allowance.
+     */
+    case 'factor_sets':
+      return countFactorSets(companyId);
     // audit_retention_days is a config value, not a meter.
     case 'audit_retention_days':
       return 0;
   }
+}
+
+async function countFactorSets(companyId: string): Promise<number> {
+  const row = await queryOne<{ n: string }>(
+    `select count(*)::int as n from emission_factor_sets where company_id = $1`,
+    [companyId]
+  );
+  return Number(row?.n ?? 0);
 }
 
 export async function getAllUsage(

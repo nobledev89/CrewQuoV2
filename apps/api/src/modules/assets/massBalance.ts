@@ -83,7 +83,7 @@ const num = (v: string | null): number | null => (v === null ? null : Number(v))
  * having backed the claim with something outside the form they typed it into,
  * which is what the component asks. None of them could be asked before 8.4.
  */
-async function loadForBalance(projectId: string): Promise<AssetForBalance[]> {
+export async function loadForBalance(projectId: string): Promise<AssetForBalance[]> {
   const [lines, movements] = await Promise.all([
     query<AssetLineRow>(
       `select a.id, a.quantity, a.unit_weight_kg, a.weight_confidence,
@@ -146,7 +146,7 @@ async function loadForBalance(projectId: string): Promise<AssetForBalance[]> {
 }
 
 /** Destination codes to their display names, from the rows already loaded. */
-async function destinationNames(projectId: string): Promise<Map<string, string>> {
+export async function destinationNames(projectId: string): Promise<Map<string, string>> {
   const rows = await query<{ code: string; name: string }>(
     `select distinct d.code, d.name
        from asset_movements m

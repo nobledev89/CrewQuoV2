@@ -1007,6 +1007,181 @@ async function main(): Promise<void> {
       );
     }
 
+
+    /*
+     * ── Sustainability (§26–§28), so the phase's four screens have something on
+     *    them ───────────────────────────────────────────────────────────────────
+     *
+     * Carbon is a product of masses, so this necessarily brings a slice of Phase 8
+     * with it — a register line and where it went. That is not scope creep: a
+     * Sustainability section over an empty mass balance renders correctly and shows
+     * nothing, which is the state the demo exists to avoid.
+     *
+     * THE FACTOR SET IS OBVIOUSLY SYNTHETIC AND SAYS SO. §45's licensing gate on
+     * the published UK Government conversion factors is unanswered, and §26.2's
+     * "zero fabricated rows" is a rule about what the product ships. A demo fixture
+     * that looked like a published dataset would be exactly the fabricated row that
+     * rule forbids, wearing a demo label — so it is named "CrewQuo — demonstration
+     * data" and its figures are round.
+     */
+    const CHAIR_TYPE = (
+      await db.query<{ id: string }>(
+        `select id from asset_types where company_id is null and code = 'OPERATOR_CHAIR'`
+      )
+    ).rows[0]?.id;
+    const DESK_TYPE = (
+      await db.query<{ id: string }>(
+        `select id from asset_types where company_id is null and code = 'DESK'`
+      )
+    ).rows[0]?.id;
+    const destinationIds = Object.fromEntries(
+      (
+        await db.query<{ code: string; id: string }>(
+          `select code, id from destination_types where company_id is null`
+        )
+      ).rows.map((r) => [r.code, r.id])
+    );
+
+    if (CHAIR_TYPE && DESK_TYPE) {
+      const assets = [
+        // 42 chairs: 30 donated, 12 recycled — the split Phase 8's milestone proved.
+        [fixtureId('e3000000', 1), CHAIR_TYPE, 42, 16.5],
+        // 8 desks into storage, which counts toward no rate at all (decision #18)
+        // and is therefore what puts a named gap on the screen.
+        [fixtureId('e3000000', 2), DESK_TYPE, 8, 30],
+      ] as const;
+      for (const [id, typeId, quantity, unitWeight] of assets) {
+        await db.query(
+          `insert into project_assets
+             (id, project_id, company_id, asset_type_id, quantity, weight_basis,
+              unit_weight_kg, total_weight_kg, weight_source, weight_confidence,
+              weight_is_estimated, created_by_user_id, created_at, updated_at)
+           values ($1, $2, $3, $4, $5::numeric, 'UNIT', $6::numeric, $5::numeric * $6::numeric, 'USER_ESTIMATE', 'ESTIMATED',
+                   true, $7, '2026-08-04T08:00:00Z', '2026-08-04T08:00:00Z')
+           on conflict (id) do nothing`,
+          [id, FIXTURE.projects.marina, FIXTURE.companies.main, typeId, quantity, unitWeight, userId]
+        );
+      }
+
+      const movements = [
+        [fixtureId('e4000000', 1), fixtureId('e3000000', 1), destinationIds.DONATION, 30, 1],
+        [fixtureId('e4000000', 2), fixtureId('e3000000', 1), destinationIds.RECYCLING, 12, 2],
+        [fixtureId('e4000000', 3), fixtureId('e3000000', 2), destinationIds.STORAGE, 8, 1],
+      ] as const;
+      for (const [id, assetId, destinationId, quantity, sequence] of movements) {
+        if (!destinationId) continue;
+        await db.query(
+          `insert into asset_movements
+             (id, asset_id, sequence, destination_type_id, quantity, moved_on,
+              recorded_by_user_id, created_at, updated_at)
+           values ($1, $2, $3, $4, $5, '2026-08-05', $6,
+                   '2026-08-05T09:00:00Z', '2026-08-05T09:00:00Z')
+           on conflict (id) do nothing`,
+          [id, assetId, sequence, destinationId, quantity, userId]
+        );
+      }
+      // Derived, never typed (§25.4 rule 2) — and normally written by the API inside
+      // the asset's row lock. Set here because this fixture writes the movements
+      // directly, and a register that reads PENDING beside a full allocation is the
+      // one thing this table must never say.
+      await db.query(
+        `update project_assets set outcome_state = 'FINAL' where id = $1`,
+        [fixtureId('e3000000', 1)]
+      );
+      await db.query(
+        `update project_assets set outcome_state = 'IN_STORAGE' where id = $1`,
+        [fixtureId('e3000000', 2)]
+      );
+
+      const FACTOR_SET = fixtureId('e5000000', 1);
+      await db.query(
+        `insert into emission_factor_sets
+           (id, company_id, name, source_organisation, reporting_year, version,
+            valid_from, region, methodology, imported_by_user_id, created_at, updated_at)
+         values ($1, $2, 'CrewQuo Demonstration Factors 2026', 'CrewQuo — demonstration data',
+                 2026, 'v1.0', '2026-01-01', 'SG',
+                 'Synthetic figures for demonstration only. Not a published dataset.',
+                 $3, '2026-08-01T09:00:00Z', '2026-08-01T09:00:00Z')
+         on conflict (id) do nothing`,
+        [FACTOR_SET, FIXTURE.companies.main, userId]
+      );
+      const factors = [
+        ['Waste', 'Reuse', 'Operator chair', 'REUSE', null, null, 'tonne', 21.28, null],
+        ['Waste', 'Recycling', 'Operator chair', 'RECYCLING', null, null, 'tonne', 21.28, null],
+        ['Waste', 'Landfill', null, 'LANDFILL', null, null, 'tonne', 587.0, null],
+        ['Fuels', 'Diesel', null, null, null, 'DIESEL', 'litre', 2.5, 0.6],
+        ['Transport', 'Van', null, null, 'VAN', 'DIESEL', 'km', 0.25, 0.05],
+        ['Electricity', 'Grid electricity', null, null, null, null, 'kWh', 0.2, null],
+      ] as const;
+      for (const [index, row] of factors.entries()) {
+        await db.query(
+          `insert into emission_factors
+             (id, factor_set_id, category, activity, material, treatment, vehicle_type,
+              fuel_type, unit, kg_co2e_per_unit, wtt_kg_co2e_per_unit)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+           on conflict (id) do nothing`,
+          [fixtureId('e6000000', index + 1), FACTOR_SET, ...row]
+        );
+      }
+
+      await db.query(
+        `insert into product_carbon_factors
+           (id, company_id, item_category, asset_type_id, kg_co2e_per_item,
+            lifecycle_boundary, source, verification_status, is_estimate,
+            created_by_user_id, created_at, updated_at)
+         values ($1, $2, 'FURNITURE', $3, 72, 'A1_A3', 'CrewQuo — demonstration data',
+                 'EPD_VERIFIED', false, $4, '2026-08-01T09:00:00Z', '2026-08-01T09:00:00Z')
+         on conflict (id) do nothing`,
+        [fixtureId('e7000000', 1), FIXTURE.companies.main, CHAIR_TYPE, userId]
+      );
+
+      /*
+       * A STATED displacement assumption, which is the only way a claim exists at
+       * all. `sustainability_settings` was backfilled with UNKNOWN by 0037 —
+       * correctly, since UNKNOWN produces no claim — so the demo has to say
+       * something explicit for the avoided figure to appear, and what it says is
+       * recorded on every claim it produces.
+       */
+      await db.query(
+        `update sustainability_settings
+            set default_displacement_basis = 'USER_DEFINED',
+                default_displacement_pct = 80,
+                default_country = 'SG',
+                updated_by_user_id = $2,
+                updated_at = now()
+          where company_id = $1`,
+        [FIXTURE.companies.main, userId]
+      );
+
+      const activities = [
+        ['VEHICLE_DISTANCE', 'COLLECTION', 240, null, null, 'VAN', 'DIESEL', fixtureId('e4000000', 1)],
+        ['FUEL', 'PLANT', null, 180, null, null, 'DIESEL', null],
+        ['ELECTRICITY', 'OTHER', null, null, 1200, null, null, null],
+      ] as const;
+      for (const [index, row] of activities.entries()) {
+        const [kind, purpose, km, litres, kwh, vehicle, fuel, movementId] = row;
+        await db.query(
+          `insert into project_activities
+             (id, project_id, company_id, kind, activity_date, vehicle_category, fuel_type,
+              distance_km, litres, kwh, entered_value, entered_unit, purpose,
+              asset_movement_id, source, created_by_user_id, created_at, updated_at)
+           values ($1, $2, $3, $4, '2026-08-05', $5, $6,
+                   $7::numeric, $8::numeric, $9::numeric,
+                   coalesce($7::numeric, $8::numeric, $9::numeric),
+                   case when $7::numeric is not null then 'km'
+                        when $8::numeric is not null then 'litre'
+                        else 'kWh' end,
+                   $10, $11, 'DOCUMENTED', $12,
+                   '2026-08-05T10:00:00Z', '2026-08-05T10:00:00Z')
+           on conflict (id) do nothing`,
+          [
+            fixtureId('e8000000', index + 1), FIXTURE.projects.marina, FIXTURE.companies.main,
+            kind, vehicle, fuel, km, litres, kwh, purpose, movementId, userId,
+          ]
+        );
+      }
+    }
+
     await db.query('commit');
 
     const summary = await db.query<{
@@ -1018,6 +1193,9 @@ async function main(): Promise<void> {
       expenses: number;
       submissions: number;
       invoices: number;
+      asset_lines: number;
+      emission_factors: number;
+      activities: number;
     }>(
       `select
          (select count(*)::int from companies where settings->>'demoFixture' = 'single-login-v1') as companies,
@@ -1027,11 +1205,28 @@ async function main(): Promise<void> {
          (select count(*)::int from time_logs where id::text like 'dc000000-%') as time_logs,
          (select count(*)::int from expenses where id::text like 'dd000000-%') as expenses,
          (select count(*)::int from project_submissions where id::text like 'de000000-%') as submissions,
-         (select count(*)::int from invoices where id::text like 'df000000-%') as invoices`,
+         (select count(*)::int from invoices where id::text like 'df000000-%') as invoices,
+         (select count(*)::int from project_assets where id::text like 'e3000000-%') as asset_lines,
+         (select count(*)::int from emission_factors where id::text like 'e6000000-%') as emission_factors,
+         (select count(*)::int from project_activities where id::text like 'e8000000-%') as activities`,
       [FIXTURE.companies.main]
     );
     console.log(`Demo account ready: ${DEMO_EMAIL}`);
     console.log(summary.rows[0]);
+    /*
+     * The one thing this seed deliberately does NOT do.
+     *
+     * `carbon_calculations` rows are written by the engine under a project lock,
+     * inside the transaction that triggers them (§27.2) — never by a fixture. A
+     * seeded calculation would be a row claiming to be a derivation and not being
+     * one, which is the exact thing "nobody corrects a calculation" forbids.
+     *
+     * So the demo ships the INPUTS and the section produces the figures the first
+     * time somebody asks for them.
+     */
+    console.log(
+      'Sustainability: open the Marina Bay project and press Recalculate to produce its figures.'
+    );
   } catch (error) {
     await db.query('rollback');
     throw error;

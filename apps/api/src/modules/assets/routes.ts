@@ -23,6 +23,19 @@ import { hasFeature } from '../entitlements/guards';
 import { enqueueOutboxEvent } from '../delivery/repo';
 import { recordAudit } from '../audit/record';
 import { recordRevision } from '../revisions/record';
+/*
+ * Phase 9's finding 6, wired into Phase 8's writes.
+ *
+ * "Any write that changes what massBalance.ts would return must supersede the
+ * calculations derived from it." A corrected weight or a tombstoned line that left
+ * its carbon_calculations rows standing would make the mass balance and the carbon
+ * roll-up — rendered side by side in the same §28 section — disagree about whether
+ * the material exists, and every query would still return a plausible number.
+ *
+ * `recalculateAfterWrite` never throws into the caller: a misconfigured factor set
+ * must not refuse the recording of something that happened on site.
+ */
+import { recalculateAfterWrite } from '../sustainability/engine';
 import {
   findAsset,
   findAssetTypeByCode,
@@ -487,6 +500,13 @@ projectAssetsRouter.post(
           return created;
         });
 
+        await recalculateAfterWrite({
+          projectId: access.projectId,
+          trigger: 'WEIGHT_CORRECTED',
+          triggeringId: view.id,
+          actorUserId: ctx.userId,
+        });
+
         return weight.notice ? { asset: view, notice: weight.notice } : { asset: view };
       }
     );
@@ -627,6 +647,15 @@ projectAssetsRouter.post(
               },
               client
             );
+          });
+        }
+
+        if (imported.length > 0) {
+          await recalculateAfterWrite({
+            projectId: access.projectId,
+            trigger: 'WEIGHT_CORRECTED',
+            triggeringId: input.clientId ?? null,
+            actorUserId: ctx.userId,
           });
         }
 
@@ -771,6 +800,13 @@ assetsRouter.patch(
       });
     }
 
+    await recalculateAfterWrite({
+      projectId: access.projectId,
+      trigger: 'WEIGHT_CORRECTED',
+      triggeringId: id,
+      actorUserId: ctx.userId,
+    });
+
     res.json(weight.notice ? { asset: after, notice: weight.notice } : { asset: after });
   })
 );
@@ -818,6 +854,19 @@ assetsRouter.delete(
       after: null,
       changedByUserId: ctx.userId,
     });
+
+    /*
+     * The line half of finding 6. A tombstoned line stops counting in the mass
+     * balance the moment it is written; without this its emissions and its avoided
+     * claim would still be standing, still current, still summed.
+     */
+    await recalculateAfterWrite({
+      projectId: access.projectId,
+      trigger: 'MOVEMENT_TOMBSTONED',
+      triggeringId: id,
+      actorUserId: ctx.userId,
+    });
+
     res.status(204).end();
   })
 );

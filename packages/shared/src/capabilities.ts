@@ -40,6 +40,22 @@ export const CAPABILITY_KEYS = [
   'asset.destination.set',
   'asset.weight.verify',
   'sustainability.read',
+  /**
+   * Phase 9's **one** new key (`sustainability.md` §0 finding 10).
+   *
+   * §37's vocabulary shipped with three sustainability keys and all three are the
+   * sustainability lead's; none of them covers a project manager or a supervisor
+   * recording that a van did 240 km, which is the only routine, field-captured,
+   * non-admin write the phase adds.
+   *
+   * The two ways of avoiding a new key are both worse. Gating the write on
+   * `sustainability.read` makes a key whose name lies about what granting it does.
+   * Reusing `asset.write` — the nearest neighbour, already in the Supervisor bundle
+   * — would mean anyone who can record a chair can also attribute a journey to a
+   * subcontractor's van, which is `provider_company_id`, which is an assertion
+   * about another business.
+   */
+  'sustainability.write',
   'sustainability.factors.manage',
   'sustainability.settings.manage',
   'variation.create',
@@ -116,6 +132,7 @@ export const SYSTEM_BUNDLE_CAPABILITIES: Record<SystemBundleKey, readonly Capabi
     'asset.destination.set',
     'asset.weight.verify',
     'sustainability.read',
+    'sustainability.write',
     'variation.create',
     'variation.approve',
     'commercial.read',
@@ -139,6 +156,14 @@ export const SYSTEM_BUNDLE_CAPABILITIES: Record<SystemBundleKey, readonly Capabi
     'diary.close',
     'asset.write',
     'asset.destination.set',
+    /*
+     * Phase 9's one new key, placed beside `asset.write` and `diary.write` — the
+     * two it most resembles in who holds them and what they record. A supervisor
+     * recording a fuel fill as it happens is the capture case the whole sync
+     * contract was designed against; withholding it would leave the only
+     * field-captured table in the phase writable by nobody who is on site.
+     */
+    'sustainability.write',
     'variation.create',
     'signoff.capture'
   ),
@@ -162,6 +187,7 @@ export const SYSTEM_BUNDLE_CAPABILITIES: Record<SystemBundleKey, readonly Capabi
     'asset.destination.set',
     'asset.weight.verify',
     'sustainability.read',
+    'sustainability.write',
     'sustainability.factors.manage',
     'sustainability.settings.manage',
     'compliance.manage',

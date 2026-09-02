@@ -24,6 +24,7 @@ import type {
   AdminUserSummary,
   AssetTypeView,
   AssetView,
+  AvoidedClaimView,
   AssignmentView,
   AuditLogsResponse,
   CapabilityCatalog,
@@ -31,8 +32,11 @@ import type {
   CloseDiaryEntry,
   CompleteUpload,
   ContinueMovement,
+  CarbonCalculationView,
+  CreateActivity,
   CreateAsset,
   CreateDestinationOrg,
+  CreateProductFactor,
   CreateDiaryAttendance,
   CreateDiaryEntry,
   CreateDocument,
@@ -41,6 +45,11 @@ import type {
   CreateMovement,
   DestinationOrgView,
   DestinationTypeView,
+  EmissionFactorView,
+  FactorImportPreviewResult,
+  FactorImportRequest,
+  FactorSetView,
+  ImportDiff,
   DiaryEntryView,
   DiaryPrefillResponse,
   DiaryRevisionRow,
@@ -158,6 +167,15 @@ import type {
   BillingPaymentMethodResponse,
   BillingSubscriptionActionResponse,
   PublicPricingResponse,
+  OrgSustainabilityView,
+  ProductFactorView,
+  ProjectActivityView,
+  ProjectCarbonResponse,
+  SustainabilitySettingsView,
+  UpdateActivity,
+  UpdateFactorSet,
+  UpdateProductFactor,
+  UpdateSustainabilitySettings,
 } from '@crewquo/shared';
 
 const API_URL: string = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
@@ -1533,5 +1551,139 @@ export const api = {
     request<{ massBalance: MassBalanceView }>('GET', `/v1/projects/${projectId}/mass-balance`, {
       accessToken: t,
       companyId: c,
+    }),
+
+  // ── Sustainability (§26–§28, §38.1, §39) ──────────────────────────────────
+
+  sustainabilitySettings: (t: string, c: string) =>
+    request<{ settings: SustainabilitySettingsView }>('GET', '/v1/sustainability-settings', {
+      accessToken: t,
+      companyId: c,
+    }),
+  updateSustainabilitySettings: (t: string, c: string, body: UpdateSustainabilitySettings) =>
+    request<{ settings: SustainabilitySettingsView; notice?: string }>(
+      'PATCH',
+      '/v1/sustainability-settings',
+      { accessToken: t, companyId: c, body }
+    ),
+
+  listFactorSets: (t: string, c: string, includeInactive = false) =>
+    request<{ factorSets: FactorSetView[] }>('GET', '/v1/factor-sets', {
+      accessToken: t,
+      companyId: c,
+      query: { includeInactive: includeInactive ? 'true' : undefined },
+    }),
+  listFactors: (t: string, c: string, setId: string, q: { search?: string; limit?: number } = {}) =>
+    request<{ factors: EmissionFactorView[]; total: number }>(
+      'GET',
+      `/v1/factor-sets/${setId}/factors`,
+      {
+        accessToken: t,
+        companyId: c,
+        query: { search: q.search, limit: q.limit === undefined ? undefined : String(q.limit) },
+      }
+    ),
+  updateFactorSet: (t: string, c: string, id: string, body: UpdateFactorSet) =>
+    request<{ factorSet: FactorSetView; notice?: string }>('PATCH', `/v1/factor-sets/${id}`, {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+  /** Headers, a sample and a suggested mapping. Writes nothing (§26.2). */
+  previewFactorFile: (t: string, c: string, body: { format: 'CSV' | 'XLSX'; content: string }) =>
+    request<FactorImportPreviewResult>('POST', '/v1/factor-sets/preview', {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+  /**
+   * The dry run and the confirm are the same call with one flag, because a dry run
+   * that reports what a *different* code path would do is worse than not having one.
+   */
+  importFactorSet: (t: string, c: string, body: FactorImportRequest) =>
+    request<{
+      dryRun?: boolean;
+      diff?: ImportDiff;
+      refusal?: { code: string; message: string } | null;
+      factorSet?: FactorSetView;
+      imported?: number;
+      notice?: string;
+    }>('POST', '/v1/factor-sets/import', { accessToken: t, companyId: c, body }),
+
+  listProductFactors: (t: string, c: string, includeInactive = false) =>
+    request<{ productFactors: ProductFactorView[] }>('GET', '/v1/product-factors', {
+      accessToken: t,
+      companyId: c,
+      query: { includeInactive: includeInactive ? 'true' : undefined },
+    }),
+  createProductFactor: (t: string, c: string, body: CreateProductFactor) =>
+    request<{ productFactor: ProductFactorView }>('POST', '/v1/product-factors', {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+  updateProductFactor: (t: string, c: string, id: string, body: UpdateProductFactor) =>
+    request<{ productFactor: ProductFactorView; notice?: string }>(
+      'PATCH',
+      `/v1/product-factors/${id}`,
+      { accessToken: t, companyId: c, body }
+    ),
+
+  listActivities: (t: string, c: string, projectId: string) =>
+    request<{ activities: ProjectActivityView[] }>('GET', `/v1/projects/${projectId}/activities`, {
+      accessToken: t,
+      companyId: c,
+    }),
+  createActivity: (t: string, c: string, projectId: string, body: CreateActivity) =>
+    request<{ activity: ProjectActivityView }>('POST', `/v1/projects/${projectId}/activities`, {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+  updateActivity: (t: string, c: string, id: string, body: UpdateActivity) =>
+    request<{ activity: ProjectActivityView }>('PATCH', `/v1/activities/${id}`, {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+  deleteActivity: (t: string, c: string, id: string) =>
+    request<void>('DELETE', `/v1/activities/${id}`, { accessToken: t, companyId: c }),
+
+  /**
+   * The §28 section. A **union**, like `massBalance`: a reader without
+   * `sustainability.read` gets `{ view: 'MASS_ONLY' }` and the carbon keys are
+   * *absent*, so a screen has to check `view` before it can read one at all.
+   */
+  projectCarbon: (t: string, c: string, projectId: string) =>
+    request<{ carbon: ProjectCarbonResponse }>('GET', `/v1/projects/${projectId}/carbon`, {
+      accessToken: t,
+      companyId: c,
+    }),
+  projectCalculations: (t: string, c: string, projectId: string, includeSuperseded = false) =>
+    request<{ calculations: CarbonCalculationView[] }>(
+      'GET',
+      `/v1/projects/${projectId}/carbon/calculations`,
+      {
+        accessToken: t,
+        companyId: c,
+        query: { includeSuperseded: includeSuperseded ? 'true' : undefined },
+      }
+    ),
+  recalculateProjectCarbon: (t: string, c: string, projectId: string) =>
+    request<{ recalculation: { supersededCount: number; newCount: number; skipped: string | null } }>(
+      'POST',
+      `/v1/projects/${projectId}/carbon/recalculate`,
+      { accessToken: t, companyId: c }
+    ),
+
+  sustainabilityDashboard: (
+    t: string,
+    c: string,
+    q: { from?: string; to?: string; clientCompanyId?: string } = {}
+  ) =>
+    request<{ dashboard: OrgSustainabilityView }>('GET', '/v1/sustainability/dashboard', {
+      accessToken: t,
+      companyId: c,
+      query: { from: q.from, to: q.to, clientCompanyId: q.clientCompanyId },
     }),
 };
