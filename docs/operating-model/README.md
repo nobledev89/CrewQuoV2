@@ -23,6 +23,7 @@ heading is an unasked question, which is the failure mode §19.5 exists to preve
 | Time & time zones — company/project IANA zones, instant-vs-date, DST, date-bound rules | [time.md](./time.md) | Phase 6 |
 | Project evidence — locations, the storage layer, evidence, documents, the site diary, the capability model and the offline contract | [project-evidence.md](./project-evidence.md) | Phase 7 — `draft` |
 | Assets & materials — asset types and lines, weight provenance, destination types and organisations, the movement ledger and the mass roll-up | [assets-materials.md](./assets-materials.md) | Phase 8 — `draft` |
+| Sustainability & the carbon engine — emission factor sets and their importer, product carbon factors, project activities, the calculation ledger with its buckets and supersession, avoided-emissions claims and the §39 settings | [sustainability.md](./sustainability.md) | Phase 9 — `draft` |
 
 Earlier domains (identity, rates, the delivery loop, portal/audit, invoices) were
 built before the §19.5 decision was adopted on 2026-08-18 and have no packet. They
@@ -155,3 +156,44 @@ recorded as *following precedent* rather than sent to the owner, which is the
 first time a packet has done that: whose plan is checked when a subcontractor
 works on somebody else's project was answered on 2026-09-01, and asking it again
 with a different noun would be treating a settled rule as an open one.
+
+`sustainability.md` is the third packet written before its phase started, and the
+first written to protect a **claim** rather than a record. Phase 8 produced a
+tonnage split, where a wrong tonne is embarrassing and correctable. Phase 9
+multiplies those tonnes by factors and publishes two figures a customer puts in
+their own annual report, under a methodology statement, frozen into a §29.4
+snapshot that is deliberately never recalculated. A wrong number there does not
+stay inside CrewQuo.
+
+Its most valuable finding is the one that would not have been a migration to undo
+but **a published claim to retract**. §45 records an owner decision from
+2026-08-18 — *"displacement defaults to `UNKNOWN`, never 100%"* — and §27.4 states
+the consequence, that `UNKNOWN` produces no claim rather than a silent full one.
+§39's DDL was written before that pass and still says
+`default_displacement_pct numeric(5,2) not null default 100`: a column that
+cannot express `UNKNOWN` at all, defaulting to precisely the value the decision
+forbids. Built literally, every company starts life claiming maximal avoided
+emissions on every reuse movement, with `ASSUMED_FULL` recorded as the basis of an
+assumption nobody made. It is the largest number the product publishes and the one
+with the least external scrutiny, and the failure is silent, favourable, and
+found by whoever audits the customer.
+
+Two more findings are the same class of thing the assets packet found by reading
+the plan against the code that shipped after it was written. `emission_factor_sets`
+carries `unique (company_id, name, version)` over a **nullable** `company_id`,
+which in Postgres constrains company rows and does nothing at all to the
+platform library — the third table to make that mistake, after `asset_types` and
+`destination_types`, and the first where the consequence is that a recalculation
+can cite a different `factor_id` for the same activity depending on join order.
+And a tombstoned asset movement leaves its `carbon_calculations` row standing with
+`superseded_by` still null, so the mass balance and the carbon roll-up — rendered
+side by side in the same section — disagree about whether the material exists.
+
+Its §13 has **one** genuinely open question, and it is a methodology question
+rather than a schema one: whether Scope 2 electricity is reported location-based,
+market-based, or both. It is built as recommended — location-based only, labelled —
+because market-based reporting requires supplier instruments CrewQuo does not hold
+and cannot verify, on a figure that *reduces* a customer's reported emissions.
+Five further entries are recorded rather than asked, including the displacement
+default above: an owner decision already answers it, and sending it back would
+treat a settled rule as an open one.
