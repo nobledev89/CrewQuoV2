@@ -278,7 +278,7 @@ test.describe('WCAG 2.2 AA — automated', () => {
      * why this is one test rather than four: the rows are built once and each section
      * is swept against them.
      */
-    test('/projects/[id] has no violations in any Phase 7 section', async () => {
+    test('/projects/[id] has no violations in any project section', async () => {
       const projectId = await createProjectHeadless(ownerEmail, `Axe project ${RUN}`);
       await seedProjectSections(ownerEmail, projectId);
 
@@ -294,6 +294,22 @@ test.describe('WCAG 2.2 AA — automated', () => {
         await settled(page);
         await expectNoViolations(page, `/projects/[id] (${section})`);
       }
+
+      /*
+       * Assets is swept last and **expanded**, because its densest state is not the
+       * one it opens in: the movement ledger lives in a `colspan` row under the
+       * register, and a table nested inside another table's cell is exactly the
+       * shape that breaks header association. Scanning it collapsed would sweep a
+       * table that is not in the DOM.
+       */
+      await page
+        .getByRole('navigation', { name: 'Project' })
+        .getByRole('button', { name: 'Assets & materials' })
+        .click();
+      await settled(page);
+      await page.getByRole('button', { name: 'Movements' }).first().click();
+      await settled(page);
+      await expectNoViolations(page, '/projects/[id] (Assets & materials)');
     });
 
     /**

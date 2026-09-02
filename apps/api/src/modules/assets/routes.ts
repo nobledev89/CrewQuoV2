@@ -6,6 +6,7 @@ import {
   detectConflict,
   importAssetsSchema,
   outcomeStateSchema,
+  resolveTypeCatalog,
   resolveWeightConfidence,
   updateAssetSchema,
   type CreateAsset,
@@ -29,6 +30,7 @@ import {
   findSerialOwner,
   findUsableAssetType,
   insertAsset,
+  listAssetTypes,
   listAssets,
   toAssetView,
   tombstoneAsset,
@@ -281,6 +283,54 @@ async function assertLocation(projectId: string, locationId: string): Promise<vo
   );
   if (!row) throw new AppError('VALIDATION', 'That location is not on this project');
 }
+
+// ── The catalog, mounted under /v1 ────────────────────────────────
+
+export const assetTypesRouter = Router();
+
+/**
+ * GET /v1/asset-types — the twenty-two, plus whatever this company has added.
+ *
+ * `project.read` rather than `asset.write`, and the same gate `GET
+ * /v1/destination-types` uses: the catalog is reference data a reader needs to
+ * render *"42 × Operator chair"* at all, and gating it behind the write
+ * capability would leave a Supervisor looking at a register of uuids.
+ *
+ * **No entitlement check, and that is deliberate.** `asset_tracking` is asked of
+ * a *project*’s owner (`assertAssetFeature`), and this route has no project —
+ * there is no company here to ask it of. What it returns is a fixed list of
+ * furniture names, which is not what the feature key protects.
+ *
+ * `defaultUnitWeightKg` travels null on all 22 seeded rows and the picker must
+ * render that as an empty field rather than a zero: §41.1, and §25.1’s reason
+ * for it — *"a shipped default weight is an invented number that silently becomes
+ * a reported tonne."*
+ */
+assetTypesRouter.get(
+  '/',
+  asyncHandler(async (req, res) => {
+    const ctx = getCompanyCtx(req);
+    await assertCapability(ctx, 'project.read');
+    const rows = await listAssetTypes(ctx.companyId);
+    const resolved = resolveTypeCatalog(
+      rows.map((r) => ({ ...r, companyId: r.company_id, code: r.code }))
+    );
+    res.json({
+      assetTypes: resolved
+        .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name))
+        .map((r) => ({
+          id: r.id,
+          code: r.code,
+          name: r.name,
+          category: r.category,
+          isSystem: r.company_id === null,
+          defaultUnitWeightKg:
+            r.default_unit_weight_kg === null ? null : Number(r.default_unit_weight_kg),
+          sortOrder: r.sort_order,
+        })),
+    });
+  })
+);
 
 // ── Mounted under /v1/projects ───────────────────────────────────────────────
 

@@ -9,6 +9,8 @@ import {
   resolveTypeCatalog,
   updateDestinationOrgSchema,
   updateMovementSchema,
+  type DestinationOrgView,
+  type DestinationTypeView,
 } from '@crewquo/shared';
 import { asyncHandler } from '../../http/asyncHandler';
 import { getCompanyCtx } from '../../http/context';
@@ -556,7 +558,7 @@ destinationTypesRouter.get(
           const bt = b.hierarchy_tier ?? Number.POSITIVE_INFINITY;
           return at === bt ? a.sort_order - b.sort_order : at - bt;
         })
-        .map((r) => ({
+        .map((r): DestinationTypeView => ({
           id: r.id,
           code: r.code,
           name: r.name,
@@ -770,7 +772,7 @@ function toOrgView(row: {
   licence_expires_on: string | Date | null;
   notes: string | null;
   active: boolean;
-}) {
+}): DestinationOrgView {
   return {
     id: row.id,
     companyId: row.company_id,

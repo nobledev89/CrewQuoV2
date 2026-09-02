@@ -7,6 +7,7 @@ import { recordJobRun } from './jobRuns';
 import { BILLING_INBOX_HANDLERS } from '../modules/billing/reconcile';
 import { runStorageBatch } from '../modules/storage/worker';
 import { runDocumentExpiryBatch } from '../modules/documents/expiry';
+import { runStorageAgeingBatch } from '../modules/assets/storageAgeing';
 
 /**
  * The process that actually drains the durable substrate.
@@ -87,6 +88,21 @@ async function pass(): Promise<{ claimed: number; succeeded: number; failed: num
   const expiry = await runDocumentExpiryBatch();
   if (expiry.onLadder > 0) {
     console.log(`[workers] documents scanned=${expiry.scanned} onLadder=${expiry.onLadder}`);
+  }
+
+  /*
+   * Storage ageing (§25.4). The fifth pass, beside the expiry ladder above and
+   * before the outbox drain for the same reason: a line that crossed 30 days
+   * overnight is noticed and delivered in one pass, rather than a full scheduler
+   * interval later.
+   *
+   * **It is the only enforcement locked decision #18 has.** Storage counting
+   * toward no rate is correct and completely silent; this is the thing that
+   * looks.
+   */
+  const ageing = await runStorageAgeingBatch();
+  if (ageing.ageing > 0) {
+    console.log(`[workers] storage scanned=${ageing.scanned} ageing=${ageing.ageing}`);
   }
 
   const outbox = await runOutboxBatch({ workerId: WORKER_ID, handlers: NOTIFICATION_HANDLERS });

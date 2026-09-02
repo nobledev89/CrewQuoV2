@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { daysUntil } from './documents';
 
 /**
  * Assets & materials (CREWQUO_V2_PLAN.md §25) — step 0 of the Phase 8 build
@@ -1151,6 +1152,299 @@ export const DESTINATION_ORG_KIND_LABELS: Readonly<Record<DestinationOrgKind, st
   MANUFACTURER: 'Manufacturer',
   OTHER: 'Other',
 };
+
+// ── Storage ageing (§25.4, packet §5) ────────────────────────────────────────
+
+/**
+ * How long material may sit at a non-final destination before somebody is asked
+ * where it went.
+ *
+ * **Hard-coded with this comment, and deliberately not a settings row.** §39 is
+ * the Phase 9 table that would hold it; inventing a settings mechanism to carry
+ * one integer four weeks before the table that should own it arrives is the
+ * migration this packet exists to avoid — the same reasoning `0030` applied to
+ * GPS. When §39 lands, this becomes its default.
+ */
+export const STORAGE_AGEING_AFTER_DAYS = 30;
+
+/**
+ * And when it stops asking.
+ *
+ * §6 of the packet: *"none after 90 days — it stops repeating and stays in the
+ * list."* A question re-asked every morning for a year is not more insistent, it
+ * is noise, and the item it already raised is still sitting in the Action Centre
+ * unanswered. Nothing is withdrawn; the reminder simply stops being re-sent.
+ */
+export const STORAGE_AGEING_STOPS_AFTER_DAYS = 90;
+
+/**
+ * Whole days a movement has been sitting where it is, both dates `YYYY-MM-DD`.
+ *
+ * `daysUntil` with the arguments the other way round, and it borrows that
+ * function precisely so there is one implementation of "what is a day" in this
+ * package: whose day it is has already been decided upstream by asking Postgres
+ * for `now() at time zone <the project owner's zone>`, and re-deciding it here
+ * from a `Date` built in the server's locale is how something ages a day early
+ * for everybody east of the server.
+ */
+export function daysInStorage(movedOn: string, today: string): number {
+  return daysUntil(today, movedOn);
+}
+
+/**
+ * Is this leg on the rung today?
+ *
+ * A window rather than a threshold, and both edges matter: below 30 days there is
+ * nothing to ask, and above 90 the asking stops. Unlike the document ladder there
+ * are no rungs in between — a document approaching expiry gets more urgent as the
+ * date nears, and material in a warehouse does not. It is the same question every
+ * day, which is why the idempotency key is the date rather than a threshold.
+ */
+export function storageIsAgeing(days: number): boolean {
+  return days >= STORAGE_AGEING_AFTER_DAYS && days <= STORAGE_AGEING_STOPS_AFTER_DAYS;
+}
+
+/**
+ * The payload of `asset.storage_ageing`, built by an allowlist like every other
+ * event in this file.
+ *
+ * **`inStorageKg` rather than the packet's `pendingKg`, and the rename is the
+ * point.** Pending mass is storage *plus* everything with no destination at all,
+ * and the sentence this feeds — *"1.34 t has been in storage 42 days"* — is true
+ * only of the first. A line with 8 desks stored and 5 chairs never allocated
+ * would otherwise report the chairs as having been in a warehouse they were never
+ * in, which is precisely the kind of quietly-wrong figure §41 exists to prevent.
+ *
+ * Nothing here names an asset: no description, no manufacturer, no serial, no
+ * destination organisation. §11's exclusion list, enforced by the shape of the
+ * return rather than by a reviewer noticing.
+ */
+export function storageAgeingEventPayload(args: {
+  projectId: string;
+  assetId: string;
+  ownerCompanyId: string;
+  recordingCompanyId: string;
+  daysInStorage: number;
+  inStorageKg: number | null;
+  quantity: number;
+  /** The owner's local date the scan ran on — the event's key, and its meaning. */
+  onDate: string;
+}): Record<string, string | number | null> {
+  return {
+    projectId: args.projectId,
+    assetId: args.assetId,
+    ownerCompanyId: args.ownerCompanyId,
+    recordingCompanyId: args.recordingCompanyId,
+    daysInStorage: args.daysInStorage,
+    // Null when the line has no weight at all, and null rather than 0: "we do not
+    // know what this weighs" and "this weighs nothing" are different sentences,
+    // and the composer below writes a different one for each.
+    inStorageKg: args.inStorageKg,
+    quantity: args.quantity,
+    onDate: args.onDate,
+  };
+}
+
+/**
+ * The Action Centre item's own words, with the mass named — which is the whole
+ * requirement §5 states for this event.
+ *
+ * Falls back to the count when the line has no weight, because *"8 items have
+ * been in storage 42 days"* is still a question worth answering and *"0.0 kg has
+ * been in storage"* is a lie that would also make the item look answered.
+ */
+export function describeStorageAgeing(args: {
+  inStorageKg: number | null;
+  quantity: number;
+  daysInStorage: number;
+  massUnit?: MassUnit;
+}): string {
+  const kg = args.inStorageKg;
+  const what =
+    kg === null || kg === 0
+      ? `${formatQuantity(args.quantity)} ${args.quantity === 1 ? 'item' : 'items'}`
+      : formatMassKg(kg, args.massUnit ?? 'AUTO');
+  const byCount = kg === null || kg === 0;
+  // The verb agrees with what it is about: a mass is singular however large,
+  // and eight items are plural. The same agreement §28.3's gap sentences had to
+  // be corrected for in 8.0 — these reach a client's report too.
+  const verb = byCount && args.quantity !== 1 ? 'have' : 'has';
+  const day = args.daysInStorage === 1 ? 'day' : 'days';
+  return `${what} ${verb} been in storage ${args.daysInStorage} ${day}. Where did it go?`;
+}
+
+// ── Views (§25) — what the API returns, declared once ────────────────────────
+
+/**
+ * The read shapes, moved here in 8.6 for the reason `evidenceViewSchema` and
+ * `documentViewSchema` were always here: the web is now a second reader of these
+ * rows, and a screen that carries its own copy of the payload's shape is a screen
+ * that silently drifts the first time a column is added.
+ *
+ * They are interfaces rather than zod schemas — deliberately, and it is the one
+ * place these differ from Phase 7. Evidence and documents parse their write
+ * bodies through the same schemas the views are derived from; assets already
+ * carry those separately above (`createAssetSchema` and friends), so a schema
+ * here would be a *second* validator over a payload the API composes by hand in
+ * `toAssetView`. What the web needs from this file is the type, and a type is
+ * what it gets.
+ */
+export interface AssetTypeView {
+  id: string;
+  code: string;
+  name: string;
+  category: AssetCategory;
+  /** False for a company row shadowing a system code (§25.1). */
+  isSystem: boolean;
+  /**
+   * **Null on all 22 seeded rows**, and a screen must render that absence as an
+   * empty field rather than as a zero (§41.1). A company that has done its own
+   * weighing populates it; nothing ships one.
+   */
+  defaultUnitWeightKg: number | null;
+  sortOrder: number;
+}
+
+export interface AssetView {
+  id: string;
+  projectId: string;
+  companyId: string;
+  assetTypeId: string;
+  assetTypeCode: string;
+  assetTypeName: string;
+  assetTypeCategory: AssetCategory;
+  trackingMode: TrackingMode;
+  description: string | null;
+  quantity: number;
+  weightBasis: WeightBasis | null;
+  unitWeightKg: number | null;
+  totalWeightKg: number | null;
+  weightSource: WeightSource | null;
+  weightConfidence: WeightConfidence | null;
+  weightIsEstimated: boolean;
+  weightDocumentId: string | null;
+  /** True when the cited document has been re-issued since. Derived, never stored. */
+  weightDocumentSuperseded: boolean;
+  weighedByUserId: string | null;
+  manufacturer: string | null;
+  model: string | null;
+  serialNumber: string | null;
+  assetTag: string | null;
+  condition: AssetCondition | null;
+  originLocationId: string | null;
+  outcomeState: OutcomeState;
+  notes: string | null;
+  createdByUserId: string | null;
+  updatedByUserId: string | null;
+  batchClientId: string | null;
+  revision: number;
+  deletedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MovementView {
+  id: string;
+  assetId: string;
+  sequence: number;
+  continuesMovementId: string | null;
+  /** The movement that carries this one onward, derived from the chain. */
+  continuedById: string | null;
+  /** False once something continues it: it counts toward no ceiling and no metric. */
+  isOpen: boolean;
+  destinationTypeId: string;
+  destinationCode: string;
+  destinationName: string;
+  hierarchyTier: number | null;
+  isFinalOutcome: boolean;
+  destinationOrgId: string | null;
+  destinationOrgName: string | null;
+  destinationAddress: string | null;
+  fromLocationId: string | null;
+  quantity: number;
+  /** What the movement itself claims. Null means the line's rate applies. */
+  weightKg: number | null;
+  /** What it actually weighs — its own claim, or the derivation. */
+  effectiveWeightKg: number | null;
+  weightIsOverridden: boolean;
+  movedOn: string;
+  distanceKm: number | null;
+  documentId: string | null;
+  notes: string | null;
+  recordedByUserId: string | null;
+  revision: number;
+  deletedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * A destination type as this company sees it.
+ *
+ * **Every `countsAs*` flag travels rather than a computed label**, which is
+ * decision #20's containment: the flags are a company's own assumptions, and a
+ * screen that renders "Recycling" without showing what this company has decided
+ * counts as recycling is the opposite of *"an org can see and adjust its own
+ * assumptions"*. `isSystem` is what makes a customised hierarchy read as a diff.
+ */
+export interface DestinationTypeView extends DestinationSemantics {
+  id: string;
+  code: string;
+  name: string;
+  isSystem: boolean;
+  sortOrder: number;
+}
+
+export interface DestinationOrgView {
+  id: string;
+  companyId: string;
+  linkedCompanyId: string | null;
+  name: string;
+  kind: string;
+  address: string | null;
+  contactName: string | null;
+  contactEmail: string | null;
+  contactPhone: string | null;
+  licenceNumber: string | null;
+  licenceExpiresOn: string | null;
+  notes: string | null;
+  active: boolean;
+}
+
+/**
+ * `GET /v1/projects/:projectId/mass-balance`, and **the two views are two types
+ * rather than one type with optional halves** — which is the API's "omitted
+ * rather than nulled" rule expressed where a client can be held to it.
+ *
+ * A single interface with `rates?: MassRates` would compile against
+ * `balance.rates?.reuse ?? 0`, and that expression renders a reader who was not
+ * shown the rates as a project that diverted nothing. A union forces the `view`
+ * check before the field exists to be read at all.
+ */
+export interface MassBalanceMassOnlyView {
+  view: 'MASS_ONLY';
+  handledKg: number;
+  allocatedKg: number;
+  pendingKg: number;
+  inStorageKg: number;
+  unallocatedKg: number;
+  lineCount: number;
+  linesWithWeight: number;
+  /** Travels in BOTH views: it says every figure above is a floor, not a total. */
+  hasUnknownMass: boolean;
+}
+
+export interface MassBalanceFullView extends Omit<MassBalanceMassOnlyView, 'view'> {
+  view: 'FULL';
+  byDestination: (DestinationMass & { name: string })[];
+  rates: MassRates;
+  documentedMassKg: number;
+  linesWithSupport: number;
+  /** §28.3's sentences. Deliberately not a score (§13.5). */
+  gaps: string[];
+}
+
+export type MassBalanceView = MassBalanceMassOnlyView | MassBalanceFullView;
 
 // ── Events (§5 of the packet) ────────────────────────────────────────────────
 

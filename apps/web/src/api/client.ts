@@ -22,17 +22,25 @@ import type {
   AdminSetSubscription,
   AdminUserDetail,
   AdminUserSummary,
+  AssetTypeView,
+  AssetView,
   AssignmentView,
   AuditLogsResponse,
   CapabilityCatalog,
   CloseDayPrompt,
   CloseDiaryEntry,
   CompleteUpload,
+  ContinueMovement,
+  CreateAsset,
+  CreateDestinationOrg,
   CreateDiaryAttendance,
   CreateDiaryEntry,
   CreateDocument,
   CreateEvidenceBatch,
   CreateLocation,
+  CreateMovement,
+  DestinationOrgView,
+  DestinationTypeView,
   DiaryEntryView,
   DiaryPrefillResponse,
   DiaryRevisionRow,
@@ -41,17 +49,24 @@ import type {
   DocumentView,
   EvidenceCategory,
   EvidenceView,
+  ImportAssets,
   LocationView,
+  MassBalanceView,
+  MovementView,
+  OutcomeState,
   PresignUpload,
   PresignedUpload,
   PublishEvidence,
   StoredFile,
   SupersedeDocument,
+  UpdateAsset,
+  UpdateDestinationOrg,
   UpdateDiaryAttendance,
   UpdateDiaryEntry,
   UpdateDocument,
   UpdateEvidence,
   UpdateLocation,
+  UpdateMovement,
   AuditSettings,
   AuthResponse,
   ClientView,
@@ -1387,5 +1402,136 @@ export const api = {
       accessToken: t,
       companyId: c,
       query: { reason },
+    }),
+
+  // ── Assets & materials (§25, §28) ────────────────────────────────────────────
+
+  /**
+   * The catalog. Ungated by `asset_tracking` on purpose — see the route's own note:
+   * the feature is asked of a *project's* owner, and there is no project here.
+   */
+  listAssetTypes: (t: string, c: string) =>
+    request<{ assetTypes: AssetTypeView[] }>('GET', '/v1/asset-types', {
+      accessToken: t,
+      companyId: c,
+    }),
+  listDestinationTypes: (t: string, c: string) =>
+    request<{ destinationTypes: DestinationTypeView[] }>('GET', '/v1/destination-types', {
+      accessToken: t,
+      companyId: c,
+    }),
+  listDestinationOrganisations: (t: string, c: string, includeInactive = false) =>
+    request<{ destinationOrganisations: DestinationOrgView[] }>(
+      'GET',
+      '/v1/destination-organisations',
+      {
+        accessToken: t,
+        companyId: c,
+        query: { includeInactive: includeInactive ? 'true' : undefined },
+      }
+    ),
+  createDestinationOrganisation: (t: string, c: string, body: CreateDestinationOrg) =>
+    request<{ destinationOrganisation: DestinationOrgView }>(
+      'POST',
+      '/v1/destination-organisations',
+      { accessToken: t, companyId: c, body }
+    ),
+  updateDestinationOrganisation: (t: string, c: string, id: string, body: UpdateDestinationOrg) =>
+    request<{ destinationOrganisation: DestinationOrgView }>(
+      'PATCH',
+      `/v1/destination-organisations/${id}`,
+      { accessToken: t, companyId: c, body }
+    ),
+
+  listAssets: (
+    t: string,
+    c: string,
+    projectId: string,
+    q: { outcomeState?: OutcomeState[]; assetTypeId?: string; missingWeight?: boolean } = {}
+  ) =>
+    request<{ assets: AssetView[] }>('GET', `/v1/projects/${projectId}/assets`, {
+      accessToken: t,
+      companyId: c,
+      query: {
+        outcomeState: q.outcomeState,
+        assetTypeId: q.assetTypeId,
+        missingWeight: q.missingWeight ? 'true' : undefined,
+      },
+    }),
+  /**
+   * `notice` is the degrade of §25.3, and it arrives on a **201**.
+   *
+   * A supervisor without `asset.weight.verify` who ticks "weighed and verified"
+   * gets their 16.5 kg saved as an estimate with a sentence saying why — so the
+   * one place in this client where a successful response carries a refusal is
+   * typed as such, rather than being discovered by a screen that only reads
+   * `asset`.
+   */
+  createAsset: (t: string, c: string, projectId: string, body: CreateAsset) =>
+    request<{ asset: AssetView; notice?: string }>('POST', `/v1/projects/${projectId}/assets`, {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+  /** Partial success by design: `imported` counts what landed, `errors` names the rest by row. */
+  importAssets: (t: string, c: string, projectId: string, body: ImportAssets) =>
+    request<{
+      imported: number;
+      assets: AssetView[];
+      errors: { row: number; message: string; value?: string }[];
+    }>('POST', `/v1/projects/${projectId}/assets/import`, { accessToken: t, companyId: c, body }),
+  updateAsset: (t: string, c: string, id: string, body: UpdateAsset) =>
+    request<{ asset: AssetView; notice?: string }>('PATCH', `/v1/assets/${id}`, {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+  deleteAsset: (t: string, c: string, id: string) =>
+    request<void>('DELETE', `/v1/assets/${id}`, { accessToken: t, companyId: c }),
+
+  listMovements: (t: string, c: string, assetId: string) =>
+    request<{ movements: MovementView[] }>('GET', `/v1/assets/${assetId}/movements`, {
+      accessToken: t,
+      companyId: c,
+    }),
+  /** `outcomeState` is the line's, recomputed by the write — never derived here. */
+  createMovement: (t: string, c: string, assetId: string, body: CreateMovement) =>
+    request<{ movement: MovementView; outcomeState: OutcomeState }>(
+      'POST',
+      `/v1/assets/${assetId}/movements`,
+      { accessToken: t, companyId: c, body }
+    ),
+  /**
+   * Material leaving storage. A separate call rather than a flag on `createMovement`,
+   * for the reason the API keeps them apart: a continuation written as a fresh
+   * movement is twelve chairs counted in the warehouse *and* twelve recycled.
+   */
+  continueMovement: (t: string, c: string, movementId: string, body: ContinueMovement) =>
+    request<{ movement: MovementView; outcomeState: OutcomeState }>(
+      'POST',
+      `/v1/movements/${movementId}/continue`,
+      { accessToken: t, companyId: c, body }
+    ),
+  updateMovement: (t: string, c: string, movementId: string, body: UpdateMovement) =>
+    request<{ movement: MovementView; outcomeState: OutcomeState }>(
+      'PATCH',
+      `/v1/movements/${movementId}`,
+      { accessToken: t, companyId: c, body }
+    ),
+  deleteMovement: (t: string, c: string, movementId: string) =>
+    request<{ outcomeState: OutcomeState }>('DELETE', `/v1/movements/${movementId}`, {
+      accessToken: t,
+      companyId: c,
+    }),
+
+  /**
+   * The roll-up (§28.1). A **union**, not an object with optional halves: a reader
+   * without `sustainability.read` gets the mass-only view and the rates are
+   * *absent*, so a screen has to check `view` before it can read one at all.
+   */
+  massBalance: (t: string, c: string, projectId: string) =>
+    request<{ massBalance: MassBalanceView }>('GET', `/v1/projects/${projectId}/mass-balance`, {
+      accessToken: t,
+      companyId: c,
     }),
 };

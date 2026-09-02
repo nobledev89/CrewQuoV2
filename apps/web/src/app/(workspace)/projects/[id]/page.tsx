@@ -44,6 +44,7 @@ import { LocationsPanel } from './LocationsPanel';
 import { EvidencePanel } from './EvidencePanel';
 import { DocumentsPanel } from './DocumentsPanel';
 import { DiaryPanel } from './DiaryPanel';
+import { AssetsPanel } from './AssetsPanel';
 import { ProjectStatusBadge, WorkStatusBadge } from '@/components/Status';
 import { formatCents, formatDate, formatPct, titleCase, totalHours } from '@/lib/format';
 
@@ -133,10 +134,18 @@ function ProjectDetail() {
    */
   const [countsNonce, setCountsNonce] = useState(0);
   const bumpCount = useCallback(() => setCountsNonce((n) => n + 1), []);
-  const sectionCounts = useAsyncData<{ evidence: number; documents: number; diary: number }>(
+  /** Null until the project has loaded, which is why it is a dependency below. */
+  const isProjectOwner =
+    project.data && ctx ? project.data.ownerCompanyId === ctx.companyId : null;
+  const sectionCounts = useAsyncData<{
+    evidence: number;
+    documents: number;
+    diary: number;
+    assets: number;
+  }>(
     ctx
       ? async () => {
-          const [evidence, documents, diary] = await Promise.all([
+          const [evidence, documents, diary, assets] = await Promise.all([
             ent.has('project_evidence')
               ? api
                   .listEvidence(ctx.accessToken, ctx.companyId, id)
@@ -157,14 +166,44 @@ function ProjectDetail() {
                   .then((r) => r.entries.length)
                   .catch(() => 0)
               : Promise.resolve(0),
+            /*
+             * **`asset_tracking` is the PROJECT OWNER's entitlement, not this
+             * reader's**, which makes the assets count the one section here that
+             * cannot be decided from `ent.has` alone.
+             *
+             * A Crew-plan subcontractor clearing a Pro customer's floor may record
+             * every asset line on it — that is the packaging rule answered on
+             * 2026-09-01 and the reason `assertAssetFeature` asks the owner. Gating
+             * the rail on the reader's own plan would hide the section from exactly
+             * the person doing the recording.
+             *
+             * So: when this company owns the project, its own entitlement *is* the
+             * owner's and no request is needed to know. When it does not, the API
+             * is the only thing that knows, and **-1 means "not offered"** — a
+             * refusal, told apart from a genuine zero, which is what the rail entry
+             * below keys on.
+             */
+            isProjectOwner
+              ? ent.has('asset_tracking')
+                ? api
+                    .listAssets(ctx.accessToken, ctx.companyId, id)
+                    .then((r) => r.assets.length)
+                    .catch(() => -1)
+                : Promise.resolve(-1)
+              : api
+                  .listAssets(ctx.accessToken, ctx.companyId, id)
+                  .then((r) => r.assets.length)
+                  .catch(() => -1),
           ]);
-          return { evidence, documents, diary };
+          return { evidence, documents, diary, assets };
         }
       : null,
     // `ent.loading` rather than the feature flags themselves: the first render has
     // no entitlements yet, so all three branches would resolve to zero and never
     // re-run. Waiting for the answer costs one render and avoids a permanent 0.
-    [ctx?.companyId, id, ent.loading, countsNonce]
+    // `isProjectOwner` joins it because the assets branch reads it and it is null
+    // until the project itself has loaded.
+    [ctx?.companyId, id, ent.loading, isProjectOwner, countsNonce]
   );
   const counts = sectionCounts.data;
 
@@ -258,6 +297,24 @@ function ProjectDetail() {
             label: 'Documents',
             count: counts?.documents ?? null,
             populated: (counts?.documents ?? 0) > 0,
+          } satisfies RailSection,
+        ]
+      : []),
+    /*
+     * The one rail entry decided by the API rather than by `ent.has`, because
+     * `asset_tracking` is the project owner's key and this reader may be a
+     * subcontractor on somebody else's project. `-1` is the refusal; anything
+     * from 0 up is a section that exists. `null` is "still loading", and the
+     * entry is deliberately withheld until the answer arrives rather than
+     * flickering in and out of the rail.
+     */
+    ...((counts?.assets ?? -1) >= 0
+      ? [
+          {
+            id: 'assets',
+            label: 'Assets & materials',
+            count: counts?.assets ?? null,
+            populated: (counts?.assets ?? 0) > 0,
           } satisfies RailSection,
         ]
       : []),
@@ -390,6 +447,16 @@ function ProjectDetail() {
               canUpload={caps.can('document.upload')}
               canManage={caps.can('document.manage')}
               isOwner={p.ownerCompanyId === ctx?.companyId}
+              onCountChanged={bumpCount}
+            />
+          ) : null}
+
+          {active === 'assets' ? (
+            <AssetsPanel
+              projectId={p.id}
+              locations={locations.items}
+              canWrite={caps.can('asset.write')}
+              canSetDestination={caps.can('asset.destination.set')}
               onCountChanged={bumpCount}
             />
           ) : null}

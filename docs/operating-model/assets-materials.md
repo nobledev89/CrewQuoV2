@@ -497,7 +497,7 @@ Every event is written in the same transaction as its state change (§36, decisi
 | `asset.movement_recorded` | `projectId`, `assetId`, `movementId`, `destinationCode`, `isFinalOutcome`, `quantity` | `movementId` | notifications; Phase 9 carbon recalculation | safe |
 | `asset.movement_continued` | `projectId`, `assetId`, `movementId`, `continuesMovementId`, `destinationCode` | `movementId` | as above; **Phase 9 must supersede any claim on the continued leg** | safe |
 | `asset.weight_verified` | `projectId`, `assetId`, `weightSource`, `confidence`, `documentId` | `assetId` + `revision` | notifications; analytics quality metric | safe |
-| `asset.storage_ageing` | `projectId`, `assetId`, `daysInStorage`, `pendingKg` | `assetId` + the ISO date | the Action Centre | safe — one per asset per day |
+| `asset.storage_ageing` | `projectId`, `assetId`, `daysInStorage`, `inStorageKg` | `assetId` + the owner-local ISO date | the Action Centre | safe — one per asset per day |
 
 Five kinds, and the two that are **not** here matter as much as the five that are.
 
@@ -529,6 +529,13 @@ anything** — §33's *"never auto-blocks unless `enforce_compliance`"* is the
 governing instinct here, and this is not even a compliance record. It is a
 question left in an inbox: *"1.34 t has been in storage 42 days. Where did it
 go?"*
+
+**Built 2026-09-02, with one field renamed.** The table above said `pendingKg`;
+what shipped is **`inStorageKg`**. Pending mass is storage *plus* everything with
+no destination at all, and the sentence this event feeds — *"240.0 kg has been in
+storage 42 days"* — is true only of the first. A line with 8 desks stored and 5
+chairs never allocated would have reported the chairs as having been in a
+warehouse they were never in.
 
 The threshold is `30` days, hard-coded with a comment, and **not** a settings row.
 §39 is a Phase 9 table; inventing a settings mechanism to hold one integer, four
@@ -832,6 +839,13 @@ Meridian's sustainability lead. Dolapo is Meridian's PM. Halewood's plan does
    on an unrecognised type, returned by row number with the text that failed. He
    fixes them and re-pastes all 60: nothing duplicates.
 
+   **Corrected 2026-09-02, when 8.6 tried to build it.** *"Re-pastes all 60"* is
+   not implementable by any client: under the same batch id the idempotency ledger
+   refuses it — correctly, because the body differs and a second act must not be
+   answered with a first answer — and under a new id it imports 56 duplicates.
+   What the screen does instead is **rewrite the box to hold only the 4 that
+   failed**, and say so. Same outcome, and it is the one a person can reach.
+
 5. **Split.** Dolapo records two movements against the chairs — `30 → DONATION`
    (Bright Futures, a `CHARITY` organisation, donation receipt attached) and
    `12 → RECYCLING`. The line goes `FINAL`. The mass balance reads
@@ -1078,6 +1092,13 @@ Phase 7 panels already established. Inline edit, paste-import with per-row error
 movement recording, destination assignment, the split view that shows 30 donated
 and 12 recycled against one line, and the mass balance with pending beside the
 rates rather than hidden in a denominator. Browser tests walk §12 end to end.
+
+**This step needed a route the five before it had not.** `GET /v1/asset-types` did
+not exist — every write resolves *one* type by id or by code, so nothing on the API
+side had ever wanted the catalog, and a register cannot render *"42 × Operator
+chair"* out of a uuid. Gated on `project.read` with **no entitlement check**:
+`asset_tracking` is asked of a project's owner, and a route with no project has no
+company to ask it of.
 
 **7. The storage-ageing pass.** A fifth pass on the existing nightly `work` job,
 beside the document-expiry ladder 7.4 added. One Action Centre item per ageing

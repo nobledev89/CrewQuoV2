@@ -2,6 +2,7 @@ import {
   isEstimatedConfidence,
   type AssetCondition,
   type AssetCategory,
+  type AssetView,
   type OutcomeState,
   type TrackingMode,
   type WeightBasis,
@@ -84,43 +85,13 @@ function selectFrom(source: string): string {
               on s.supersedes_id = a.weight_document_id and s.deleted_at is null`;
 }
 
-export interface AssetView {
-  id: string;
-  projectId: string;
-  companyId: string;
-  assetTypeId: string;
-  assetTypeCode: string;
-  assetTypeName: string;
-  assetTypeCategory: AssetCategory;
-  trackingMode: TrackingMode;
-  description: string | null;
-  quantity: number;
-  weightBasis: WeightBasis | null;
-  unitWeightKg: number | null;
-  totalWeightKg: number | null;
-  weightSource: WeightSource | null;
-  weightConfidence: WeightConfidence | null;
-  weightIsEstimated: boolean;
-  weightDocumentId: string | null;
-  /** True when the cited document has been re-issued since. Derived, never stored. */
-  weightDocumentSuperseded: boolean;
-  weighedByUserId: string | null;
-  manufacturer: string | null;
-  model: string | null;
-  serialNumber: string | null;
-  assetTag: string | null;
-  condition: AssetCondition | null;
-  originLocationId: string | null;
-  outcomeState: OutcomeState;
-  notes: string | null;
-  createdByUserId: string | null;
-  updatedByUserId: string | null;
-  batchClientId: string | null;
-  revision: number;
-  deletedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
+/*
+ * The read shape lives in `@crewquo/shared` as of 8.6, and is re-exported here so
+ * every existing importer keeps its import. The web became a second reader of
+ * these rows when the assets panel shipped, and a payload shape declared twice is
+ * one that drifts the first time a column is added on one side of it.
+ */
+export type { AssetView };
 
 export function toAssetView(row: AssetRow): AssetView {
   return {
@@ -422,6 +393,36 @@ export function findSerialOwner(
         and a.deleted_at is null
       limit 1`,
     [companyId, serialNumber],
+    runner
+  );
+}
+
+export interface AssetTypeRow {
+  id: string;
+  company_id: string | null;
+  code: string;
+  name: string;
+  category: AssetCategory;
+  default_unit_weight_kg: string | null;
+  sort_order: number;
+  active: boolean;
+}
+
+/**
+ * System rows plus this company's own, for `resolveTypeCatalog` to shadow.
+ *
+ * The sibling of `listDestinationTypes`, and it arrived a build step later than
+ * that one for a reason worth keeping: nothing on the API side needed the whole
+ * catalog — every write resolves one type by id or by code. The picker needs the
+ * list, so the list exists now and not before.
+ */
+export function listAssetTypes(companyId: string, runner?: Queryable): Promise<AssetTypeRow[]> {
+  return query<AssetTypeRow>(
+    `select id, company_id, code, name, category, default_unit_weight_kg, sort_order, active
+       from asset_types
+      where active and (company_id is null or company_id = $1)
+      order by sort_order, name`,
+    [companyId],
     runner
   );
 }

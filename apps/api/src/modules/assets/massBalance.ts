@@ -3,6 +3,8 @@ import {
   computeMassBalance,
   describeGaps,
   type AssetForBalance,
+  type MassBalanceFullView,
+  type MassBalanceMassOnlyView,
   type MovementRow as PolicyMovement,
   type WeightConfidence,
 } from '@crewquo/shared';
@@ -198,8 +200,15 @@ projectMassBalanceRouter.get(
     const assets = await loadForBalance(access.projectId);
     const balance = computeMassBalance(assets);
 
-    const massOnly = {
-      view: full ? ('FULL' as const) : ('MASS_ONLY' as const),
+    /*
+     * Typed as the mass-only view even when `full` is true, so the two halves are
+     * checked against the union the web reads rather than against each other. The
+     * `view` discriminant is what a client switches on before a gated field
+     * exists to be read at all — which is the "omitted rather than nulled" rule
+     * expressed where a caller can be held to it.
+     */
+    const massOnly: MassBalanceMassOnlyView = {
+      view: full ? ('FULL' as MassBalanceMassOnlyView['view']) : 'MASS_ONLY',
       handledKg: balance.handledKg,
       allocatedKg: balance.allocatedKg,
       pendingKg: balance.pendingKg,
@@ -223,26 +232,26 @@ projectMassBalanceRouter.get(
     }
 
     const names = await destinationNames(access.projectId);
-    res.json({
-      massBalance: {
-        ...massOnly,
-        byDestination: balance.byDestination.map((d) => ({
-          ...d,
-          // Codes are the contract; names are what §28.1's headline renders.
-          name: names.get(d.code) ?? d.code,
-        })),
-        rates: balance.rates,
-        documentedMassKg: balance.documentedMassKg,
-        linesWithSupport: balance.linesWithSupport,
-        /*
-         * The gaps, and deliberately not a composite score (§13.5). Four of
-         * §28.3's five components are computable as of 8.4 and the fifth is Phase
-         * 9's; a percentage published over four fifths of a definition changes
-         * meaning downward when Phase 9 lands, on projects nobody touched. Each
-         * gap is true on its own, which is why they can ship a phase early.
-         */
-        gaps: describeGaps(balance),
-      },
-    });
+    const fullView: MassBalanceFullView = {
+      ...massOnly,
+      view: 'FULL',
+      byDestination: balance.byDestination.map((d) => ({
+        ...d,
+        // Codes are the contract; names are what §28.1's headline renders.
+        name: names.get(d.code) ?? d.code,
+      })),
+      rates: balance.rates,
+      documentedMassKg: balance.documentedMassKg,
+      linesWithSupport: balance.linesWithSupport,
+      /*
+       * The gaps, and deliberately not a composite score (§13.5). Four of
+       * §28.3's five components are computable as of 8.4 and the fifth is Phase
+       * 9's; a percentage published over four fifths of a definition changes
+       * meaning downward when Phase 9 lands, on projects nobody touched. Each
+       * gap is true on its own, which is why they can ship a phase early.
+       */
+      gaps: describeGaps(balance),
+    };
+    res.json({ massBalance: fullView });
   })
 );

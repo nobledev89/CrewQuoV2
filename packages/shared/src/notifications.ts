@@ -76,6 +76,16 @@ export const NOTIFICATION_KINDS = [
    * from 16 kg to 16.5 kg is not.
    */
   'asset.lines_recorded',
+  /**
+   * The phase's only **generated** kind, and it exists because locked decision
+   * #18 has no other enforcement (`assets-materials.md` §5).
+   *
+   * Storage counting toward no rate at all is correct and completely silent: the
+   * material is off site, the job feels finished, and the project's diversion
+   * figures quietly under-report for as long as nobody looks. This is the one
+   * thing that looks.
+   */
+  'asset.storage_ageing',
   'delivery.dead_lettered',
   // Account security (`docs/operating-model/access.md` §6). The first kinds in
   // this catalog that belong to a *person* rather than to a company, which is why
@@ -219,6 +229,18 @@ export const NOTIFICATION_KIND_SPECS: Readonly<Record<NotificationKind, Notifica
    * which is a question with something to do about it.
    */
   'asset.lines_recorded': { requiresAction: false, urgency: 'NORMAL', defaultChannels: ['EMAIL'] },
+  /*
+   * Material that has been sitting in storage past the threshold — the one asset
+   * kind with something to do about it, which is why it is the one that sets
+   * `requiresAction`.
+   *
+   * Deliberately **not** urgent and deliberately digestible. A tonne of furniture
+   * in a warehouse is not a page at 3 a.m., and treating it as one would train
+   * people to mute the channel that later has to carry something that is. The
+   * item closes when somebody records where the material went, which is exactly
+   * the act it is asking for.
+   */
+  'asset.storage_ageing': { requiresAction: true, urgency: 'NORMAL', defaultChannels: ['EMAIL'] },
   /*
    * **The one kind in the product that must never be digested**, and the packet
    * says so in a row written for exactly this line. Changing a closed day alters a

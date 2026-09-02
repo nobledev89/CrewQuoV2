@@ -1,4 +1,4 @@
-import type { NotificationKind } from '@crewquo/shared';
+import type { CapabilityKey, NotificationKind } from '@crewquo/shared';
 import {
   NOTIFICATION_KIND_SPECS,
   deliveryHoldMinutes,
@@ -7,6 +7,7 @@ import {
 } from '@crewquo/shared';
 import { query, queryOne, type Queryable } from '../../db';
 import { getNotificationPreferences, insertNotification } from './repo';
+import { resolveOwnCapabilities } from '../capabilities/resolve';
 
 /**
  * Turning one domain event into the rows that make it durable.
@@ -33,6 +34,46 @@ export async function managerRecipients(
     runner
   );
   return rows.map((r) => r.user_id);
+}
+
+/**
+ * The members of a company who hold one capability — a cohort a role cannot
+ * express.
+ *
+ * §6 of `assets-materials.md` names *"the project owner's `sustainability.read`
+ * holders"* as the recipients of the storage-ageing item, and that is not a role:
+ * a Supervisor's bundle does not carry it and an analyst's may. So the question
+ * is asked of the permission model rather than approximated by
+ * `managerRecipients`, which would send a diversion-rate question to whoever is
+ * senior instead of to whoever reads diversion rates.
+ *
+ * **Resolved per membership, with no cache**, which is `resolve.ts`'s own rule and
+ * the reason is stronger here than the cost: a cached answer is a permission
+ * somebody was just granted or just lost. The fan-out is one company's active
+ * members, and this runs from a nightly job.
+ *
+ * Falls back to `managerRecipients` when **nobody** holds the capability, because
+ * a notification with no recipients is not a quieter notification — it is a
+ * question nobody was asked, about material nobody is now looking for.
+ */
+export async function capabilityRecipients(
+  companyId: string,
+  capability: CapabilityKey,
+  runner?: Queryable
+): Promise<string[]> {
+  const rows = await query<{ user_id: string }>(
+    `select m.user_id from memberships m
+      where m.company_id = $1 and m.status = 'ACTIVE'`,
+    [companyId],
+    runner
+  );
+
+  const holders: string[] = [];
+  for (const row of rows) {
+    const capabilities = await resolveOwnCapabilities(row.user_id, companyId, runner);
+    if (capabilities.includes(capability)) holders.push(row.user_id);
+  }
+  return holders.length > 0 ? holders : managerRecipients(companyId, runner);
 }
 
 /** The local wall-clock time for a user, as `HH:MM`, in their own zone. */

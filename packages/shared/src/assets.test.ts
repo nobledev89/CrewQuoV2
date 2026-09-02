@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_CONFIDENCE_FOR_SOURCE,
+  STORAGE_AGEING_AFTER_DAYS,
+  STORAGE_AGEING_STOPS_AFTER_DAYS,
   assetLinesRecordedEventPayload,
+  daysInStorage,
+  describeStorageAgeing,
+  storageAgeingEventPayload,
+  storageIsAgeing,
   importAssetRowSchema,
   importAssetsSchema,
   SYSTEM_ASSET_TYPES,
@@ -1163,5 +1169,117 @@ describe('assetLinesRecordedEventPayload', () => {
     });
     expect(unweighed.totalWeightKg).toBeNull();
     expect(unweighed.linesWithoutWeight).toBe(1);
+  });
+});
+
+/**
+ * The storage-ageing window (§25.4, packet §5) — the only enforcement locked
+ * decision #18 has, and therefore the only thing standing between "storage counts
+ * as nothing" and a project that under-reports in silence for a year.
+ */
+describe('storage ageing', () => {
+  it('says nothing before the threshold, and 29 days is before it', () => {
+    expect(storageIsAgeing(0)).toBe(false);
+    expect(storageIsAgeing(29)).toBe(false);
+    expect(storageIsAgeing(STORAGE_AGEING_AFTER_DAYS)).toBe(true);
+  });
+
+  /**
+   * §6: *"none after 90 days — it stops repeating and stays in the list."* The
+   * item already raised is not withdrawn; the reminder stops being re-sent,
+   * because a question re-asked every morning for a year is noise rather than
+   * insistence.
+   */
+  it('stops asking after 90 days rather than asking louder', () => {
+    expect(storageIsAgeing(STORAGE_AGEING_STOPS_AFTER_DAYS)).toBe(true);
+    expect(storageIsAgeing(STORAGE_AGEING_STOPS_AFTER_DAYS + 1)).toBe(false);
+  });
+
+  /**
+   * Whose day it is has been decided upstream by Postgres in the project owner's
+   * zone; this is the arithmetic over two date-only strings, and it must not
+   * acquire a clock.
+   */
+  it('counts whole days from the date the material moved', () => {
+    expect(daysInStorage('2026-03-01', '2026-04-12')).toBe(42);
+    expect(daysInStorage('2026-04-12', '2026-04-12')).toBe(0);
+  });
+
+  it('names the mass, which is the whole requirement §5 states for the item', () => {
+    expect(
+      describeStorageAgeing({ inStorageKg: 1340, quantity: 8, daysInStorage: 42 })
+    ).toBe('1.34 t has been in storage 42 days. Where did it go?');
+  });
+
+  /**
+   * A line with no weight still raises the question — the count carries it. The
+   * failure this pins is `0.0 kg has been in storage`, which is both false and
+   * reads like an item somebody has already dealt with.
+   */
+  it('falls back to the count rather than claiming a zero mass', () => {
+    expect(describeStorageAgeing({ inStorageKg: null, quantity: 8, daysInStorage: 42 })).toBe(
+      '8 items have been in storage 42 days. Where did it go?'
+    );
+    expect(describeStorageAgeing({ inStorageKg: 0, quantity: 1, daysInStorage: 31 })).toBe(
+      '1 item has been in storage 31 days. Where did it go?'
+    );
+  });
+
+  /**
+   * The agreement bug 8.0 found in the §28.3 gap sentences, pinned here before it
+   * could be made again: a mass is singular however large, eight items are plural,
+   * and one day is not "1 days". These sentences reach a client's report.
+   */
+  it('agrees its verb with what it is counting, and its noun with the count', () => {
+    expect(describeStorageAgeing({ inStorageKg: 1340, quantity: 8, daysInStorage: 1 })).toBe(
+      '1.34 t has been in storage 1 day. Where did it go?'
+    );
+    expect(describeStorageAgeing({ inStorageKg: null, quantity: 1, daysInStorage: 30 })).toBe(
+      '1 item has been in storage 30 days. Where did it go?'
+    );
+  });
+
+  /**
+   * The rename from the packet's `pendingKg`. Pending is storage *plus* everything
+   * with no destination at all; the sentence is true only of the first. A line
+   * with 8 desks stored and 5 chairs never allocated would otherwise report the
+   * chairs as having been in a warehouse they were never in.
+   */
+  it('carries in-storage mass, not pending mass, and is an allowlist', () => {
+    const payload = storageAgeingEventPayload({
+      projectId: 'p1',
+      assetId: 'a1',
+      ownerCompanyId: 'c1',
+      recordingCompanyId: 'c2',
+      daysInStorage: 42,
+      inStorageKg: 240,
+      quantity: 8,
+      onDate: '2026-04-12',
+    });
+    expect(payload.inStorageKg).toBe(240);
+    expect(Object.keys(payload).sort()).toEqual([
+      'assetId',
+      'daysInStorage',
+      'inStorageKg',
+      'onDate',
+      'ownerCompanyId',
+      'projectId',
+      'quantity',
+      'recordingCompanyId',
+    ]);
+  });
+
+  it('reports an unweighed line as null mass rather than as zero', () => {
+    const payload = storageAgeingEventPayload({
+      projectId: 'p1',
+      assetId: 'a1',
+      ownerCompanyId: 'c1',
+      recordingCompanyId: 'c1',
+      daysInStorage: 31,
+      inStorageKg: null,
+      quantity: 3,
+      onDate: '2026-04-12',
+    });
+    expect(payload.inStorageKg).toBeNull();
   });
 });

@@ -370,6 +370,48 @@ export async function seedProjectSections(email: string, projectId: string): Pro
     body: JSON.stringify({ delays: 'Crane arrived at 10:00', reason: 'Recorded the next morning' }),
   });
   if (!amend.ok) throw new Error(`amend failed: ${amend.status} ${await amend.text()}`);
+
+  /*
+   * Assets (§25), and this one is seeded as a **split** rather than as a single
+   * line, because the state worth scanning is the one with something in every
+   * table: a register row, a movement sub-table under it, six rates, a
+   * destination breakdown and the named gaps. A line with no movements renders
+   * three empty tables, which passes axe and proves nothing — the same argument
+   * the note above this function makes about a gallery with no tiles.
+   *
+   * Thirty donated and eight stored, so storage is present as the case that
+   * counts toward no rate at all and therefore renders the gap sentence.
+   */
+  const destinations = await fetch(`${API_URL}/v1/destination-types`, { headers });
+  const byCode = Object.fromEntries(
+    (((await destinations.json()) as { destinationTypes: { code: string; id: string }[] })
+      .destinationTypes).map((d) => [d.code, d.id])
+  );
+  const types = await fetch(`${API_URL}/v1/asset-types`, { headers });
+  const typeByCode = Object.fromEntries(
+    (((await types.json()) as { assetTypes: { code: string; id: string }[] }).assetTypes).map(
+      (t) => [t.code, t.id]
+    )
+  );
+
+  const chairs = await post(`/v1/projects/${projectId}/assets`, {
+    assetTypeId: typeByCode.OPERATOR_CHAIR,
+    quantity: 38,
+    weightBasis: 'UNIT',
+    unitWeightKg: 16.5,
+    weightSource: 'USER_ESTIMATE',
+    originLocationId: floor.location.id,
+  });
+  await post(`/v1/assets/${chairs.asset.id}/movements`, {
+    destinationTypeId: byCode.DONATION,
+    quantity: 30,
+    movedOn: '2026-03-04',
+  });
+  await post(`/v1/assets/${chairs.asset.id}/movements`, {
+    destinationTypeId: byCode.STORAGE,
+    quantity: 8,
+    movedOn: '2026-03-06',
+  });
 }
 
 /** An access token and the active company for one account, over HTTP. */

@@ -3,6 +3,7 @@ import {
   openMovements,
   type DestinationSemantics,
   type MovementRow as PolicyMovement,
+  type MovementView,
   type OutcomeState,
 } from '@crewquo/shared';
 import type { Queryable } from '../../db';
@@ -83,40 +84,8 @@ function selectFrom(source: string): string {
               on c.continues_movement_id = m.id and c.deleted_at is null`;
 }
 
-export interface MovementView {
-  id: string;
-  assetId: string;
-  sequence: number;
-  continuesMovementId: string | null;
-  /** The movement that carries this one onward, derived from the chain. */
-  continuedById: string | null;
-  /** False once something continues it: it counts toward no ceiling and no metric. */
-  isOpen: boolean;
-  destinationTypeId: string;
-  destinationCode: string;
-  destinationName: string;
-  hierarchyTier: number | null;
-  isFinalOutcome: boolean;
-  destinationOrgId: string | null;
-  destinationOrgName: string | null;
-  destinationAddress: string | null;
-  fromLocationId: string | null;
-  quantity: number;
-  /** What the movement itself claims. Null means the line's rate applies. */
-  weightKg: number | null;
-  /** What it actually weighs — its own claim, or the derivation. */
-  effectiveWeightKg: number | null;
-  weightIsOverridden: boolean;
-  movedOn: string;
-  distanceKm: number | null;
-  documentId: string | null;
-  notes: string | null;
-  recordedByUserId: string | null;
-  revision: number;
-  deletedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
+/* Re-exported from `@crewquo/shared` as of 8.6 — see the note in `repo.ts`. */
+export type { MovementView };
 
 export function toMovementView(
   row: MovementRow,

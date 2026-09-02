@@ -2,6 +2,7 @@ import {
   describeAmendments,
   describeDiaryDay,
   describeExpiry,
+  describeStorageAgeing,
   describeSupersession,
   formatMassKg,
   type DocumentCategory,
@@ -9,7 +10,7 @@ import {
 import { PermanentDeliveryError } from '../delivery/model';
 import type { DeliveryHandler } from '../delivery/worker';
 import type { OutboxEvent } from '../delivery/repo';
-import { dispatchNotification, managerRecipients } from './dispatch';
+import { capabilityRecipients, dispatchNotification, managerRecipients } from './dispatch';
 import { resolveActionsForSubject } from './repo';
 import { findCompanyById } from '../companies/repo';
 import { companyDecisionMakers, counterpartyRecipients } from '../deletion/preconditions';
@@ -822,6 +823,78 @@ async function onAssetLinesRecorded(event: OutboxEvent): Promise<void> {
 }
 
 /**
+ * Material has been sitting in storage past the threshold (§25.4, packet §5–§6).
+ *
+ * **The only enforcement locked decision #18 has.** Storage counting toward no
+ * rate at all is correct and completely silent, so this is the item that says so
+ * out loud, once, with the mass named — *"1.34 t has been in storage 42 days.
+ * Where did it go?"*
+ *
+ * **The one asset kind that sets `requiresAction`**, because it is the one with
+ * something to do about it, and the doing closes it: recording where the material
+ * went is exactly the act the item is asking for.
+ *
+ * **Two recipient cohorts, chosen differently, and the difference is the point.**
+ * The project owner's copy goes to `sustainability.read` holders rather than to
+ * managers — this is a question about a diversion figure, and a Supervisor's
+ * bundle does not carry that capability while an analyst's does. The recording
+ * company gets the managers' copy, because it is the party that physically moved
+ * the material and knows which warehouse it is in.
+ *
+ * The body names no asset: no description, no serial, no destination
+ * organisation. The payload allowlist enforces that upstream, so there is nothing
+ * here to leak even by accident.
+ */
+async function onAssetStorageAgeing(event: OutboxEvent): Promise<void> {
+  const ownerCompanyId = required(event.payload, 'ownerCompanyId');
+  const recordingCompanyId = required(event.payload, 'recordingCompanyId');
+  const projectId = required(event.payload, 'projectId');
+  const assetId = required(event.payload, 'assetId');
+  const days = Number(event.payload.daysInStorage);
+  if (!Number.isFinite(days)) {
+    throw new PermanentDeliveryError('daysInStorage missing from payload — nothing to describe');
+  }
+  const inStorageKg =
+    typeof event.payload.inStorageKg === 'number' ? event.payload.inStorageKg : null;
+  const quantity = Number(event.payload.quantity ?? 0);
+
+  const title = describeStorageAgeing({ inStorageKg, quantity, daysInStorage: days });
+  const body =
+    'Material in storage counts toward no diversion rate until a final destination is recorded, so this project’s figures are currently a floor. Record where it went, or leave it — nothing is blocked either way.';
+
+  await dispatchNotification({
+    kind: 'asset.storage_ageing',
+    companyId: ownerCompanyId,
+    recipientUserIds: await capabilityRecipients(ownerCompanyId, 'sustainability.read'),
+    title,
+    body,
+    subjectType: 'PROJECT_ASSET',
+    subjectId: assetId,
+    actionUrl: `/projects/${projectId}?section=assets`,
+    topic: event.topic,
+    aggregateId: event.aggregateId,
+  });
+
+  if (recordingCompanyId !== ownerCompanyId) {
+    await dispatchNotification({
+      kind: 'asset.storage_ageing',
+      companyId: recordingCompanyId,
+      recipientUserIds: await managerRecipients(recordingCompanyId),
+      title,
+      body,
+      subjectType: 'PROJECT_ASSET',
+      subjectId: assetId,
+      actionUrl: `/projects/${projectId}?section=assets`,
+      topic: event.topic,
+      // A distinct aggregate suffix, or the dedupe key would make the second
+      // company's copy look like a redelivery of the first company's and silently
+      // drop it — the shape `document.expiring` and the closure notices use.
+      aggregateId: `${event.aggregateId}:recorder`,
+    });
+  }
+}
+
+/**
  * A closed day was changed (§23, packet §6).
  *
  * **Both the hiring company and the authoring company's own decision-makers**, and
@@ -911,6 +984,7 @@ export const NOTIFICATION_HANDLERS: ReadonlyMap<string, DeliveryHandler> = new M
   ['diary.closed', onDiaryClosed],
   ['diary.amended', onDiaryAmended],
   ['asset.lines_recorded', onAssetLinesRecorded],
+  ['asset.storage_ageing', onAssetStorageAgeing],
   ['auth.token_reuse', onAuthSecurityEvent],
   ['auth.session_revoked', onAuthSecurityEvent],
   ['auth.mfa_enrolled', onAuthSecurityEvent],

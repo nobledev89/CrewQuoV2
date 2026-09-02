@@ -48,6 +48,8 @@ import sharpModule from 'sharp';
 import { COMPANY_QUERIES, PERSONAL_QUERIES } from '../src/modules/data-export/queries';
 import { runStorageBatch } from '../src/modules/storage/worker';
 import { runDocumentExpiryBatch } from '../src/modules/documents/expiry';
+import { runStorageAgeingBatch } from '../src/modules/assets/storageAgeing';
+import { resolveOwnCapabilities } from '../src/modules/capabilities/resolve';
 import { storageBytesForCompany } from '../src/modules/storage/repo';
 
 /**
@@ -10591,6 +10593,184 @@ async function main(): Promise<void> {
   );
   eq('no table holds a roll-up: §7 classifies it derived, and §3 says you correct its inputs',
     mbNoTable[0]?.n, '0');
+
+  section('The asset catalog, and the storage that ages');
+
+  // ── 1. GET /v1/asset-types — the picker the register could not render ────
+  //
+  // Added in 8.6 because the web needed it: every write until then resolved one
+  // type by id or by code, so nothing on the API side had ever asked for the
+  // list, and a screen cannot render "42 × Operator chair" out of a uuid.
+  const atList = await call('GET', '/v1/asset-types', { ...asOwnerCtx });
+  eq('the asset catalog is readable', atList.status, 200);
+  eq('...and ships the twenty-two', (atList.json.assetTypes as unknown[]).length, 22);
+  const atRows = atList.json.assetTypes as {
+    code: string; isSystem: boolean; defaultUnitWeightKg: number | null; category: string;
+  }[];
+  check('every seeded row is marked as the system’s, so a customisation reads as a diff',
+    atRows.every((t) => t.isSystem), atRows.slice(0, 3));
+  /*
+   * §41.1 asserted on the wire rather than only in the seed: null, on all
+   * twenty-two, and never 0. A zero here is an invented figure that a hurried
+   * supervisor accepts and a client's report then carries as a tonne.
+   */
+  check('not one of them ships a default weight — null, never 0 (§25.1, §41.1)',
+    atRows.every((t) => t.defaultUnitWeightKg === null),
+    atRows.filter((t) => t.defaultUnitWeightKg !== null));
+  eq('...and the catalog is ordered for a picker rather than by id',
+    atRows[0]?.code, 'OPERATOR_CHAIR');
+
+  /*
+   * `project.read`, not `asset.write`, and no entitlement check. The catalog is
+   * reference data a reader needs to render a register at all, and the feature
+   * key is asked of a *project's* owner — a route with no project has no company
+   * to ask it of. The subcontractor is on the free Crew plan, which is the case
+   * that would break if this route ever grew one.
+   */
+  const atAsSub = await call('GET', '/v1/asset-types', { ...evSubCtx });
+  eq('a Crew-plan subcontractor can read the catalog: it is not what the feature protects',
+    atAsSub.status, 200);
+
+  // ── 2. The storage-ageing scan (§25.4, packet §5) ────────────────────────
+  //
+  // The only enforcement decision #18 has. Storage counting toward no rate is
+  // correct and completely silent, so this is the pass that looks.
+  //
+  // The eight desks went into storage on a fixed date months before this suite
+  // runs, which makes them the OUT-OF-WINDOW case first: past 90 days the item
+  // already raised stays in the list and the reminder stops being re-sent.
+  await runStorageAgeingBatch();
+  const { rows: agTooOld } = await db.query<{ n: string }>(
+    `select count(*)::text as n from delivery_outbox
+      where topic = 'asset.storage_ageing' and aggregate_id = $1`,
+    [mbDesks]
+  );
+  eq('material past 90 days stops being asked about rather than being asked louder',
+    agTooOld[0]?.n, '0');
+
+  // Backdated to exactly 42 days in the PROJECT OWNER's own zone, which is the
+  // only clock any of this is allowed to use — the rule the expiry ladder settled.
+  await db.query(
+    `update asset_movements
+        set moved_on = ((now() at time zone (
+              select coalesce(time_zone, 'UTC') from companies where id = $2
+            ))::date - interval '42 days')::date
+      where asset_id = $1`,
+    [mbDesks, evCompany]
+  );
+  const agPass = await runStorageAgeingBatch();
+  check('the scan finds a line six weeks into storage', agPass.ageing >= 1, agPass);
+  const { rows: agEvent } = await db.query<{ payload: Record<string, unknown>; idempotency_key: string }>(
+    `select payload, idempotency_key from delivery_outbox
+      where topic = 'asset.storage_ageing' and aggregate_id = $1`,
+    [mbDesks]
+  );
+  eq('...counting the days from the project owner’s calendar',
+    agEvent[0]?.payload?.daysInStorage, 42);
+  /*
+   * 240 kg, and the field is `inStorageKg` rather than the packet's `pendingKg`.
+   * Pending is storage PLUS everything with no destination at all; the sentence
+   * this feeds is true only of the first, and a line with desks stored and chairs
+   * never allocated would otherwise report the chairs as having been in a
+   * warehouse they were never in.
+   */
+  eq('...with the stored mass named, and it is the STORED mass, not the pending one',
+    agEvent[0]?.payload?.inStorageKg, 240);
+  check('...keyed on the asset and the date, so a nightly scan is safe to run nightly',
+    typeof agEvent[0]?.idempotency_key === 'string' &&
+      agEvent[0].idempotency_key.startsWith('asset.storage_ageing:' + mbDesks + ':'),
+    agEvent[0]?.idempotency_key);
+  check('...and nothing in the payload names what the material is (§11)',
+    !/desk|serial|manufacturer|description/i.test(JSON.stringify(agEvent[0]?.payload)),
+    agEvent[0]?.payload);
+
+  await runStorageAgeingBatch();
+  const { rows: agAgain } = await db.query<{ n: string }>(
+    `select count(*)::text as n from delivery_outbox
+      where topic = 'asset.storage_ageing' and aggregate_id = $1`,
+    [mbDesks]
+  );
+  eq('a second scan on the same day enqueues nothing new', agAgain[0]?.n, '1');
+
+  // ── 3. The Action Centre item, and the cohort it goes to ─────────────────
+  await drainWorkers();
+  const { rows: agNotice } = await db.query<{
+    company_id: string; title: string; requires_action: boolean; action_url: string;
+  }>(
+    `select company_id, title, requires_action, action_url from notifications
+      where kind = 'asset.storage_ageing' and subject_id = $1`,
+    [mbDesks]
+  );
+  check('the item names the mass and asks the question (§5)',
+    agNotice[0]?.title === '240.0 kg has been in storage 42 days. Where did it go?',
+    agNotice[0]?.title);
+  check('...and it is the one asset kind that requires action, because it has one',
+    agNotice.length > 0 && agNotice.every((n) => n.requires_action === true), agNotice);
+  check('...linking straight to the section that answers it',
+    agNotice[0]?.action_url?.includes('section=assets') === true, agNotice[0]?.action_url);
+  /*
+   * Recorded by the owner on the owner's own project, so there is exactly one
+   * copy. The second cohort — the recording company — is proved by its absence
+   * here rather than by a second fixture: a company recording on its own project
+   * is not told twice.
+   */
+  eq('a company recording on its own project gets one copy, not two',
+    new Set(agNotice.map((n) => n.company_id)).size, 1);
+
+  /*
+   * The recipient cohort is a CAPABILITY, not a role. §6 names the owner's
+   * `sustainability.read` holders, because this is a question about a diversion
+   * figure — and a Supervisor's bundle does not carry that while an analyst's
+   * does. Asserted against the resolved permission rather than against the role.
+   */
+  const { rows: agRecipients } = await db.query<{ recipient_user_id: string | null }>(
+    `select recipient_user_id from notifications
+      where kind = 'asset.storage_ageing' and subject_id = $1`,
+    [mbDesks]
+  );
+  const agFirstRecipient = agRecipients[0]?.recipient_user_id ?? undefined;
+  check('and it went to somebody who can actually read a diversion rate',
+    agFirstRecipient !== undefined &&
+      (await resolveOwnCapabilities(agFirstRecipient, evCompany)).includes('sustainability.read'),
+    agRecipients);
+
+  /*
+   * And the point of the whole pass: recording where it went closes the question.
+   * The storage leg is continued to RESALE, the line reaches a final outcome, and
+   * the next scan has nothing to ask about — while the handled mass has not moved
+   * by a gram, which is the invariant this phase is built to assert.
+   */
+  const { rows: agStorageLeg } = await db.query<{ id: string }>(
+    `select id from asset_movements where asset_id = $1 and deleted_at is null`,
+    [mbDesks]
+  );
+  await call('POST', `/v1/movements/${agStorageLeg[0]?.id}/continue`, {
+    ...asOwnerCtx,
+    body: { destinationTypeId: byCode.RESALE.id, quantity: 8, movedOn: '2026-03-20' },
+  });
+  const agAfter = await runStorageAgeingBatch();
+  const { rows: agAfterRows } = await db.query<{ n: string }>(
+    `select count(*)::text as n from delivery_outbox
+      where topic = 'asset.storage_ageing' and aggregate_id = $1`,
+    [mbDesks]
+  );
+  eq('recording where it went is what closes the question — nothing new is raised',
+    agAfterRows[0]?.n, '1');
+  /*
+   * Scoped as a DIFFERENCE rather than as a zero, and the first version of this
+   * assertion was wrong in a way worth keeping: the scan is global, so
+   * `ageing === 0` claims nothing else in the whole database is in storage, which
+   * a suite that has been recording movements for nine sections has no business
+   * asserting. One line left the candidate set; that is the claim.
+   */
+  eq('...and the line itself leaves the candidate set entirely',
+    agAfter.scanned, agPass.scanned - 1);
+  const agBalance = await call('GET', `/v1/projects/${mbProject}/mass-balance`, { ...asOwnerCtx });
+  eq('...with the handled mass unmoved by the continuation (the phase’s invariant)',
+    agBalance.json.massBalance.handledKg, 933);
+  eq('...240 kg out of storage and into reuse, and nothing left pending',
+    [agBalance.json.massBalance.inStorageKg, agBalance.json.massBalance.pendingKg], [0, 0]);
+
 
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);
