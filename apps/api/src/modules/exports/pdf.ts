@@ -1,4 +1,5 @@
-import { jsPDF } from 'jspdf';
+import type { jsPDF } from 'jspdf';
+import { createDocument, seedFromParts } from './document';
 import {
   EXPENSE_TABLE_HEAD,
   PRICING_GAP_NOTE,
@@ -255,9 +256,19 @@ function drawFooters(doc: jsPDF, model: ProjectExportModel): void {
   }
 }
 
-/** Render the model to PDF bytes. */
+/**
+ * Render the model to PDF bytes.
+ *
+ * **Deterministic**: identical model in, identical bytes out. The document's
+ * identity is seeded from the project and the model's own `generatedAt` rather
+ * than from a clock or a random number, which is what `document.ts` exists for —
+ * see its header, and `determinism.test.ts` for the assertion.
+ */
 export function renderProjectPdf(model: ProjectExportModel): Buffer {
-  const doc = new jsPDF({ unit: 'pt', format: 'a4', compress: true });
+  const doc = createDocument({
+    seal: seedFromParts('project-export', model.project.id, model.generatedAt),
+    createdAt: model.generatedAt,
+  });
   const c = new Cursor(doc);
 
   drawTitle(c, model);

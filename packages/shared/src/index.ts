@@ -36,3 +36,4 @@ export * from './assets';
 export * from './carbon-engine';
 export * from './sustainability';
 export * from './factor-import';
+export * from './reporting';
