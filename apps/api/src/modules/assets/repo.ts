@@ -490,3 +490,103 @@ export function countWeightsCiting(
     runner
   );
 }
+
+/**
+ * What cites this document, for the reader rather than for the refusal.
+ *
+ * **Scoped, where `countWeightsCiting` is not, and the asymmetry is the point.**
+ * The refusal must count every weight the document backs, including one on a line
+ * this caller cannot see — a provider deleting its own weighbridge ticket would
+ * otherwise silently strip the badge off the project owner's asset line, which is
+ * the exact failure the refusal exists to prevent. The *listing* is what the
+ * caller may be shown, so it carries §4's asset scope: the owner sees the
+ * project, a provider sees its own rows. A count that exceeds the rows listed is
+ * therefore possible and is honest — it says something you may not read depends
+ * on this, which is a better answer than a delete that appears to work.
+ */
+export interface DocumentCitations {
+  weights: {
+    assetId: string;
+    description: string | null;
+    assetTypeName: string;
+    weightConfidence: WeightConfidence | null;
+    totalWeightKg: number | null;
+  }[];
+  movements: {
+    movementId: string;
+    assetId: string;
+    assetTypeName: string;
+    destinationTypeName: string;
+    quantity: number;
+  }[];
+}
+
+export async function listDocumentCitations(
+  documentId: string,
+  projectId: string,
+  scope: AssetScope,
+  runner?: Queryable
+): Promise<DocumentCitations> {
+  const params: unknown[] = [documentId, projectId];
+  let scoped = '';
+  if (scope.kind === 'PROVIDER') {
+    params.push(scope.companyId);
+    scoped = ` and a.company_id = $${params.length}`;
+  }
+
+  const [weights, movements] = await Promise.all([
+    query<{
+      asset_id: string;
+      description: string | null;
+      type_name: string;
+      weight_confidence: WeightConfidence | null;
+      total_weight_kg: string | null;
+    }>(
+      `select a.id as asset_id, a.description, t.name as type_name,
+              a.weight_confidence, a.total_weight_kg
+         from project_assets a
+         join asset_types t on t.id = a.asset_type_id
+        where a.weight_document_id = $1 and a.project_id = $2
+          and a.deleted_at is null${scoped}
+        order by t.sort_order, a.created_at`,
+      params,
+      runner
+    ),
+    query<{
+      movement_id: string;
+      asset_id: string;
+      type_name: string;
+      destination_name: string;
+      quantity: string;
+    }>(
+      `select m.id as movement_id, m.asset_id, t.name as type_name,
+              d.name as destination_name, m.quantity
+         from asset_movements m
+         join project_assets a on a.id = m.asset_id
+         join asset_types t on t.id = a.asset_type_id
+         join destination_types d on d.id = m.destination_type_id
+        where m.document_id = $1 and a.project_id = $2
+          and m.deleted_at is null and a.deleted_at is null${scoped}
+        order by m.sequence`,
+      params,
+      runner
+    ),
+  ]);
+
+  return {
+    weights: weights.map((r) => ({
+      assetId: r.asset_id,
+      description: r.description,
+      assetTypeName: r.type_name,
+      weightConfidence: r.weight_confidence,
+      totalWeightKg: num(r.total_weight_kg),
+    })),
+    movements: movements.map((r) => ({
+      movementId: r.movement_id,
+      assetId: r.asset_id,
+      assetTypeName: r.type_name,
+      destinationTypeName: r.destination_name,
+      quantity: Number(r.quantity),
+    })),
+  };
+}

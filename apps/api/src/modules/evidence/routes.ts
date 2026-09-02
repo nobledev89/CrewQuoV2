@@ -10,6 +10,7 @@ import {
   publishEvidenceSchema,
   refuseAttachment,
   refuseFilter,
+  resolveAssetLink,
   updateEvidenceSchema,
   type EvidenceBatchRejection,
   type EvidenceView,
@@ -148,6 +149,8 @@ projectEvidenceRouter.get(
       uploadedByUserId: raw.uploadedByUserId,
       locationId: raw.locationId,
       diaryEntryId: raw.diaryEntryId,
+      assetId: raw.assetId,
+      assetMovementId: raw.assetMovementId,
       clientVisible:
         raw.clientVisible === undefined ? undefined : raw.clientVisible === 'true',
       batchClientId: raw.batchClientId,
@@ -212,37 +215,47 @@ projectEvidenceRouter.post(
         });
         const byId = new Map(candidates.map((c) => [c.id, c]));
 
-        // Locations are validated once for the batch, not once per photograph: a
-        // selection of forty usually shares one.
-        const locationIds = new Set(
-          input.items
-            .map((item) => applyBatchDefaults(input.defaults, item).locationId)
-            .filter((id): id is string => id !== null)
-        );
-        const validLocations = await validLocationIds(access.projectId, [...locationIds]);
+        /*
+         * The batch defaults are applied once per item, here, and every check
+         * below reads this array rather than recomputing them. `applyBatchDefaults`
+         * is pure, so recomputing was only ever waste — but it was waste that grew
+         * a pass per referenced table, and this step adds the fourth.
+         */
+        const metas = input.items.map((item) => applyBatchDefaults(input.defaults, item));
+        const distinct = (pick: (m: (typeof metas)[number]) => string | null): string[] => [
+          ...new Set(metas.map(pick).filter((id): id is string => id !== null)),
+        ];
 
         /*
-         * Diary days are validated the same way and for a sharper reason: a diary
-         * entry belongs to a project AND to an authoring company, so an id that is
-         * merely a real uuid could file this company's photographs under a
-         * counterparty's written-up day. Scoped by both, once for the batch.
+         * Four referenced tables, validated once for the batch rather than once
+         * per photograph — a selection of forty usually shares one of each — and
+         * each with its own scope rule:
+         *
+         *  · a **location** need only be on this project (0028's composite key
+         *    already refuses a cross-project parent; this is that table's edge);
+         *  · a **diary day** belongs to a project AND an authoring company, so an
+         *    id that is merely a real uuid could otherwise file this company's
+         *    photographs under a counterparty's written-up day;
+         *  · an **asset line** is scoped to what this caller may read — the owner
+         *    sees the project, a provider sees its own rows;
+         *  · a **movement** inherits that scope from its line, and comes back as
+         *    a map rather than a set because `resolveAssetLink` fills a missing
+         *    line in from it. Forty photographs of one weighbridge visit should
+         *    all be findable from the chairs, and none of them names the chairs.
          */
-        const diaryIds = new Set(
-          input.items
-            .map((item) => applyBatchDefaults(input.defaults, item).diaryEntryId)
-            .filter((id): id is string => id !== null)
-        );
-        const validDiaryEntries = await validDiaryEntryIds(
-          access.projectId,
-          ctx.companyId,
-          [...diaryIds]
-        );
+        const [validLocations, validDiaryEntries, validAssets, movementAssets] =
+          await Promise.all([
+            validLocationIds(access.projectId, distinct((m) => m.locationId)),
+            validDiaryEntryIds(access.projectId, ctx.companyId, distinct((m) => m.diaryEntryId)),
+            validAssetIds(access, ctx.companyId, distinct((m) => m.assetId)),
+            movementAssetIds(access, ctx.companyId, distinct((m) => m.assetMovementId)),
+          ]);
 
         const created: EvidenceView[] = [];
         const rejected: EvidenceBatchRejection[] = [];
 
         await withTransaction(async (client) => {
-          for (const item of input.items) {
+          for (const [index, item] of input.items.entries()) {
             const candidate = byId.get(item.fileId);
             if (!candidate) {
               rejected.push({
@@ -263,7 +276,7 @@ projectEvidenceRouter.post(
               continue;
             }
 
-            const meta = applyBatchDefaults(input.defaults, item);
+            const meta = metas[index]!;
             if (meta.locationId !== null && !validLocations.has(meta.locationId)) {
               rejected.push({
                 fileId: item.fileId,
@@ -280,6 +293,30 @@ projectEvidenceRouter.post(
               });
               continue;
             }
+            if (meta.assetId !== null && !validAssets.has(meta.assetId)) {
+              rejected.push({
+                fileId: item.fileId,
+                code: 'FILE_NOT_USABLE',
+                message: 'That asset line is not one you can record evidence against',
+              });
+              continue;
+            }
+            const link = resolveAssetLink({
+              assetId: meta.assetId,
+              assetMovementId: meta.assetMovementId,
+              movementAssetId:
+                meta.assetMovementId === null
+                  ? null
+                  : (movementAssets.get(meta.assetMovementId) ?? null),
+            });
+            if (!link.ok) {
+              rejected.push({
+                fileId: item.fileId,
+                code: 'FILE_NOT_USABLE',
+                message: link.message,
+              });
+              continue;
+            }
 
             const row = await insertEvidence(
               {
@@ -293,6 +330,8 @@ projectEvidenceRouter.post(
                 capturedAt: meta.capturedAt,
                 locationId: meta.locationId,
                 diaryEntryId: meta.diaryEntryId,
+                assetId: link.assetId,
+                assetMovementId: link.assetMovementId,
                 sortOrder: meta.sortOrder,
                 uploadedByUserId: ctx.userId,
                 batchClientId: input.batchClientId ?? null,
@@ -410,11 +449,41 @@ projectEvidenceRouter.patch(
         throw new AppError('VALIDATION', 'That diary day is not one of yours on this project');
       }
     }
+    /*
+     * The asset link is resolved for the whole selection, which is the point of
+     * doing it here: re-tagging thirty photographs onto one movement is one act,
+     * and the derived line has to be written to all thirty or the asset's gallery
+     * shows a different set from the movement's.
+     */
+    const patch = { ...input.patch };
+    if (patch.assetId === null && !('assetMovementId' in patch)) {
+      // Untagging the line takes the movement with it. A movement link is the
+      // more specific half of one claim, and 0036 refuses it outright without a
+      // line — so the alternative to clearing both is a 500 on a request whose
+      // meaning ("this is not of that asset") is perfectly clear.
+      patch.assetMovementId = null;
+    }
+    if (patch.assetId != null) {
+      const valid = await validAssetIds(access, ctx.companyId, [patch.assetId]);
+      if (!valid.has(patch.assetId)) {
+        throw new AppError('VALIDATION', 'That asset line is not one you can tag evidence to');
+      }
+    }
+    if (patch.assetMovementId != null) {
+      const movements = await movementAssetIds(access, ctx.companyId, [patch.assetMovementId]);
+      const link = resolveAssetLink({
+        assetId: patch.assetId ?? null,
+        assetMovementId: patch.assetMovementId,
+        movementAssetId: movements.get(patch.assetMovementId) ?? null,
+      });
+      if (!link.ok) throw new AppError('VALIDATION', link.message);
+      patch.assetId = link.assetId;
+    }
 
     const updated = await bulkUpdateEvidence({
       projectId: access.projectId,
       ids: input.ids,
-      patch: input.patch,
+      patch,
       editableCompanyId: access.isOwner ? null : ctx.companyId,
     });
 
@@ -424,7 +493,7 @@ projectEvidenceRouter.patch(
       action: 'evidence.updated',
       entityType: 'EVIDENCE',
       entityId: updated[0]?.id ?? null,
-      changes: { count: updated.length, patch: input.patch, evidenceIds: updated.map((r) => r.id) },
+      changes: { count: updated.length, patch, evidenceIds: updated.map((r) => r.id) },
       description: `${updated.length} evidence ${updated.length === 1 ? 'record' : 'records'} re-tagged`,
     });
     res.json({
@@ -629,6 +698,38 @@ evidenceRouter.patch(
         );
       }
     }
+    /*
+     * And here the two rules visibly part company. The diary check one block up
+     * is scoped to `row.company_id` — the uploader — because a diary entry is that
+     * company's own account of its day. The asset check is scoped to the
+     * **caller**, because an asset line is a measurement of a shared physical
+     * fact: 8.2 settled that the project owner may correct a subcontractor's line
+     * and may not touch its diary entry, and tagging is the same question.
+     */
+    if (fields.assetId === null && !('assetMovementId' in fields)) {
+      // Same rule as the bulk route, and 0036 is why it is a rule rather than a
+      // courtesy: the movement link cannot outlive the line it is a leg of.
+      fields.assetMovementId = null;
+    }
+    if (fields.assetId != null) {
+      const valid = await validAssetIds(access, ctx.companyId, [fields.assetId]);
+      if (!valid.has(fields.assetId)) {
+        throw new AppError('VALIDATION', 'That asset line is not one you can tag evidence to');
+      }
+    }
+    if (fields.assetMovementId != null) {
+      const movements = await movementAssetIds(access, ctx.companyId, [fields.assetMovementId]);
+      const link = resolveAssetLink({
+        // The line already on the row counts as named: correcting only the
+        // movement on a photograph that is already tagged to a line must not
+        // silently move it to a different one.
+        assetId: fields.assetId ?? row.asset_id,
+        assetMovementId: fields.assetMovementId,
+        movementAssetId: movements.get(fields.assetMovementId) ?? null,
+      });
+      if (!link.ok) throw new AppError('VALIDATION', link.message);
+      fields.assetId = link.assetId;
+    }
 
     const updated = await updateEvidence(id, fields, expectedRevision);
     if (!updated) {
@@ -801,6 +902,80 @@ async function validDiaryEntryIds(
     [projectId, companyId, ids]
   );
   return new Set(rows.map((r) => r.id));
+}
+
+/**
+ * The asset lines this caller may tag a photograph against (0034, 0035).
+ *
+ * **Scoped to the caller, and deliberately not to the row's owning company —
+ * which is the opposite of the rule one function up, and the difference is the
+ * kind of claim each record makes.** A diary entry is *a statement by a person
+ * about what they saw*, so filing a photograph under somebody else's written-up
+ * day puts it inside their narrative. An asset line is *a measurement of a shared
+ * physical fact* — the chairs are the chairs — which is exactly the reasoning 8.2
+ * used to let a project owner correct a subcontractor's line while refusing them
+ * its diary entry. So the owner curating the register may tag any photograph on
+ * the project against any line on it, and a provider is held to its own rows,
+ * which is `assets/repo.ts`'s `AssetScope` and §4's *"owner sees all; a provider
+ * sees its own rows"* asked in the direction an attacker would use it.
+ *
+ * The scope is applied in the statement rather than by filtering ids afterwards,
+ * so an id belonging to a rival subcontractor is simply absent from the result and
+ * is reported as unusable — never as forbidden, which would confirm it exists.
+ */
+function assetScopeClause(
+  access: ProjectAccess,
+  companyId: string,
+  params: unknown[],
+  alias: string
+): string {
+  if (access.isOwner) return '';
+  params.push(companyId);
+  return ` and ${alias}.company_id = $${params.length}`;
+}
+
+async function validAssetIds(
+  access: ProjectAccess,
+  companyId: string,
+  ids: string[]
+): Promise<Set<string>> {
+  if (ids.length === 0) return new Set();
+  const params: unknown[] = [access.projectId, ids];
+  const scope = assetScopeClause(access, companyId, params, 'a');
+  const rows = await query<{ id: string }>(
+    `select a.id from project_assets a
+      where a.project_id = $1 and a.id = any($2::uuid[]) and a.deleted_at is null${scope}`,
+    params
+  );
+  return new Set(rows.map((r) => r.id));
+}
+
+/**
+ * The line each of these movements sits on, for the caller who may reach it.
+ *
+ * Returns a map rather than a set because `resolveAssetLink` needs the *answer*,
+ * not merely permission: a movement named without a line fills its line in, and
+ * the fill has to come from the same scoped read that decided the movement was
+ * reachable at all. Reachability is inherited from the asset — a movement is not
+ * separately owned — so the join carries the scope and the movement row carries
+ * only its own tombstone.
+ */
+async function movementAssetIds(
+  access: ProjectAccess,
+  companyId: string,
+  ids: string[]
+): Promise<Map<string, string>> {
+  if (ids.length === 0) return new Map();
+  const params: unknown[] = [access.projectId, ids];
+  const scope = assetScopeClause(access, companyId, params, 'a');
+  const rows = await query<{ id: string; asset_id: string }>(
+    `select m.id, m.asset_id from asset_movements m
+       join project_assets a on a.id = m.asset_id
+      where a.project_id = $1 and m.id = any($2::uuid[])
+        and m.deleted_at is null and a.deleted_at is null${scope}`,
+    params
+  );
+  return new Map(rows.map((r) => [r.id, r.asset_id]));
 }
 
 /** Has any of this selection ever been disclosed? Decides which sentence to show. */

@@ -14,6 +14,7 @@ import {
   groupByEvidenceDate,
   refuseAttachment,
   refuseFilter,
+  resolveAssetLink,
   summariseBatch,
   updateEvidenceSchema,
   type EvidenceView,
@@ -36,6 +37,8 @@ function view(overrides: Partial<EvidenceView> = {}): EvidenceView {
     createdAt: '2026-03-05T09:00:00.000Z',
     locationId: null,
     diaryEntryId: null,
+    assetId: null,
+    assetMovementId: null,
     gpsLat: null,
     gpsLng: null,
     gpsAccuracyM: null,
@@ -360,5 +363,84 @@ describe('the three timestamps', () => {
     expect(isServerAttested('capturedAt')).toBe(false);
     expect(EVIDENCE_TIMESTAMP_PROVENANCE.capturedAt.attested).toBe(false);
     expect(EVIDENCE_TIMESTAMP_PROVENANCE.evidenceDate.attested).toBe(false);
+  });
+});
+
+describe('resolveAssetLink — one link at two depths', () => {
+  const ASSET = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const OTHER = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const MOVE = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+
+  it('passes a bare line through untouched', () => {
+    expect(resolveAssetLink({ assetId: ASSET, assetMovementId: null, movementAssetId: null }))
+      .toEqual({ ok: true, assetId: ASSET, assetMovementId: null });
+  });
+
+  it('passes no link at all through untouched', () => {
+    expect(resolveAssetLink({ assetId: null, assetMovementId: null, movementAssetId: null }))
+      .toEqual({ ok: true, assetId: null, assetMovementId: null });
+  });
+
+  /*
+   * The derivation, and the reason it is not a convenience. A photograph of the
+   * weighbridge tagged only to the movement is invisible in the asset's own
+   * gallery, and nothing about that gap has a symptom — the person who took it
+   * concludes the upload failed.
+   */
+  it('fills the line in from a movement named alone', () => {
+    expect(resolveAssetLink({ assetId: null, assetMovementId: MOVE, movementAssetId: ASSET }))
+      .toEqual({ ok: true, assetId: ASSET, assetMovementId: MOVE });
+  });
+
+  it('accepts a pair that agrees', () => {
+    expect(resolveAssetLink({ assetId: ASSET, assetMovementId: MOVE, movementAssetId: ASSET }))
+      .toEqual({ ok: true, assetId: ASSET, assetMovementId: MOVE });
+  });
+
+  it('refuses a pair that disagrees rather than picking a winner', () => {
+    const out = resolveAssetLink({
+      assetId: OTHER,
+      assetMovementId: MOVE,
+      movementAssetId: ASSET,
+    });
+    expect(out.ok).toBe(false);
+    expect(out.ok === false && out.message).toContain('not on the asset line you named');
+  });
+
+  /* An unreachable movement and a forged one are deliberately the same answer. */
+  it('refuses a movement this caller cannot reach', () => {
+    const out = resolveAssetLink({
+      assetId: null,
+      assetMovementId: MOVE,
+      movementAssetId: null,
+    });
+    expect(out.ok).toBe(false);
+    expect(out.ok === false && out.message).toContain('not one you can record evidence against');
+  });
+
+  it('refuses an unreachable movement even when a line is named', () => {
+    const out = resolveAssetLink({
+      assetId: ASSET,
+      assetMovementId: MOVE,
+      movementAssetId: null,
+    });
+    expect(out.ok).toBe(false);
+  });
+});
+
+describe('the asset link is batch-defaultable, and an explicit clear survives', () => {
+  const ASSET = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+  it('applies the batch default to an item that says nothing', () => {
+    expect(applyBatchDefaults({ assetId: ASSET }, {}).assetId).toBe(ASSET);
+  });
+
+  /*
+   * The same distinction `locationId` is pinned on: `undefined` is silence and
+   * takes the batch's value, `null` is somebody saying *this one is not of the
+   * chairs*. Conflating them re-applies a tag the uploader deliberately removed.
+   */
+  it('honours an explicit null over the batch default', () => {
+    expect(applyBatchDefaults({ assetId: ASSET }, { assetId: null }).assetId).toBeNull();
   });
 });

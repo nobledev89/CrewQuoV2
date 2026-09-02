@@ -10099,6 +10099,296 @@ async function main(): Promise<void> {
   eq('...and asset_movements has no vehicle_id, whose table is Phase 11',
     mvNoVehicle[0]?.n, '0');
 
+
+  // ── Asset links (§22.2, 0035) — Phase 8 build order step 4 ────────────────
+  section('Asset links — evidence both ways, and the badge that cannot outlive its document');
+
+  /*
+   * `0030` withheld these two foreign keys on a rule: a column nothing writes and
+   * nothing reads is indistinguishable, on inspection, from one whose writer is
+   * broken. `0035` added them; this is the writer and the reader that were the
+   * condition of their landing.
+   */
+
+  // ── 1. A photograph of the chairs, and the asset reading it back ─────────
+  const alChairPhoto = await uploadPhoto(evSubCtx, `chairs-${RUN}.png`, evPhoto);
+  const alTagged = await call('POST', `/v1/projects/${evProject}/evidence`, {
+    ...evSubCtx,
+    body: {
+      batchClientId: randomUUID(),
+      items: [{ fileId: alChairPhoto, category: 'ASSET', assetId: mvAsset }],
+    },
+  });
+  eq('a photograph is tagged to the asset line it is of', alTagged.status, 201);
+  eq('...and carries the line', alTagged.json.created[0]?.assetId, mvAsset);
+  eq('...claiming no particular movement', alTagged.json.created[0]?.assetMovementId, null);
+  const alTaggedId = alTagged.json.created[0]?.id as string;
+
+  // The reverse direction, and the reason the asset side needs no route of its
+  // own: the evidence filter already carries §7's rules about who may see a
+  // photograph, and a join from the asset would have had to re-derive them.
+  const alByAsset = await call(
+    'GET', `/v1/projects/${evProject}/evidence?assetId=${mvAsset}`, { ...evSubCtx });
+  eq('the line reads its own photographs back through the evidence filter',
+    (alByAsset.json.evidence as unknown[]).length, 1);
+  eq('...and it is the one just tagged', alByAsset.json.evidence[0]?.id, alTaggedId);
+
+  // ── 2. A movement named alone fills its line in ──────────────────────────
+  //
+  // A movement belongs to exactly one line, so the pair is over-determined and
+  // the database holds the answer. Leaving it null would put a photograph of the
+  // weighbridge outside the chairs' own gallery — a gap with no symptom, found by
+  // somebody who concludes the upload failed.
+  const alMoveId = mvRecycled.json.movement.id as string;
+  const alMovePhoto = await uploadPhoto(evSubCtx, `recycling-${RUN}.png`, evPhoto);
+  const alMoveTagged = await call('POST', `/v1/projects/${evProject}/evidence`, {
+    ...evSubCtx,
+    body: {
+      batchClientId: randomUUID(),
+      items: [{ fileId: alMovePhoto, category: 'RECYCLING', assetMovementId: alMoveId }],
+    },
+  });
+  eq('a photograph is tagged to one leg of the journey', alMoveTagged.status, 201);
+  eq('...and the line is derived from the movement, not left null',
+    alMoveTagged.json.created[0]?.assetId, mvAsset);
+  eq('...with the movement kept as the more specific claim',
+    alMoveTagged.json.created[0]?.assetMovementId, alMoveId);
+  eq('...so the line now shows both photographs',
+    ((await call('GET', `/v1/projects/${evProject}/evidence?assetId=${mvAsset}`,
+      { ...evSubCtx })).json.evidence as unknown[]).length, 2);
+  eq('...while the movement filter shows only its own',
+    ((await call('GET', `/v1/projects/${evProject}/evidence?assetMovementId=${alMoveId}`,
+      { ...evSubCtx })).json.evidence as unknown[]).length, 1);
+
+  // ── 3. A pair that disagrees is refused, and the batch keeps the rest ────
+  const alGoodFile = await uploadPhoto(evSubCtx, `good-${RUN}.png`, evPhoto);
+  const alClashFile = await uploadPhoto(evSubCtx, `clash-${RUN}.png`, evPhoto);
+  const alClash = await call('POST', `/v1/projects/${evProject}/evidence`, {
+    ...evSubCtx,
+    body: {
+      batchClientId: randomUUID(),
+      items: [
+        { fileId: alGoodFile, category: 'ASSET', assetId: mvAsset },
+        {
+          fileId: alClashFile, category: 'ASSET',
+          assetId: mvDeskAsset, assetMovementId: alMoveId,
+        },
+      ],
+    },
+  });
+  eq('a batch with one contradictory row still keeps the good one',
+    [alClash.json.created.length, alClash.json.rejected.length], [1, 1]);
+  check('...and the refusal says which half contradicted the other',
+    String(alClash.json.rejected[0]?.message).includes('not on the asset line you named'),
+    alClash.json.rejected[0]);
+
+  // ── 4. Scope, in both directions, on one asset line ──────────────────────
+  //
+  // The owner's own line. A provider may not tag anything to it; the owner may
+  // tag a provider's photograph to it — which is the OPPOSITE of the diary rule
+  // one join away, and deliberately so. A diary entry is a statement by a person
+  // about what they saw; an asset line is a measurement of a shared physical
+  // fact, which is why 8.2 already lets the owner correct a subcontractor's line
+  // and not its diary entry.
+  const alOwnerLine = await call('POST', `/v1/projects/${evProject}/assets`, {
+    ...asOwnerCtx,
+    body: { assetTypeId: DESK, quantity: 4, weightBasis: 'UNIT', unitWeightKg: 30 },
+  });
+  eq('the owner records a line of its own', alOwnerLine.status, 201);
+  const alOwnerLineId = alOwnerLine.json.asset.id as string;
+
+  const alRivalFile = await uploadPhoto(evSubCtx, `not-mine-${RUN}.png`, evPhoto);
+  const alRivalTag = await call('POST', `/v1/projects/${evProject}/evidence`, {
+    ...evSubCtx,
+    body: {
+      batchClientId: randomUUID(),
+      items: [{ fileId: alRivalFile, category: 'ASSET', assetId: alOwnerLineId }],
+    },
+  });
+  eq('a subcontractor cannot tag its photograph to a line that is not its own',
+    alRivalTag.json.rejected.length, 1);
+  check('...and is told the id is unusable rather than forbidden, which would confirm it',
+    String(alRivalTag.json.rejected[0]?.message).includes('not one you can record evidence against'),
+    alRivalTag.json.rejected[0]);
+
+  const alOwnerTag = await call('PATCH', `/v1/evidence/${alTaggedId}`, {
+    ...asOwnerCtx,
+    body: { assetId: alOwnerLineId },
+  });
+  eq('the project owner may tag a subcontractor’s photograph to the owner’s own line',
+    alOwnerTag.status, 200);
+  eq('...because an asset line is a shared physical fact, not somebody’s account of it',
+    alOwnerTag.json.evidence.assetId, alOwnerLineId);
+  // Put it back, so the filters and citations below read the register they are about.
+  await call('PATCH', `/v1/evidence/${alTaggedId}`, {
+    ...asOwnerCtx, body: { assetId: mvAsset },
+  });
+
+  // ── 5. The photograph outlives the line it is of ─────────────────────────
+  const alTempLine = await call('POST', `/v1/projects/${evProject}/assets`, {
+    ...evSubCtx,
+    body: { assetTypeId: DESK, quantity: 2, weightBasis: 'UNIT', unitWeightKg: 30 },
+  });
+  const alTempLineId = alTempLine.json.asset.id as string;
+  const alTempFile = await uploadPhoto(evSubCtx, `temp-line-${RUN}.png`, evPhoto);
+  const alTempEv = await call('POST', `/v1/projects/${evProject}/evidence`, {
+    ...evSubCtx,
+    body: {
+      batchClientId: randomUUID(),
+      items: [{ fileId: alTempFile, category: 'ASSET', assetId: alTempLineId }],
+    },
+  });
+  const alTempEvId = alTempEv.json.created[0]?.id as string;
+  eq('the line is removed',
+    (await call('DELETE', `/v1/assets/${alTempLineId}`, { ...evSubCtx })).status, 204);
+  const alAfterTombstone = await call('GET', `/v1/evidence/${alTempEvId}`, { ...evSubCtx });
+  eq('...and the photograph of it is still a photograph of the day’s work',
+    alAfterTombstone.status, 200);
+  eq('...still naming the line, because a tombstone is a record rather than an absence',
+    alAfterTombstone.json.evidence.assetId, alTempLineId);
+  const { rows: alFk } = await db.query<{ column_name: string; delete_rule: string }>(
+    `select k.column_name, rc.delete_rule
+       from information_schema.referential_constraints rc
+       join information_schema.key_column_usage k on k.constraint_name = rc.constraint_name
+      where k.table_name = 'project_evidence'
+        and k.column_name in ('asset_id','asset_movement_id')
+      order by k.column_name`
+  );
+  eq('and a hard delete would blank the link rather than take the photograph with it',
+    alFk.map((r) => `${r.column_name}:${r.delete_rule}`),
+    ['asset_id:SET NULL', 'asset_movement_id:SET NULL']);
+
+  // ── 6. The document, cited from a weight and from a movement ─────────────
+  const alTicketId = (await call('POST', `/v1/projects/${evProject}/documents`, {
+    ...evSubCtx,
+    body: {
+      fileId: await uploadDoc(evSubCtx, 'weighbridge-ticket.pdf',
+        Buffer.from('%PDF-1.4 weighbridge', 'ascii')),
+      category: 'WEIGHBRIDGE_TICKET',
+      title: 'Weighbridge ticket 88213',
+      reference: 'WB-88213',
+      issuedOn: '2026-03-05',
+      clientId: randomUUID(),
+    },
+  })).json.document.id as string;
+
+  const alCiteWeight = await call('PATCH', `/v1/assets/${alOwnerLineId}`, {
+    ...asOwnerCtx,
+    body: {
+      weightBasis: 'TOTAL', totalWeightKg: 118.4,
+      weightSource: 'WEIGHBRIDGE', weightDocumentId: alTicketId,
+    },
+  });
+  eq('the owner rests its own weight on the subcontractor’s ticket', alCiteWeight.status, 200);
+  eq('...and a weighbridge figure with the ticket attached is VERIFIED',
+    alCiteWeight.json.asset.weightConfidence, 'VERIFIED');
+  eq('...naming the document version that was on the table',
+    alCiteWeight.json.asset.weightDocumentId, alTicketId);
+  eq('...which has not been re-issued', alCiteWeight.json.asset.weightDocumentSuperseded, false);
+
+  const alCiteMovement = await call('PATCH', `/v1/movements/${alMoveId}`, {
+    ...evSubCtx, body: { documentId: alTicketId },
+  });
+  eq('the same ticket documents the movement it weighed', alCiteMovement.status, 200);
+
+  // ── 7. Citations, read from the document's end and scoped to the reader ──
+  const alCitesOwner = await call('GET', `/v1/documents/${alTicketId}/citations`, { ...asOwnerCtx });
+  eq('the owner sees what rests on the ticket', alCitesOwner.status, 200);
+  eq('...one weight and one movement',
+    [alCitesOwner.json.citations.weights.length, alCitesOwner.json.citations.movements.length],
+    [1, 1]);
+  eq('...and the weight is named by line, not merely counted',
+    alCitesOwner.json.citations.weights[0]?.assetId, alOwnerLineId);
+  eq('...with the confidence that rests on it, which is the thing at risk',
+    alCitesOwner.json.citations.weights[0]?.weightConfidence, 'VERIFIED');
+
+  const alCitesSub = await call('GET', `/v1/documents/${alTicketId}/citations`, { ...evSubCtx });
+  eq('the subcontractor may read the citations of its own document', alCitesSub.status, 200);
+  eq('...but sees only its own rows: the owner’s line is not its business',
+    [alCitesSub.json.citations.weights.length, alCitesSub.json.citations.movements.length],
+    [0, 1]);
+
+  // ── 8. The refusal, counted over rows the deleter cannot see ─────────────
+  //
+  // Packet §0 finding 5. Every other broken link here is disclosed rather than
+  // refused; this one cannot be, because a VERIFIED weight is a stored LABEL
+  // rather than a reference — delete the document and the line goes on claiming a
+  // provenance that no longer exists. The count is deliberately NOT scoped to the
+  // deleter: scoping it is exactly how this delete would succeed.
+  const alRefused = await call('DELETE', `/v1/documents/${alTicketId}`, { ...evSubCtx });
+  eq('deleting a document a documented weight rests on is refused', alRefused.status, 409);
+  check('...in §9’s own words, with the count',
+    String(alRefused.json?.error?.message).includes('documented weight on 1 asset line'),
+    alRefused.json?.error?.message);
+  eq('...and the count includes a line this deleter cannot even read',
+    alRefused.json?.error?.details?.citedByWeights, 1);
+
+  // ── 9. The way out is an edit to the claim, not a permission ─────────────
+  const alLower = await call('PATCH', `/v1/assets/${alOwnerLineId}`, {
+    ...asOwnerCtx,
+    body: { weightSource: 'USER_ESTIMATE', weightDocumentId: null },
+  });
+  eq('the owner lowers the claim to what it can still support', alLower.status, 200);
+  eq('...which is an estimate', alLower.json.asset.weightConfidence, 'ESTIMATED');
+
+  const alDeleted = await call('DELETE', `/v1/documents/${alTicketId}`, { ...evSubCtx });
+  eq('...and the document can then be withdrawn', alDeleted.status, 204);
+
+  /*
+   * The movement's link is the case that is DISCLOSED rather than refused, and
+   * this is the assertion of that boundary. A movement's document is a reference:
+   * its absence is visible on the movement. A weight's confidence is a label: its
+   * absence is not visible anywhere, which is why only that one blocks a delete.
+   */
+  const alMovementAfter = await call('GET', `/v1/assets/${mvAsset}/movements`, { ...evSubCtx });
+  eq('a movement still names the document it was recorded against',
+    (alMovementAfter.json.movements as { id: string; documentId: string }[])
+      .find((m) => m.id === alMoveId)?.documentId,
+    alTicketId);
+
+
+  // ── 10. A movement link cannot outlive the line it is a leg of (0036) ────
+  //
+  // The pair is over-determined and the routes can clear either half, so
+  // "untag the line, keep the movement" is one request away from a photograph
+  // that is absent from the asset's gallery and present in the movement's — a
+  // disagreement between two screens rather than an error anybody sees.
+  const alUntag = await call('PATCH', `/v1/evidence/${alMoveTagged.json.created[0].id}`, {
+    ...evSubCtx, body: { assetId: null },
+  });
+  eq('untagging the line succeeds', alUntag.status, 200);
+  eq('...and takes the movement with it rather than orphaning the specific claim',
+    [alUntag.json.evidence.assetId, alUntag.json.evidence.assetMovementId], [null, null]);
+
+  const { rows: alOrphan } = await db.query<{ n: string }>(
+    `select count(*)::text as n from project_evidence
+      where asset_movement_id is not null and asset_id is null`
+  );
+  eq('...and no row anywhere holds a movement without its line', alOrphan[0]?.n, '0');
+
+  /*
+   * And the route is not the only thing saying so. `0036` is a check constraint
+   * because a rule enforced only by the handler that happens to be written today
+   * is one the next handler re-decides — the same argument `0031` made for the
+   * chain's unique index and `0035` made for the ledger's.
+   */
+  await db.query(
+    `update project_evidence set asset_id = $2, asset_movement_id = $3 where id = $1`,
+    [alTaggedId, mvAsset, alMoveId]
+  );
+  let alConstraintError = '';
+  try {
+    await db.query(`update project_evidence set asset_id = null where id = $1`, [alTaggedId]);
+  } catch (err) {
+    // Named, not merely caught. A guard asserted as "something threw" is an
+    // assertion that the statement is malformed, not that the rule is watching.
+    alConstraintError = String((err as { constraint?: string }).constraint ?? err);
+  }
+  eq('the database refuses the orphan directly, not only the route',
+    alConstraintError, 'project_evidence_movement_implies_asset');
+  await db.query(
+    `update project_evidence set asset_movement_id = null where id = $1`, [alTaggedId]);
+
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);
   if (failures.length === 0) {

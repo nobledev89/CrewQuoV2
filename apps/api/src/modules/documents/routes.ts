@@ -31,6 +31,7 @@ import {
   type DocumentRow,
   type DocumentScope,
 } from './repo';
+import { countWeightsCiting, listDocumentCitations } from '../assets/repo';
 
 /**
  * Project documents (§24) — step 5 of the Phase 7 build order.
@@ -287,6 +288,36 @@ documentsRouter.get(
 );
 
 /**
+ * GET /v1/documents/:id/citations — the link, read from the document's end.
+ *
+ * The asset side of this link needs no route: an asset line already carries its
+ * `weightDocumentId`, and a movement its `documentId`. This is the other
+ * direction, and it exists for one concrete moment — somebody about to delete a
+ * weighbridge ticket, who is entitled to know what rests on it *before* the
+ * refusal tells them. A DELETE that fails with a count and no way to see the rows
+ * is a wall; this is the route out of it.
+ *
+ * Scoped to what the caller may read, so a provider sees its own lines and the
+ * owner sees the project. The refusal that follows counts more than this lists,
+ * deliberately — see `listDocumentCitations`.
+ */
+documentsRouter.get(
+  '/:id/citations',
+  asyncHandler(async (req, res) => {
+    const ctx = getCompanyCtx(req);
+    const { row, access } = await readableDocument(uuidParam(req, 'id'), ctx.companyId);
+    await assertCapability(ctx, 'project.read');
+
+    const citations = await listDocumentCitations(
+      row.id,
+      row.project_id,
+      access.isOwner ? { kind: 'OWNER' } : { kind: 'PROVIDER', companyId: ctx.companyId }
+    );
+    res.json({ citations });
+  })
+);
+
+/**
  * POST /v1/documents/:id/versions — re-issue.
  *
  * Metadata is inherited from the predecessor where the caller does not say
@@ -501,6 +532,38 @@ documentsRouter.delete(
     const id = uuidParam(req, 'id');
     const { row, access } = await readableDocument(id, ctx.companyId);
     await assertWritable(ctx, row, access);
+
+    /*
+     * ── The one delete this phase refuses (assets-materials.md §0 finding 5) ──
+     *
+     * A `VERIFIED` or `DOCUMENTED` weight is a stored *label* saying a document
+     * backs it. Tombstone the document and the label stays, so the asset line goes
+     * on claiming a provenance that no longer exists — **an undocumented weight
+     * wearing a badge**, and one nobody would ever look at again to discover.
+     * Every other broken link in this codebase is disclosed rather than refused,
+     * including the superseded-document case one join away; this one cannot be,
+     * because the damage is to a claim rather than to a reference.
+     *
+     * The count is unscoped on purpose. A provider deleting its own weighbridge
+     * ticket must be refused when the *project owner's* line rests on it, and
+     * scoping the count to what the deleter may read is exactly how that delete
+     * would succeed. What the number does not do is name whose line it is —
+     * `/citations` answers that, under the caller's own scope.
+     *
+     * The way out is not a permission: it is to lower the weight's confidence, or
+     * re-point it at the version that replaced this one. Both are edits to the
+     * asset line, which is where the claim actually lives.
+     */
+    const citing = Number((await countWeightsCiting(id))?.n ?? '0');
+    if (citing > 0) {
+      throw new AppError(
+        'CONFLICT',
+        `This is the evidence for a documented weight on ${citing} asset ${
+          citing === 1 ? 'line' : 'lines'
+        }. Change the weight’s confidence or cite another document first.`,
+        { citedByWeights: citing }
+      );
+    }
 
     /*
      * Deleting a version is a tombstone, and the partial unique index on

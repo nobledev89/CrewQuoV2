@@ -131,7 +131,20 @@ services:
       # Source only, never node_modules. The image installed its own for this
       # platform; mounting the host's Windows tree over it would replace a working
       # symlink farm with one pointing at paths that do not exist in the container.
-      # These three are every directory `tsx watch` needs to see a change in.
+      # These three are every directory the API reads its own source from.
+      #
+      # THEY ARE MOUNTED, NOT WATCHED, AND THAT DISTINCTION COSTS A TEST RUN.
+      # The container runs `start:source`, which is plain `tsx` — there is no
+      # `tsx watch` here. A mounted change is visible on disk immediately and is
+      # NOT loaded until the process restarts, so `docker compose restart api` is
+      # required after every edit to `apps/api/src` OR `packages/shared/src`.
+      #
+      # The failure this produces is the bad kind: current routes serving a stale
+      # `@crewquo/shared`, so a schema silently strips a field it does not know
+      # about and the write succeeds having ignored half of it. And the obvious
+      # check does not catch it — an unauthenticated request to a new `/v1` route
+      # answers **401 whether or not the route is mounted**, because auth runs
+      # before routing, so a 401 is not evidence that a restart happened.
       - ../apps/api/src:/repo/apps/api/src:ro
       - ../apps/api/scripts:/repo/apps/api/scripts:ro
       - ../packages/shared/src:/repo/packages/shared/src:ro
@@ -143,7 +156,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 6
-      # Generous, because a cold `tsx watch` compiles the whole API on first boot.
+      # Generous, because a cold `tsx` compiles the whole API on first boot.
       start_period: 40s
 
 volumes:

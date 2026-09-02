@@ -117,6 +117,28 @@ export const evidenceViewSchema = z.object({
   diaryEntryId: z.string().uuid().nullable(),
 
   /**
+   * The asset line, and the individual movement, this photograph is of (§22.2,
+   * 0035).
+   *
+   * The second and third of §22.2's five back-references, and the pair `0030`
+   * withheld on the rule that *"a column nothing writes and nothing reads is
+   * indistinguishable, on inspection, from one whose writer is broken."* The
+   * columns landed with `asset_movements`; this is the writer and the reader that
+   * were the condition of their landing.
+   *
+   * **They are one link at two depths, not two links.** `assetId` is *what* was
+   * photographed — 42 chairs on Floor 2 — and it is the useful tag for almost
+   * every photograph, taken before anything has been decided about where they
+   * go. `assetMovementId` is *this leg of their journey*: the van being loaded,
+   * the weighbridge display, the donation receipt being signed. A movement
+   * belongs to exactly one asset line, so naming a movement always implies a
+   * line, and `resolveAssetLink` fills the line in rather than leaving a
+   * photograph that the asset's own gallery cannot find.
+   */
+  assetId: z.string().uuid().nullable(),
+  assetMovementId: z.string().uuid().nullable(),
+
+  /**
    * GPS, captured by nothing in this phase (§13.7).
    *
    * The columns exist because the shape of the record is decided here and a
@@ -245,6 +267,14 @@ export const evidenceMetadataSchema = z.object({
   locationId: z.string().uuid().nullable(),
   /** The diary day this belongs to (0032). Batch-defaultable like the location. */
   diaryEntryId: z.string().uuid().nullable(),
+  /**
+   * The asset line and movement this is of (0035). Batch-defaultable for the same
+   * reason the location is: a selection of forty photographs of one clearance is
+   * forty photographs of one asset line, and tagging them one at a time is the
+   * work nobody does.
+   */
+  assetId: z.string().uuid().nullable(),
+  assetMovementId: z.string().uuid().nullable(),
   sortOrder: z.number().int().min(0).max(100000),
 });
 export type EvidenceMetadata = z.infer<typeof evidenceMetadataSchema>;
@@ -300,8 +330,56 @@ export function applyBatchDefaults(
     capturedAt: pick('capturedAt') ?? null,
     locationId: pick('locationId') ?? null,
     diaryEntryId: pick('diaryEntryId') ?? null,
+    assetId: pick('assetId') ?? null,
+    assetMovementId: pick('assetMovementId') ?? null,
     sortOrder: pick('sortOrder') ?? 0,
   };
+}
+
+// ── The asset link, which is one link at two depths ──────────────────────────
+
+export type AssetLinkResolution =
+  | { ok: true; assetId: string | null; assetMovementId: string | null }
+  | { ok: false; message: string };
+
+/**
+ * Reconcile the two halves of the asset link before anything is written.
+ *
+ * A movement belongs to exactly one asset line — `asset_movements.asset_id` is
+ * `not null` — so the pair is over-determined, and the three ways it can be
+ * wrong are worth separating from the SQL that answers them. The caller supplies
+ * `movementAssetId`: the line the named movement actually sits on, or **null when
+ * this caller cannot reach that movement at all**, which is the same answer a
+ * forged id gets and is deliberately not distinguishable from it.
+ *
+ * **A movement named alone fills in its line rather than leaving it null.** This
+ * is a derivation, not a guess: there is exactly one answer and the database
+ * holds it. Leaving it null would produce a photograph of the weighbridge that
+ * the chairs' own gallery cannot find — a gap with no symptom, discovered by
+ * somebody who concludes the photograph was never uploaded.
+ *
+ * **A pair that disagrees is refused rather than reconciled.** Silently
+ * preferring the movement's line would file the photograph against a record the
+ * uploader did not name; silently preferring the named line would leave a
+ * movement link pointing outside it. Both are a wrong caption on a piece of
+ * evidence, which is the artifact this whole phase exists to keep truthful.
+ */
+export function resolveAssetLink(args: {
+  assetId: string | null;
+  assetMovementId: string | null;
+  movementAssetId: string | null;
+}): AssetLinkResolution {
+  const { assetId, assetMovementId, movementAssetId } = args;
+
+  if (assetMovementId === null) return { ok: true, assetId, assetMovementId: null };
+
+  if (movementAssetId === null) {
+    return { ok: false, message: 'That movement is not one you can record evidence against' };
+  }
+  if (assetId !== null && assetId !== movementAssetId) {
+    return { ok: false, message: 'That movement is not on the asset line you named' };
+  }
+  return { ok: true, assetId: movementAssetId, assetMovementId };
 }
 
 // ── Editing ──────────────────────────────────────────────────────────────────
@@ -382,6 +460,18 @@ export const evidenceFilterSchema = z.object({
   locationId: z.string().uuid().optional(),
   /** One written-up day's photographs, which is how the diary reads its own back. */
   diaryEntryId: z.string().uuid().optional(),
+  /**
+   * One asset line's photographs, and one movement's.
+   *
+   * This is the *reverse* of the link, and it is why the asset side needs no
+   * route of its own: "show me the evidence for these 42 chairs" is this filter,
+   * under the evidence scope rules that already govern who may see a photograph.
+   * A join from the asset would have had to re-derive those rules, and a second
+   * implementation of §7 is a second answer to who may see a subcontractor's
+   * photographs.
+   */
+  assetId: z.string().uuid().optional(),
+  assetMovementId: z.string().uuid().optional(),
   /** `true` shows only what the client can see; `false` only what it cannot. */
   clientVisible: z.boolean().optional(),
   /** The batch a selection arrived in, which is how "what did I just upload" is asked. */

@@ -25,6 +25,8 @@ export interface EvidenceRow {
   captured_at: Date | null;
   location_id: string | null;
   diary_entry_id: string | null;
+  asset_id: string | null;
+  asset_movement_id: string | null;
   gps_lat: string | null;
   gps_lng: string | null;
   gps_accuracy_m: string | null;
@@ -49,6 +51,7 @@ const FIELDS = `
   e.category, e.caption, e.notes,
   to_char(e.evidence_date, 'YYYY-MM-DD') as evidence_date,
   e.captured_at, e.location_id, e.diary_entry_id,
+  e.asset_id, e.asset_movement_id,
   e.gps_lat, e.gps_lng, e.gps_accuracy_m,
   e.client_visible, e.first_published_at, e.sort_order,
   e.uploaded_by_user_id, e.batch_client_id,
@@ -125,6 +128,8 @@ export function toEvidenceView(row: EvidenceRow): EvidenceView {
     createdAt: row.created_at.toISOString(),
     locationId: row.location_id,
     diaryEntryId: row.diary_entry_id,
+    assetId: row.asset_id,
+    assetMovementId: row.asset_movement_id,
     // `numeric` arrives as a string so precision survives the wire; it becomes a
     // number exactly once, here, rather than in each caller that forgets.
     gpsLat: row.gps_lat === null ? null : Number(row.gps_lat),
@@ -180,6 +185,14 @@ export async function listEvidence(
   if (filter.diaryEntryId) {
     params.push(filter.diaryEntryId);
     where += ` and e.diary_entry_id = $${params.length}`;
+  }
+  if (filter.assetId) {
+    params.push(filter.assetId);
+    where += ` and e.asset_id = $${params.length}`;
+  }
+  if (filter.assetMovementId) {
+    params.push(filter.assetMovementId);
+    where += ` and e.asset_movement_id = $${params.length}`;
   }
   if (filter.clientVisible !== undefined) {
     params.push(filter.clientVisible);
@@ -255,6 +268,8 @@ export interface InsertEvidenceArgs {
   capturedAt: string | null;
   locationId: string | null;
   diaryEntryId: string | null;
+  assetId: string | null;
+  assetMovementId: string | null;
   sortOrder: number;
   uploadedByUserId: string;
   batchClientId: string | null;
@@ -268,9 +283,9 @@ export function insertEvidence(
     `with inserted as (
        insert into project_evidence
          (project_id, company_id, file_id, category, caption, notes, evidence_date,
-          captured_at, location_id, diary_entry_id, sort_order, uploaded_by_user_id,
-          batch_client_id)
-       values ($1,$2,$3,$4,$5,$6,$7::date,$8::timestamptz,$9,$10,$11,$12,$13)
+          captured_at, location_id, diary_entry_id, asset_id, asset_movement_id,
+          sort_order, uploaded_by_user_id, batch_client_id)
+       values ($1,$2,$3,$4,$5,$6,$7::date,$8::timestamptz,$9,$10,$11,$12,$13,$14,$15)
        -- The partial unique index on a live file is the arbiter, not a prior
        -- select: two simultaneous retries of one batch both find no row and both
        -- insert, which is the check-then-act the sync contract already caught
@@ -291,6 +306,8 @@ export function insertEvidence(
       args.capturedAt,
       args.locationId,
       args.diaryEntryId,
+      args.assetId,
+      args.assetMovementId,
       args.sortOrder,
       args.uploadedByUserId,
       args.batchClientId,
@@ -307,6 +324,8 @@ export interface EvidencePatch {
   capturedAt?: string | null;
   locationId?: string | null;
   diaryEntryId?: string | null;
+  assetId?: string | null;
+  assetMovementId?: string | null;
   sortOrder?: number;
 }
 
@@ -318,6 +337,8 @@ const PATCH_COLUMNS: Record<keyof EvidencePatch, { column: string; cast: string 
   capturedAt: { column: 'captured_at', cast: '::timestamptz' },
   locationId: { column: 'location_id', cast: '::uuid' },
   diaryEntryId: { column: 'diary_entry_id', cast: '::uuid' },
+  assetId: { column: 'asset_id', cast: '::uuid' },
+  assetMovementId: { column: 'asset_movement_id', cast: '::uuid' },
   sortOrder: { column: 'sort_order', cast: '::int' },
 };
 
