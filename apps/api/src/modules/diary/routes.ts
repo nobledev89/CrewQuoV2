@@ -20,6 +20,7 @@ import {
   updateDiaryEntrySchema,
   type DiaryEntryView,
   type DiaryNarrativeField,
+  type DiaryPrefillResponse,
 } from '@crewquo/shared';
 import { asyncHandler } from '../../http/asyncHandler';
 import { getCompanyCtx, type Ctx } from '../../http/context';
@@ -492,7 +493,7 @@ projectDiaryRouter.get(
       }),
     ]);
 
-    res.json({
+    const body: DiaryPrefillResponse = {
       entryDate: date,
       entryId: entry?.id ?? null,
       attendance: suggestAttendance({
@@ -517,7 +518,8 @@ projectDiaryRouter.get(
        * has to guess the meaning of.
        */
       sources: { timeLogs: true, schedule: false },
-    });
+    };
+    res.json(body);
   })
 );
 

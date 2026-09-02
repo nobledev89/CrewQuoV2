@@ -1,6 +1,13 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
-import { RUN, makeSuperAdmin, provisionCompany, signIn } from './helpers';
+import {
+  RUN,
+  createProjectHeadless,
+  makeSuperAdmin,
+  provisionCompany,
+  seedProjectSections,
+  signIn,
+} from './helpers';
 
 // Derived rather than imported from `axe-core`: that package is a transitive dependency
 // of @axe-core/playwright and is not hoisted here, so naming it directly would be an
@@ -30,11 +37,16 @@ type AxeViolation = Awaited<ReturnType<AxeBuilder['analyze']>>['violations'][num
  *
  * Prerequisites are the parity spec's: Postgres up, migrated and seeded, API on :4000.
  *
- * **Not covered, recorded here rather than left to be discovered:** `/projects/[id]`,
- * `/portal/[id]` and `/invite/[token]` need a real row to render against. Their parents
- * are covered. They are owed a case once Phase 7 gives the project sections content worth
- * scanning — a shell with three empty tabs would pass and prove nothing. `/portal/[id]`
- * is the one that matters most, because it is the only screen a client company ever sees.
+ * **`/projects/[id]` is now covered**, and the debt this note used to record is paid:
+ * Phase 7 gave the project sections content worth scanning, so the case below builds a
+ * location tree, a photograph, a document and a closed diary day and sweeps each section
+ * with real rows in it. A shell with three empty tabs would have passed and proved
+ * nothing, which is why it waited.
+ *
+ * **Still not covered, recorded rather than left to be discovered:** `/portal/[id]` and
+ * `/invite/[token]`, both of which need a row belonging to a *different* cast — a client
+ * company and an invited stranger. Their parents are covered. `/portal/[id]` is the one
+ * that matters most, because it is the only screen a client company ever sees.
  */
 
 /** WCAG 2.2 AA and everything it builds on. Level AAA is deliberately not included. */
@@ -213,15 +225,17 @@ test.describe('WCAG 2.2 AA — automated', () => {
   test.describe('as a company owner', () => {
     let page: Page;
 
+    let ownerEmail: string;
+
     test.beforeAll(async ({ browser }) => {
-      const email = await provisionCompany({
+      ownerEmail = await provisionCompany({
         handle: `axe-owner-${RUN}`,
         name: 'Axe Owner',
         companyName: OWNER_CO,
         planId: 'business',
       });
       page = await (await browser.newContext()).newPage();
-      await signIn(page, email);
+      await signIn(page, ownerEmail);
     });
 
     test.afterAll(async () => {
@@ -252,6 +266,34 @@ test.describe('WCAG 2.2 AA — automated', () => {
       await page.getByRole('button', { name: 'New role' }).click();
       await expect(page.getByRole('dialog')).toBeVisible();
       await expectNoViolations(page, '/rates/roles (create drawer open)');
+    });
+
+    /**
+     * `/projects/[id]`, with every Phase 7 section holding real rows.
+     *
+     * This is the screen the note at the top of this file owed a case, and it is the
+     * densest surface in the product: a section rail, a figure strip, a gallery of
+     * images, three tables and four drawers. Scanning it empty would pass and prove
+     * nothing, so the fixture puts something in each section first — which is also
+     * why this is one test rather than four: the rows are built once and each section
+     * is swept against them.
+     */
+    test('/projects/[id] has no violations in any Phase 7 section', async () => {
+      const projectId = await createProjectHeadless(ownerEmail, `Axe project ${RUN}`);
+      await seedProjectSections(ownerEmail, projectId);
+
+      await page.goto(`/projects/${projectId}`);
+      await settled(page);
+      await expectNoViolations(page, '/projects/[id] (overview)');
+
+      for (const section of ['Locations', 'Site diary', 'Photos & evidence', 'Documents']) {
+        await page
+          .getByRole('navigation', { name: 'Project' })
+          .getByRole('button', { name: section })
+          .click();
+        await settled(page);
+        await expectNoViolations(page, `/projects/[id] (${section})`);
+      }
     });
 
     /**

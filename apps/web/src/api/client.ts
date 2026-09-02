@@ -24,6 +24,34 @@ import type {
   AdminUserSummary,
   AssignmentView,
   AuditLogsResponse,
+  CapabilityCatalog,
+  CloseDayPrompt,
+  CloseDiaryEntry,
+  CompleteUpload,
+  CreateDiaryAttendance,
+  CreateDiaryEntry,
+  CreateDocument,
+  CreateEvidenceBatch,
+  CreateLocation,
+  DiaryEntryView,
+  DiaryPrefillResponse,
+  DiaryRevisionRow,
+  DiaryStatus,
+  DocumentCategory,
+  DocumentView,
+  EvidenceCategory,
+  EvidenceView,
+  LocationView,
+  PresignUpload,
+  PresignedUpload,
+  PublishEvidence,
+  StoredFile,
+  SupersedeDocument,
+  UpdateDiaryAttendance,
+  UpdateDiaryEntry,
+  UpdateDocument,
+  UpdateEvidence,
+  UpdateLocation,
   AuditSettings,
   AuthResponse,
   ClientView,
@@ -123,7 +151,16 @@ export interface RequestOptions {
   accessToken?: string | null;
   companyId?: string | null;
   body?: unknown;
-  query?: Record<string, string | undefined>;
+  /**
+   * An array value becomes **repeated** parameters — `?category=BEFORE&category=AFTER`.
+   *
+   * Widened for §22.4's multi-select evidence filter, and the widening is the
+   * point rather than a convenience: joining an array into one comma-separated
+   * value works in every manual test with one filter selected and silently sends a
+   * category named `"BEFORE,AFTER"` the first time somebody picks two. The API's
+   * own parser already normalises one-or-many on the way in.
+   */
+  query?: Record<string, string | string[] | undefined>;
 }
 
 export class ApiError extends Error {
@@ -218,12 +255,17 @@ async function request<T>(
   if (opts.accessToken) headers.Authorization = `Bearer ${opts.accessToken}`;
   if (opts.companyId) headers['X-Company-Id'] = opts.companyId;
 
-  const qs = opts.query
-    ? '?' +
-      new URLSearchParams(
-        Object.entries(opts.query).filter(([, v]) => v !== undefined) as [string, string][]
-      ).toString()
-    : '';
+  let qs = '';
+  if (opts.query) {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(opts.query)) {
+      if (value === undefined) continue;
+      if (Array.isArray(value)) for (const one of value) params.append(key, one);
+      else params.append(key, value);
+    }
+    const encoded = params.toString();
+    if (encoded) qs = `?${encoded}`;
+  }
 
   const res = await fetch(`${API_URL}${path}${qs}`, {
     method,
@@ -293,6 +335,49 @@ export interface WorkListQuery {
 
 function workQuery(q: WorkListQuery): Record<string, string | undefined> {
   return { status: q.status, engagementId: q.engagementId, projectId: q.projectId };
+}
+
+/**
+ * §22.4's evidence filters, as the screen holds them.
+ *
+ * `category` is an array on the wire because the filter bar is multi-select; it is
+ * serialised as repeated `category=` params, which is what `URLSearchParams`
+ * produces for an array and what the API's parser reads. A single value would work
+ * in every manual test and break the first time somebody picks two.
+ */
+export interface EvidenceQuery {
+  category?: EvidenceCategory[];
+  from?: string;
+  to?: string;
+  locationId?: string;
+  diaryEntryId?: string;
+  clientVisible?: boolean;
+  batchClientId?: string;
+}
+
+function evidenceQuery(q: EvidenceQuery): Record<string, string | string[] | undefined> {
+  return {
+    category: q.category && q.category.length > 0 ? q.category : undefined,
+    from: q.from,
+    to: q.to,
+    locationId: q.locationId,
+    diaryEntryId: q.diaryEntryId,
+    clientVisible: q.clientVisible === undefined ? undefined : String(q.clientVisible),
+    batchClientId: q.batchClientId,
+  };
+}
+
+export interface DocumentQuery {
+  category?: DocumentCategory;
+  includeSuperseded?: boolean;
+  expiringWithinDays?: number;
+}
+
+export interface DiaryQuery {
+  from?: string;
+  to?: string;
+  status?: DiaryStatus;
+  companyId?: string;
 }
 
 export const api = {
@@ -1090,4 +1175,217 @@ export const api = {
       '/v1/admin/limits',
       { accessToken: t }
     ),
+
+  // ── Capabilities (§37) ───────────────────────────────────────────────────────
+  /**
+   * The catalog, this company's bundles, and the caller's own resolved set.
+   *
+   * The UI reads `mine` to *explain* rather than to enforce, exactly as it reads
+   * entitlements: the API is still the gate, so a screen that hides an action a
+   * person lacks must still handle the 403 if their bundle changed under them.
+   */
+  capabilities: (t: string, c: string) =>
+    request<CapabilityCatalog>('GET', '/v1/capabilities', { accessToken: t, companyId: c }),
+
+  // ── Project locations (§21) ──────────────────────────────────────────────────
+  listLocations: (t: string, c: string, projectId: string) =>
+    request<{ locations: LocationView[] }>('GET', `/v1/projects/${projectId}/locations`, {
+      accessToken: t,
+      companyId: c,
+    }),
+  createLocation: (t: string, c: string, projectId: string, body: CreateLocation) =>
+    request<{ location: LocationView }>('POST', `/v1/projects/${projectId}/locations`, {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+  updateLocation: (t: string, c: string, id: string, body: UpdateLocation) =>
+    request<{ location: LocationView }>('PATCH', `/v1/locations/${id}`, {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+  deleteLocation: (t: string, c: string, id: string) =>
+    request<void>('DELETE', `/v1/locations/${id}`, { accessToken: t, companyId: c }),
+
+  // ── Files (§22.1) ────────────────────────────────────────────────────────────
+  presignUpload: (t: string, c: string, body: PresignUpload) =>
+    request<PresignedUpload>('POST', '/v1/files/presign', {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+  completeUpload: (t: string, c: string, id: string, body: CompleteUpload) =>
+    request<{ file: StoredFile }>('POST', `/v1/files/${id}/complete`, {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+  /**
+   * One file's own record, including why it failed if it did.
+   *
+   * The document form polls this: §22.1 puts the content-type check in a worker,
+   * because the API never sees the bytes — so a document uploaded a second ago is
+   * `SCANNING`, and the filing route requires `READY`.
+   */
+  getFile: (t: string, c: string, id: string) =>
+    request<{ file: StoredFile; derivatives: StoredFile[] }>('GET', `/v1/files/${id}`, {
+      accessToken: t,
+      companyId: c,
+    }),
+  /**
+   * A short-lived signed URL for the bytes behind a record.
+   *
+   * The URL rather than the bytes, because these are photographs: an `<img src>`
+   * pointing at the store lets the browser cache and range-request them, where
+   * proxying through this client would pull every full-size original into
+   * JavaScript memory to render a gallery thumbnail.
+   */
+  fileDownloadUrl: (t: string, c: string, id: string) =>
+    request<{ url: string; expiresInMinutes: number }>('GET', `/v1/files/${id}/download`, {
+      accessToken: t,
+      companyId: c,
+    }),
+
+  // ── Project evidence (§22) ───────────────────────────────────────────────────
+  listEvidence: (t: string, c: string, projectId: string, q: EvidenceQuery = {}) =>
+    request<{ evidence: EvidenceView[]; categoryCounts: Record<string, number> }>(
+      'GET',
+      `/v1/projects/${projectId}/evidence`,
+      { accessToken: t, companyId: c, query: evidenceQuery(q) }
+    ),
+  createEvidenceBatch: (t: string, c: string, projectId: string, body: CreateEvidenceBatch) =>
+    request<{ created: EvidenceView[]; rejected: { fileId: string; code: string; message: string }[] }>(
+      'POST',
+      `/v1/projects/${projectId}/evidence`,
+      { accessToken: t, companyId: c, body }
+    ),
+  updateEvidence: (t: string, c: string, id: string, body: UpdateEvidence) =>
+    request<{ evidence: EvidenceView }>('PATCH', `/v1/evidence/${id}`, {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+  publishEvidence: (t: string, c: string, projectId: string, body: PublishEvidence) =>
+    // `updated` is a COUNT, not the rows — `evidence` carries those. Typed wrongly
+    // first, which compiles and silently makes `res.updated.length` `undefined`.
+    request<{ evidence: EvidenceView[]; updated: number; notice: string }>(
+      'POST',
+      `/v1/projects/${projectId}/evidence/publish`,
+      { accessToken: t, companyId: c, body }
+    ),
+  deleteEvidence: (t: string, c: string, id: string) =>
+    request<void>('DELETE', `/v1/evidence/${id}`, { accessToken: t, companyId: c }),
+
+  // ── Project documents (§24) ──────────────────────────────────────────────────
+  listDocuments: (t: string, c: string, projectId: string, q: DocumentQuery = {}) =>
+    request<{ documents: DocumentView[] }>('GET', `/v1/projects/${projectId}/documents`, {
+      accessToken: t,
+      companyId: c,
+      query: {
+        category: q.category,
+        includeSuperseded: q.includeSuperseded ? 'true' : undefined,
+        expiringWithinDays:
+          q.expiringWithinDays === undefined ? undefined : String(q.expiringWithinDays),
+      },
+    }),
+  createDocument: (t: string, c: string, projectId: string, body: CreateDocument) =>
+    request<{ document: DocumentView }>('POST', `/v1/projects/${projectId}/documents`, {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+  updateDocument: (t: string, c: string, id: string, body: UpdateDocument) =>
+    request<{ document: DocumentView }>('PATCH', `/v1/documents/${id}`, {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+  documentVersions: (t: string, c: string, id: string) =>
+    request<{ versions: DocumentView[] }>('GET', `/v1/documents/${id}/versions`, {
+      accessToken: t,
+      companyId: c,
+    }),
+  supersedeDocument: (t: string, c: string, id: string, body: SupersedeDocument) =>
+    request<{ document: DocumentView }>('POST', `/v1/documents/${id}/versions`, {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+  deleteDocument: (t: string, c: string, id: string) =>
+    request<void>('DELETE', `/v1/documents/${id}`, { accessToken: t, companyId: c }),
+
+  // ── Site diary (§23) ─────────────────────────────────────────────────────────
+  listDiary: (t: string, c: string, projectId: string, q: DiaryQuery = {}) =>
+    request<{ entries: DiaryEntryView[] }>('GET', `/v1/projects/${projectId}/diary`, {
+      accessToken: t,
+      companyId: c,
+      query: { from: q.from, to: q.to, status: q.status, companyId: q.companyId },
+    }),
+  openDiaryEntry: (t: string, c: string, projectId: string, body: CreateDiaryEntry) =>
+    request<{ entry: DiaryEntryView }>('POST', `/v1/projects/${projectId}/diary`, {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+  diaryPrefill: (t: string, c: string, projectId: string, date: string) =>
+    request<DiaryPrefillResponse>('GET', `/v1/projects/${projectId}/diary/prefill`, {
+      accessToken: t,
+      companyId: c,
+      query: { date },
+    }),
+  getDiaryEntry: (t: string, c: string, id: string) =>
+    request<{ entry: DiaryEntryView; amendedLabel: string | null; closePrompts: CloseDayPrompt[] }>(
+      'GET',
+      `/v1/diary/${id}`,
+      { accessToken: t, companyId: c }
+    ),
+  updateDiaryEntry: (t: string, c: string, id: string, body: UpdateDiaryEntry) =>
+    request<{ entry: DiaryEntryView; amendedLabel: string | null }>('PATCH', `/v1/diary/${id}`, {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+  closeDiaryEntry: (t: string, c: string, id: string, body: CloseDiaryEntry = {}) =>
+    request<{ entry: DiaryEntryView; closePrompts: CloseDayPrompt[] }>(
+      'POST',
+      `/v1/diary/${id}/close`,
+      { accessToken: t, companyId: c, body }
+    ),
+  diaryHistory: (t: string, c: string, id: string) =>
+    request<{ revisions: DiaryRevisionRow[]; amendedTimes: number; amendedLabel: string | null }>(
+      'GET',
+      `/v1/diary/${id}/history`,
+      { accessToken: t, companyId: c }
+    ),
+  addDiaryAttendance: (t: string, c: string, id: string, body: CreateDiaryAttendance) =>
+    request<{ entry: DiaryEntryView; added: boolean }>('POST', `/v1/diary/${id}/attendance`, {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+  updateDiaryAttendance: (
+    t: string,
+    c: string,
+    id: string,
+    attendanceId: string,
+    body: UpdateDiaryAttendance
+  ) =>
+    request<{ entry: DiaryEntryView }>('PATCH', `/v1/diary/${id}/attendance/${attendanceId}`, {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+  removeDiaryAttendance: (
+    t: string,
+    c: string,
+    id: string,
+    attendanceId: string,
+    reason?: string
+  ) =>
+    request<void>('DELETE', `/v1/diary/${id}/attendance/${attendanceId}`, {
+      accessToken: t,
+      companyId: c,
+      query: { reason },
+    }),
 };

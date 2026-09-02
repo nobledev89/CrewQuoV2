@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ButtonHTMLAttributes, type HTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react';
+import { useEffect, useRef, type ButtonHTMLAttributes, type HTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from 'react';
 
 function cx(...parts: (string | false | undefined)[]): string { return parts.filter(Boolean).join(' '); }
 type ButtonVariant = 'primary' | 'secondary' | 'danger';
@@ -9,16 +9,35 @@ export function Button({ variant = 'primary', size, className, type = 'button', 
 export function Card({ className, ...rest }: HTMLAttributes<HTMLDivElement>) { return <div className={cx('cq-card', className)} {...rest} />; }
 export function Stack({ className, ...rest }: HTMLAttributes<HTMLDivElement>) { return <div className={cx('cq-stack', className)} {...rest} />; }
 export function Row({ between, className, ...rest }: HTMLAttributes<HTMLDivElement> & { between?: boolean }) { return <div className={cx('cq-row', between && 'cq-row--between', className)} {...rest} />; }
-export function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) { return <label className="cq-field"><span className="cq-label">{label}</span>{children}{hint ? <span className="cq-muted">{hint}</span> : null}</label>; }
+export function Field({ label, hint, wide, children }: { label: string; hint?: string; wide?: boolean; children: ReactNode }) { return <label className={cx('cq-field', wide && 'cq-field--wide')}><span className="cq-label">{label}</span>{children}{hint ? <span className="cq-muted">{hint}</span> : null}</label>; }
 export function Input({ className, ...rest }: InputHTMLAttributes<HTMLInputElement>) { return <input className={cx('cq-input', className)} {...rest} />; }
 export function Select({ className, ...rest }: SelectHTMLAttributes<HTMLSelectElement>) { return <select className={cx('cq-select', className)} {...rest} />; }
+/**
+ * Multi-line input, for the prose a person actually writes: a diary's thirteen
+ * narrative fields, a document's notes, an amendment's reason.
+ *
+ * Vertical resize only. Horizontal resize inside a form grid lets one field push
+ * the layout wider than its column and reflow everything beside it, which reads
+ * as a bug rather than as a control.
+ */
+export function Textarea({ className, rows = 3, ...rest }: TextareaHTMLAttributes<HTMLTextAreaElement>) { return <textarea rows={rows} className={cx('cq-textarea', className)} {...rest} />; }
 export function SearchInput(props: InputHTMLAttributes<HTMLInputElement>) { return <div className="cq-search"><svg className="cq-search__icon" aria-hidden="true" viewBox="0 0 20 20" fill="none"><circle cx="8.5" cy="8.5" r="5.5" stroke="currentColor" strokeWidth="1.7"/><path d="m13 13 4 4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/></svg><Input type="search" autoComplete="off" {...props} /></div>; }
 // `danger` reads as *settled badly* — a rejected request, a duplicate identifier —
 // where `warning` reads as *needs attention*. The tokens already existed for
 // buttons and error text; the badge simply had no variant using them.
 export function Badge({ accent, tone = 'neutral', children }: { accent?: boolean; tone?: 'neutral' | 'accent' | 'success' | 'warning' | 'danger'; children: ReactNode }) { const actualTone = accent ? 'accent' : tone; return <span className={cx('cq-badge', actualTone === 'accent' && 'cq-badge--accent', actualTone === 'success' && 'cq-badge--success', actualTone === 'warning' && 'cq-badge--warning', actualTone === 'danger' && 'cq-badge--danger')}>{children}</span>; }
 export function ErrorText({ children }: { children: ReactNode }) { return children ? <p className="cq-error" role="alert">{children}</p> : null; }
-export function Notice({ children }: { children: ReactNode }) { return <div className="cq-notice">{children}</div>; }
+/**
+ * `live` makes this a status message (WCAG 2.2 SC 4.1.3): announced when it
+ * appears, without focus moving to it.
+ *
+ * Deliberately opt-in rather than the default. Most notices on these screens are
+ * standing explanation — "a retired location still appears on what already points
+ * at it" — and marking those live would have a screen reader read the page's
+ * furniture aloud on every re-render. The ones that earn it are the confirmations
+ * that appear *because* somebody just did something: a publish, a partial upload.
+ */
+export function Notice({ live, children }: { live?: boolean; children: ReactNode }) { return <div className="cq-notice" role={live ? 'status' : undefined}>{children}</div>; }
 export function PageHeader({ eyebrow, title, description, actions }: { eyebrow?: string; title: string; description?: string; actions?: ReactNode }) { return <header className="cq-page-header"><div className="cq-page-header__copy">{eyebrow ? <p className="cq-page-header__eyebrow">{eyebrow}</p> : null}<h1 className="cq-h1">{title}</h1>{description ? <p className="cq-page-header__description">{description}</p> : null}</div>{actions ? <div className="cq-page-header__actions">{actions}</div> : null}</header>; }
 export function Section({ title, description, actions, children, className }: { title?: string; description?: string; actions?: ReactNode; children: ReactNode; className?: string }) { return <section className={cx('cq-section', className)}>{title || actions ? <div className="cq-section__header"><div>{title ? <h2 className="cq-h2">{title}</h2> : null}{description ? <p className="cq-section__description">{description}</p> : null}</div>{actions}</div> : null}<div className="cq-section__body">{children}</div></section>; }
 export function EmptyState({ title, children }: { title: string; children: ReactNode }) { return <div className="cq-empty"><p className="cq-empty__title">{title}</p><p className="cq-empty__copy">{children}</p></div>; }
@@ -276,7 +295,19 @@ export function SectionRail({ sections, active, onSelect, groupLabel }: {
           onClick={() => onSelect(s.id)}
         >
           <span>{s.label}</span>
-          {typeof s.count === 'number' ? <span className="cq-rail__count">{s.count}</span> : null}
+          {/*
+            The count is rendered twice on purpose. Sighted readers get the bare
+            number, which is what a dense rail needs; a screen reader reading the
+            button's accessible name would otherwise hear "Locations 0", where the
+            0 is a number with no noun attached to it. The visible span is hidden
+            from the accessibility tree and a counted phrase takes its place.
+          */}
+          {typeof s.count === 'number' ? (
+            <>
+              <span className="cq-rail__count" aria-hidden="true">{s.count}</span>
+              <span className="cq-vh">{s.count === 1 ? '1 item' : `${s.count} items`}</span>
+            </>
+          ) : null}
         </button>
       ))}
     </nav>

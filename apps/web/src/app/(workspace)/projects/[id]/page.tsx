@@ -1,12 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import {
   PROJECT_STATUSES,
   type AssignmentView,
   type ExpenseView,
+  type LocationView,
   type ProjectStatus,
   type ProjectSummary,
   type ProjectView,
@@ -36,8 +37,13 @@ import { api, ApiError, refusedFeature } from '@/api/client';
 import { useAuth, useSessionCtx } from '@/auth/AuthProvider';
 import { useAsyncData } from '@/lib/useAsyncData';
 import { useAsyncList } from '@/lib/useAsyncList';
+import { useCapabilities } from '@/lib/useCapabilities';
 import { useEntitlements } from '@/lib/useEntitlements';
 import { useUrlQuery } from '@/lib/useUrlQuery';
+import { LocationsPanel } from './LocationsPanel';
+import { EvidencePanel } from './EvidencePanel';
+import { DocumentsPanel } from './DocumentsPanel';
+import { DiaryPanel } from './DiaryPanel';
 import { ProjectStatusBadge, WorkStatusBadge } from '@/components/Status';
 import { formatCents, formatDate, formatPct, titleCase, totalHours } from '@/lib/format';
 
@@ -64,6 +70,8 @@ function ProjectDetail() {
   const ctx = useSessionCtx();
   const router = useRouter();
   const { activeMembership } = useAuth();
+  const caps = useCapabilities();
+  const ent = useEntitlements();
   const canManage =
     activeMembership?.role === 'OWNER' ||
     activeMembership?.role === 'ADMIN' ||
@@ -93,6 +101,72 @@ function ProjectDetail() {
       : null,
     [ctx?.companyId, id]
   );
+
+  /*
+   * Locations load with the project rather than with the section that shows them,
+   * because three of the four Phase 7 sections tag against them: evidence, the
+   * document manager and the diary all need the list to render a picker, and three
+   * separate fetches of one small tree would be three chances for the pickers to
+   * disagree about what exists.
+   *
+   * §21 carries no feature key — a location is structure, not content — so this
+   * one call is safe on every plan.
+   */
+  const locations = useAsyncList<LocationView>(
+    ctx
+      ? () => api.listLocations(ctx.accessToken, ctx.companyId, id).then((r) => r.locations)
+      : null,
+    [ctx?.companyId, id]
+  );
+
+  /*
+   * The counts the rail renders, and they are **unfiltered totals** — which is why
+   * they are loaded here rather than reported up by the panels.
+   *
+   * A panel holds a *filtered* list: choose "Before" in the evidence filter and its
+   * length drops to twelve. A rail that took its number from there would say the
+   * project has twelve photographs because somebody is looking at twelve, and the
+   * one number §20's progressive disclosure depends on — does this section hold
+   * anything — would move as a side effect of reading. The cost is three small
+   * requests per project view, only for features the owner's plan includes; the
+   * panels re-trigger them after a write.
+   */
+  const [countsNonce, setCountsNonce] = useState(0);
+  const bumpCount = useCallback(() => setCountsNonce((n) => n + 1), []);
+  const sectionCounts = useAsyncData<{ evidence: number; documents: number; diary: number }>(
+    ctx
+      ? async () => {
+          const [evidence, documents, diary] = await Promise.all([
+            ent.has('project_evidence')
+              ? api
+                  .listEvidence(ctx.accessToken, ctx.companyId, id)
+                  .then((r) =>
+                    Object.values(r.categoryCounts).reduce((sum, n) => sum + n, 0)
+                  )
+                  .catch(() => 0)
+              : Promise.resolve(0),
+            ent.has('project_documents')
+              ? api
+                  .listDocuments(ctx.accessToken, ctx.companyId, id)
+                  .then((r) => r.documents.length)
+                  .catch(() => 0)
+              : Promise.resolve(0),
+            ent.has('site_diary')
+              ? api
+                  .listDiary(ctx.accessToken, ctx.companyId, id)
+                  .then((r) => r.entries.length)
+                  .catch(() => 0)
+              : Promise.resolve(0),
+          ]);
+          return { evidence, documents, diary };
+        }
+      : null,
+    // `ent.loading` rather than the feature flags themselves: the first render has
+    // no entitlements yet, so all three branches would resolve to zero and never
+    // re-run. Waiting for the answer costs one render and avoids a permanent 0.
+    [ctx?.companyId, id, ent.loading, countsNonce]
+  );
+  const counts = sectionCounts.data;
 
   // The project's reporting currency, which is what the summary is denominated in
   // (§3.3 decision #5). The project row is the fallback rather than the company,
@@ -138,11 +212,55 @@ function ProjectDetail() {
    * full-width panels on an ever-longer page. Only sections that exist are listed:
    * advertising a section that is not built yet is a promise, not navigation.
    */
+  /*
+   * §20's progressive disclosure, and the rule that decides which of these appear
+   * at all: **a section whose feature the project owner has not bought is not
+   * listed**, because advertising a section that answers 403 is worse than not
+   * offering it. A section the plan includes but the person's bundle does not is
+   * still listed — they can read it, and the panel says which permission the
+   * action needs. Those are different refusals and they deserve different answers.
+   */
   const sections: RailSection[] = [
     { id: 'overview', label: 'Overview' },
     { id: 'crew', label: 'Crew', count: assignments.items.length, populated: assignments.items.length > 0 },
+    {
+      id: 'locations',
+      label: 'Locations',
+      count: locations.items.length,
+      populated: locations.items.length > 0,
+    },
     { id: 'time', label: 'Time & costs', count: timeLogs.items.length, populated: timeLogs.items.length > 0 },
     { id: 'expenses', label: 'Expenses', count: expenses.items.length, populated: expenses.items.length > 0 },
+    ...(ent.has('site_diary')
+      ? [
+          {
+            id: 'diary',
+            label: 'Site diary',
+            count: counts?.diary ?? null,
+            populated: (counts?.diary ?? 0) > 0,
+          } satisfies RailSection,
+        ]
+      : []),
+    ...(ent.has('project_evidence')
+      ? [
+          {
+            id: 'evidence',
+            label: 'Photos & evidence',
+            count: counts?.evidence ?? null,
+            populated: (counts?.evidence ?? 0) > 0,
+          } satisfies RailSection,
+        ]
+      : []),
+    ...(ent.has('project_documents')
+      ? [
+          {
+            id: 'documents',
+            label: 'Documents',
+            count: counts?.documents ?? null,
+            populated: (counts?.documents ?? 0) > 0,
+          } satisfies RailSection,
+        ]
+      : []),
     { id: 'reports', label: 'Reports' },
     ...(canManage ? [{ id: 'settings', label: 'Settings' } satisfies RailSection] : []),
   ];
@@ -226,6 +344,54 @@ function ProjectDetail() {
 
           {active === 'expenses' ? (
             <ExpensePanel expenses={expenses} assignments={assignments.items} currency={currency} />
+          ) : null}
+
+          {active === 'locations' ? (
+            <LocationsPanel
+              projectId={p.id}
+              locations={locations}
+              canManage={caps.can('project.manage')}
+            />
+          ) : null}
+
+          {active === 'diary' ? (
+            <DiaryPanel
+              projectId={p.id}
+              locations={locations.items}
+              canWrite={caps.can('diary.write')}
+              canClose={caps.can('diary.close')}
+              ownCompanyId={ctx?.companyId ?? ''}
+              onCountChanged={bumpCount}
+            />
+          ) : null}
+
+          {active === 'evidence' ? (
+            <EvidencePanel
+              projectId={p.id}
+              locations={locations.items}
+              canUpload={caps.can('evidence.upload')}
+              canManage={caps.can('evidence.manage')}
+              /*
+               * Publishing needs BOTH the capability and the `client_portal`
+               * feature — §4's row, and the two are checked separately because they
+               * fail for different reasons a person can act on differently: one is
+               * a permission their admin grants, the other is a plan.
+               */
+              canPublish={caps.can('evidence.publish') && ent.has('client_portal')}
+              isOwner={p.ownerCompanyId === ctx?.companyId}
+              onCountChanged={bumpCount}
+            />
+          ) : null}
+
+          {active === 'documents' ? (
+            <DocumentsPanel
+              projectId={p.id}
+              locations={locations.items}
+              canUpload={caps.can('document.upload')}
+              canManage={caps.can('document.manage')}
+              isOwner={p.ownerCompanyId === ctx?.companyId}
+              onCountChanged={bumpCount}
+            />
           ) : null}
 
           {active === 'reports' ? <ExportPanel projectId={p.id} projectName={p.name} /> : null}

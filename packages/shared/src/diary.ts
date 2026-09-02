@@ -651,6 +651,45 @@ export function narrativeFieldsFilled(
 
 // ── Events ───────────────────────────────────────────────────────────────────
 
+// ── Response shapes the screens read ────────────────────────────────────
+
+/**
+ * `GET /v1/projects/:id/diary/prefill`.
+ *
+ * Declared here rather than inferred at each end, because the `sources` field is
+ * a *promise about what was looked at* — a screen that says "from the timesheets"
+ * when the schedule arrives in Phase 11 would be quietly wrong, and a shared type
+ * is what makes adding the second source a compile error at the reader.
+ */
+export interface DiaryPrefillResponse {
+  entryDate: string;
+  /** Null when nothing has been written for the day yet. */
+  entryId: string | null;
+  attendance: AttendanceSuggestion[];
+  unsubmittedTimeLogs: number;
+  sources: { timeLogs: boolean; schedule: boolean };
+}
+
+/**
+ * One row of `GET /v1/diary/:id/history` — §36's before/after trail as a screen
+ * renders it.
+ *
+ * `changedByName` resolves through the user row, so a person who has since closed
+ * their account appears as their tombstoned identity rather than vanishing from
+ * the amendment they made.
+ */
+export interface DiaryRevisionRow {
+  revision: number;
+  action: 'CREATE' | 'UPDATE' | 'DELETE';
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  changedFields: string[];
+  reason: string | null;
+  changedByUserId: string | null;
+  changedByName: string | null;
+  changedAt: string;
+}
+
 /**
  * `diary.closed` — §5's payload, built by allowlist like every other in this
  * phase.

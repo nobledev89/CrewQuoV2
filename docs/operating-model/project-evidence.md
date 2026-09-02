@@ -4,12 +4,13 @@
 evidence, project documents and the site diary — together with the two layers
 every one of them sits on: the §37 capability model, and the offline/sync
 contract decision #22 requires settled *before* these APIs harden.
-**Phase:** 7 · **Status:** **adopted** — §13's four load-bearing questions were
+**Phase:** 7 · **Status:** **delivered** — §13's four load-bearing questions were
 answered by the owner on 2026-09-01, every one as recommended; three remain open
-and none of them blocks the build. **Every step of §14 has now shipped**: the
-capability layer, project locations, the offline contract, the storage service,
-evidence, documents and the site diary. What is left of Phase 7 is 7.6, the
-screens — which render decisions this layer has already made and tested
+and none of them blocked the build. **Every step of §14 has shipped, and so have
+the screens (7.6).** What this packet still owes is named in §12 below rather than
+left implied: artifact-class lifecycle, legal hold and the report snapshot of
+§13.6 — all three about what happens to a record *later*, and the last of them
+explicitly a Phase 10 problem
 · **Last updated:** 2026-09-02
 **Plan refs:** §21 (locations), §22 (evidence + the storage layer), §23 (site
 diary), §24 (documents), §37 (capabilities), §39 (`capture_gps_on_evidence`),
@@ -669,6 +670,16 @@ list of fields, not a denylist somebody has to remember to extend.
 Ade and Priya, end to end, including every path §19.5 requires. This is what the
 phase's `verify:e2e` and browser suites implement.
 
+**All thirteen are implemented as of 2026-09-02**, split between the two suites by
+what each can actually prove. `verify:e2e` drives the API and asserts every rule;
+`project-sections.spec.ts` drives the screens and asserts that the rules are
+*reachable* — a gallery that renders no tiles, a file input hidden with
+`display: none`, or a Close Day button disabled because the prompts came back
+non-empty would every one of them pass a green API suite. Item 8's *"prefilled
+from the schedule"* is prefilled from the **time logs** only; §31's schedule is
+Phase 11, and the prefill response says so in a field rather than returning a
+shorter list somebody has to interpret.
+
 1. **Empty.** Priya opens a new project's Evidence section. It says there is
    nothing yet and names the one action that helps, without a card, an
    illustration or an invented count.
@@ -895,6 +906,16 @@ a queue.**
 | **5** ✅ | **Documents (§24, item 7.4) — shipped 2026-09-02.** Sixteen categories, `supersedes_id` versioning with a one-successor index, expiry dates, the scan, and `document.expiring` — **with a consumer**, see §5. The document manager screen is 7.6. | **shipped** |
 | **6** ✅ | **Site diary (§23) — shipped 2026-09-02.** `site_diary_entries` with the natural key `(project, company, date)`, structured attendance, prefill from the day's submitted and approved time logs, Close Day with prompts that never gate it, and post-close amendment with a required reason, a `record_revisions` row and the count everywhere. **Prefill from §31's schedule is not here and could not be** — the schedule is Phase 11, and the response says so rather than returning an empty list somebody has to interpret. The diary editor screen is 7.6. | **shipped** |
 | **7** ✅ | **Retro-fit the Phase 3 expense receipt upload — shipped 2026-09-01 with step 3.** `expenses.receipt_url` has been null since `0004` with the comment *"upload deferred"*. It is the smallest real consumer of the storage service and therefore its best first proof. | **shipped** |
+
+**The screens are not a step in this table, and shipping them found three things
+the API layer could not have.** §14 orders the *records*, because that is where the
+migrations are; 7.6 sits after all of them and is the first code in the phase that
+is about interaction rather than rules. What it found: a document form that refused
+rather than waiting for the scan §22.1 requires (fixed with a poll that says what
+it is waiting for), a drop zone whose keyboard equivalent had to be the same
+control rather than a second one, and three accessibility defects that passed the
+full axe sweep on the same commit — an unnamed file input, nine "Re-issue" buttons
+sharing one name, and a dialog with two controls called "Close panel".
 
 **Steps 0–2 are also the answer to "what does Phase 7 do while the owner is
 deciding".** They are three of the eight items, they need no bucket and no

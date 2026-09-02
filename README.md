@@ -215,6 +215,21 @@ nothing anybody else touched applies rather than raising a prompt about a change
 nobody made. A genuine collision — both sides editing the same field — returns
 409 naming the field and both values, and writes nothing.
 
+**All four are sections of one project record** (§20), not four screens: open a
+project and the rail carries Locations, Site diary, Photos & evidence and
+Documents beside the sections that were already there. A section whose feature the
+project owner's plan does not include is **not listed at all** — advertising one
+that answers 403 teaches people the rail cannot be trusted — while a section the
+plan includes but your own permissions do not is listed, readable, and says which
+permission the action needs. Those are different refusals and they get different
+answers.
+
+The evidence gallery accepts a drag-and-drop of a whole selection, tags it in one
+pass with per-photograph overrides, and keeps whatever uploaded when part of a
+batch fails. The drop zone is a `<label>` around a real file input, so the
+keyboard path and the pointer path are the same control rather than two
+implementations of one outcome.
+
 ## Useful commands
 
 | Command | What it does |

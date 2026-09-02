@@ -29,6 +29,26 @@ export const locationKindSchema = z.enum(LOCATION_KINDS);
 export type LocationKind = z.infer<typeof locationKindSchema>;
 
 /**
+ * What each kind is called on screen.
+ *
+ * Here rather than in the web app, for the reason `EVIDENCE_CATEGORY_LABELS`
+ * gives: a location picker, an export column and a report's breadcrumb all have
+ * to say the same word, and three copies of a label are three chances for one to
+ * drift. `WAREHOUSE_ZONE` is the one nobody would guess consistently — "Warehouse
+ * zone", not "Zone" and not "Warehouse".
+ */
+export const LOCATION_KIND_LABELS: Readonly<Record<LocationKind, string>> = {
+  BUILDING: 'Building',
+  FLOOR: 'Floor',
+  ROOM: 'Room',
+  DEPARTMENT: 'Department',
+  WAREHOUSE_ZONE: 'Warehouse zone',
+  LOADING_BAY: 'Loading bay',
+  SITE_AREA: 'Site area',
+  OTHER: 'Other',
+};
+
+/**
  * §21's cap, counted in levels rather than in edges: a top-level location is
  * depth 1, so a room inside a floor inside a building is depth 3 and there is
  * exactly one level left.

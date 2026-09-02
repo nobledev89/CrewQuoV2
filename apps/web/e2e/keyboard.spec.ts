@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
-import { RUN, provisionCompany, signIn } from './helpers';
+import { RUN, createProjectHeadless, provisionCompany, seedProjectSections, signIn } from './helpers';
 
 /**
  * The WCAG 2.2 AA gate, the half no scanner asserts.
@@ -75,15 +75,17 @@ test.describe.configure({ mode: 'serial' });
 test.describe('Keyboard and announcement acceptance', () => {
   let page: Page;
 
+  let ownerEmail: string;
+
   test.beforeAll(async ({ browser }) => {
     page = await browser.newPage();
-    const email = await provisionCompany({
+    ownerEmail = await provisionCompany({
       handle: 'keys-owner',
       name: 'Keys Owner',
       companyName: OWNER_CO,
       planId: 'business',
     });
-    await signIn(page, email);
+    await signIn(page, ownerEmail);
   });
 
   test.afterAll(async () => {
@@ -236,6 +238,46 @@ test.describe('Keyboard and announcement acceptance', () => {
    * ── SC 4.1.3: a refusal is announced, not just drawn ─────────────────────────
    */
 
+  /*
+   * ── SC 2.5.7: dragging movements ─────────────────────────────────────────
+   *
+   * WCAG 2.2 added a criterion this product would have failed silently: any function
+   * that uses a dragging movement needs a single-pointer alternative. The evidence
+   * gallery's drop zone is the only drag surface in the app, and the alternative is
+   * not an alternative — it is the same control, because the zone is a `<label>`
+   * wrapping a real `<input type="file">`. This asserts that construction rather
+   * than trusting it: an input hidden with `display: none` is not focusable, which
+   * is the one-line change that would turn the whole section keyboard-inaccessible
+   * while still passing every axe rule and looking identical.
+   */
+  test('the evidence drop zone is reachable and operable without a pointer', async () => {
+    const projectId = await createProjectHeadless(ownerEmail, `Keys project ${RUN}`);
+    await page.goto(`/projects/${projectId}?section=evidence`);
+    await expect(page.getByRole('heading', { name: 'Photos & evidence' })).toBeVisible();
+
+    await page.locator('body').press('Tab');
+    const reached = await tabUntil(
+      page,
+      (f) => f.tag === 'input' && f.name === 'Choose photographs to upload'
+    );
+    expect(
+      reached.found,
+      `the file input was not reachable by Tab. Trail: ${reached.trail.join(' → ')}`
+    ).toBe(true);
+
+    // Focusable is not the same as operable: a `visibility: hidden` input takes focus
+    // in some engines and refuses to open its picker. The click is what proves it.
+    const opensPicker = await page.evaluate(() => {
+      const el = document.activeElement as HTMLInputElement | null;
+      if (!el || el.type !== 'file') return false;
+      let opened = false;
+      el.addEventListener('click', () => { opened = true; }, { once: true });
+      el.click();
+      return opened;
+    });
+    expect(opensPicker, 'the focused file input did not respond to activation').toBe(true);
+  });
+
   test('a refused sign-in is announced in a live region', async () => {
     const anon = await page.context().browser()!.newPage();
     try {
@@ -339,13 +381,27 @@ interface DragExemption {
 /**
  * Every drag interaction in the product, with the equivalent that satisfies SC 2.5.7.
  *
- * Empty on purpose. When Phase 7 lands drag-and-drop upload, the entry goes here *and*
- * the equivalent goes in the UI — a file input reachable by keyboard, a "move to…"
- * control on the row, whatever it is. An entry with a plausible sentence and no shipped
- * control is the failure this cannot catch, which is why the equivalent is named
- * specifically enough to be looked for.
+ * **The first entry arrived on 2026-09-02 with 7.6's evidence gallery**, and the gate
+ * did exactly what it was written for: the drop zone landed, this failed, and the
+ * equivalent had to be named before the build went green again. It was written empty
+ * two phases earlier precisely so that would happen.
+ *
+ * An entry with a plausible sentence and no shipped control is the failure this cannot
+ * catch, which is why the equivalent is named specifically enough to be looked for —
+ * and why the case above tabs to that exact control and activates it.
  */
-const DRAG_EXEMPTIONS: readonly DragExemption[] = [];
+const DRAG_EXEMPTIONS: readonly DragExemption[] = [
+  {
+    where: '/projects/[id]/EvidencePanel.tsx',
+    nonDragEquivalent:
+      'The drop zone IS a <label> wrapping <input type="file" aria-label="Choose ' +
+      'photographs to upload">, so the pointer path and the keyboard path are the same ' +
+      'control rather than two implementations of one outcome. Asserted by "the evidence ' +
+      'drop zone is reachable and operable without a pointer" above, which tabs to that ' +
+      'input and activates it — a `display: none` on the input would keep the page ' +
+      'looking identical, pass every axe rule, and fail that case.',
+  },
+];
 
 /** `onDragStart`, `onDrop`, `draggable`, and the pointer-drag primitives. */
 const DRAG_PATTERN = /\bon(?:DragStart|DragEnd|DragOver|DragEnter|DragLeave|Drop)\b|\bdraggable\s*=|\bdataTransfer\b|\bsetPointerCapture\b/;
