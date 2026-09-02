@@ -22,6 +22,7 @@ heading is an unasked question, which is the failure mode §19.5 exists to preve
 | Notifications & the Action Centre — the durable per-recipient projection, channels, quiet hours, delivery evidence | [notifications.md](./notifications.md) | Phase 6 |
 | Time & time zones — company/project IANA zones, instant-vs-date, DST, date-bound rules | [time.md](./time.md) | Phase 6 |
 | Project evidence — locations, the storage layer, evidence, documents, the site diary, the capability model and the offline contract | [project-evidence.md](./project-evidence.md) | Phase 7 — `draft` |
+| Assets & materials — asset types and lines, weight provenance, destination types and organisations, the movement ledger and the mass roll-up | [assets-materials.md](./assets-materials.md) | Phase 8 — `draft` |
 
 Earlier domains (identity, rates, the delivery loop, portal/audit, invoices) were
 built before the §19.5 decision was adopted on 2026-08-18 and have no packet. They
@@ -118,3 +119,39 @@ subcontractor who cannot photograph the floor cannot do the work either.
 Its §14 is deliberately shaped so the phase does not stall on any of that. The
 capability layer, project locations and the offline contract need no answer from
 anybody, and each is a dependency of something later.
+
+`assets-materials.md` was written the same way — before Phase 8's first line of
+code — and it is the first packet whose most valuable finding is not a hole in the
+product but **a contradiction between two rules of the plan itself**. §25.4 rule 1
+caps the total quantity of an asset line's movements at the line's own quantity.
+Rule 3 says that when material leaves storage, *a second movement* records the
+real outcome. Twelve chairs into a warehouse and twelve out of it is twenty-four
+against a line of forty-two that also donated thirty, so rule 1 refuses the
+movement rule 3 requires. Enforced literally, storage becomes a one-way door and
+locked decision #18 — *storage is not an outcome until a final destination is
+recorded* — becomes unimplementable, which is the opposite of what that decision
+exists to do.
+
+The resolution is one nullable self-reference and a restatement of both the rule
+and §28.2's mass definitions over the movements nothing continues. It is worth the
+paragraph because of *when* it was found: the alternative was a migration on a
+table holding a year of movements, and a published diversion rate that had been
+wrong for that year. §41's ten principles are all about a number being defensible;
+this is the first time one of them was defended by a foreign key.
+
+Four of its nine findings are the canonical DDL disagreeing with a decision made
+after it was written — a `not null` on `created_by_user_id` that the 2026-08-20
+closure promise cannot honour, a foreign key to a Phase 11 table, a shadowing
+model with no uniqueness to enforce it, and a partial index missing the tombstone
+filter every Phase 7 index learned to carry. None of those is interesting on its
+own. Together they are the argument for writing the packet at all: they were found
+by reading the plan against the code that shipped since it was written, which is
+work nobody does while implementing.
+
+Its §13 has two open questions and **neither blocks the build** — both are
+departures from a canonical DDL rather than product choices, so both are built as
+recommended and recorded with their rejected alternatives. Three more entries are
+recorded as *following precedent* rather than sent to the owner, which is the
+first time a packet has done that: whose plan is checked when a subcontractor
+works on somebody else's project was answered on 2026-09-01, and asking it again
+with a different noun would be treating a settled rule as an open one.

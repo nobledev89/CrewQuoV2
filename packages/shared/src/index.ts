@@ -32,3 +32,4 @@ export * from './evidence';
 export * from './documents';
 export * from './diary';
 export * from './sync';
+export * from './assets';
