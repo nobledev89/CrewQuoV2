@@ -25,6 +25,8 @@ const FEATURE_COPY: Record<FeatureKey, string> = {
     'Project documents file RAMS, insurance, waste transfer notes and drawings, with versions kept and expiry dates tracked.',
   site_diary:
     'The site diary is a day-by-day record of what happened on site — attendance, delays, deliveries and health & safety — closed at the end of the day and amendable only with a recorded reason.',
+  asset_tracking:
+    'Asset & material tracking records what came off a site, what it weighed and where it went — reuse, recycling, landfill — so a project can report its tonnage split.',
   invoicing: 'Invoicing turns approved work into an invoice you can issue.',
   audit_visibility: 'Audit visibility lets a client see the trail of activity you publish.',
   api_access: 'API access issues keys for your own integrations.',

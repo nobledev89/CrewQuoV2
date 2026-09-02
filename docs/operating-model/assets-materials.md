@@ -1028,17 +1028,23 @@ document-required rule, the movement algebra (open movements, allocated, in
 storage, unallocated, handled), `outcome_state` derivation, the hierarchy ordering
 that puts reuse above recycling, the display-unit rule, and the gap sentences. A
 unit test per branch, and the invariant from §12 asserted directly: **handled mass
-is invariant under every movement operation.** This is the rate engine's precedent
+is invariant under every movement operation that asserts no new weight.** This is
+the rate engine's precedent
 — *"exhaustive tests before anything renders a number"* is §27.1's rule for Phase
 9 and it applies a phase early to the masses those numbers multiply.
 
-**1. Migration `0033_assets_materials.sql` + the catalogs.** `asset_types` with
+**1. Migration `0033_asset_catalogs.sql` + the catalogs.** `asset_types` with
 the 22 seeded system rows and **`default_unit_weight_kg` null on every one of
 them** (§41.1); `destination_types` with the eleven rows of §25.4's table, the two
 partial unique indexes of finding 8, and `created_at`/`updated_at`;
 `destination_organisations`. Plus the `asset_tracking` feature row and its four
 plan placements in `infra/seed/index.ts`. Reference data first, because everything
 after it is a foreign key to one of these.
+
+**The single migration this step named became three** — `0033_asset_catalogs`,
+`0034_project_assets`, `0035_asset_movements` — one per build-order step, the way
+each of Phase 7's seven steps carried its own. A migration that lands three tables
+at once is a migration whose failure has to be diagnosed three tables at a time.
 
 **2. `project_assets` + `apps/api/src/modules/assets/`.**
 `GET|POST /v1/projects/:projectId/assets`, `GET|PATCH|DELETE /v1/assets/:id`,

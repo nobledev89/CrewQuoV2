@@ -32,6 +32,7 @@ const FEATURE_LABELS: Record<FeatureKey, string> = {
   project_evidence: 'Photos & evidence',
   project_documents: 'Project documents',
   site_diary: 'Site diary',
+  asset_tracking: 'Asset & material tracking',
   invoicing: 'Invoicing',
   audit_visibility: 'Client-visible audit trail',
   api_access: 'API access',

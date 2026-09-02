@@ -19,6 +19,7 @@ const FEATURES: Array<[key: string, name: string, category: string]> = [
   ['project_evidence', 'Photos & evidence', 'evidence'],
   ['project_documents', 'Project documents', 'evidence'],
   ['site_diary', 'Site diary', 'evidence'],
+  ['asset_tracking', 'Asset & material tracking', 'sustainability'],
   ['invoicing', 'Invoicing', 'billing'],
   ['audit_visibility', 'Audit trail visibility', 'portal'],
   ['api_access', 'API access', 'platform'],
@@ -100,6 +101,7 @@ const PLANS: PlanSeed[] = [
       'project_evidence',
       'project_documents',
       'site_diary',
+      'asset_tracking',
     ],
     limits: { active_subcontractors: 5, internal_seats: 2, clients: null, audit_retention_days: 30 },
     prices: [
@@ -125,6 +127,7 @@ const PLANS: PlanSeed[] = [
       'project_evidence',
       'project_documents',
       'site_diary',
+      'asset_tracking',
     ],
     limits: { active_subcontractors: 30, internal_seats: 8, clients: null, audit_retention_days: 90 },
     prices: [
@@ -153,6 +156,7 @@ const PLANS: PlanSeed[] = [
       'project_evidence',
       'project_documents',
       'site_diary',
+      'asset_tracking',
     ],
     limits: {
       active_subcontractors: 150,

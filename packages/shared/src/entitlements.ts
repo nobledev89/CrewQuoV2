@@ -41,6 +41,19 @@ export const FEATURE_KEYS = [
    * of its own plan rather than of the plan that produced the record.
    */
   'site_diary',
+  /**
+   * Phase 8 (§43), and gated against the **project owner** exactly as the three
+   * Phase 7 keys above are. This is the same rule with a different noun rather
+   * than a new decision — `assets-materials.md` §13.3 records it as precedent —
+   * and the reasoning transfers word for word: a subcontractor who cannot record
+   * what it removed cannot do a clearance job, and the Crew plan exists so a
+   * subcontractor can work for a paying customer for nothing.
+   *
+   * The consequence, said plainly because §43 puts asset tracking at "—" on
+   * Crew: a Crew company running *its own* project cannot record assets at all.
+   * That is the intended shape of the free tier.
+   */
+  'asset_tracking',
   'invoicing',
   'audit_visibility',
   'api_access',
