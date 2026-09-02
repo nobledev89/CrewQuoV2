@@ -24,6 +24,7 @@ heading is an unasked question, which is the failure mode §19.5 exists to preve
 | Project evidence — locations, the storage layer, evidence, documents, the site diary, the capability model and the offline contract | [project-evidence.md](./project-evidence.md) | Phase 7 — `draft` |
 | Assets & materials — asset types and lines, weight provenance, destination types and organisations, the movement ledger and the mass roll-up | [assets-materials.md](./assets-materials.md) | Phase 8 — `draft` |
 | Sustainability & the carbon engine — emission factor sets and their importer, product carbon factors, project activities, the calculation ledger with its buckets and supersession, avoided-emissions claims and the §39 settings | [sustainability.md](./sustainability.md) | Phase 9 — `draft` |
+| Reporting & client sign-off — `generated_reports` and its frozen snapshot, the twelve-section completion report, the evidence pack, the client-facing export, the disclaimer and its claim guards, `client_signoffs`, and the `CLIENT_PERIOD` aggregation | [reporting-signoff.md](./reporting-signoff.md) | Phase 10 — `draft` |
 
 Earlier domains (identity, rates, the delivery loop, portal/audit, invoices) were
 built before the §19.5 decision was adopted on 2026-08-18 and have no packet. They
@@ -197,3 +198,64 @@ and cannot verify, on a figure that *reduces* a customer's reported emissions.
 Five further entries are recorded rather than asked, including the displacement
 default above: an owner decision already answers it, and sending it back would
 treat a settled rule as an open one.
+
+`reporting-signoff.md` is the fourth packet written before its phase started, and
+the first written about an **artefact** rather than a record or a claim.
+Everything CrewQuo holds so far is corrected by correcting its inputs — the mass
+balance is derived, the roll-up is derived, and `massBalance.ts` says in its own
+header that *"nobody corrects the roll-up; you correct its inputs."* §29.4 breaks
+that on purpose: a generated report stops being derived and becomes a record of
+what was said, which has to reproduce in 2028 after two factor sets have been
+imported and three weights corrected.
+
+Its first finding is the phase's own milestone, and it was found by rendering the
+same document twice. *"Regenerable byte-identical a year later"* is not achievable
+with the Phase 4 renderer, because jsPDF stamps every file with a wall-clock
+`/CreationDate` carrying the rendering machine's UTC offset and a `/ID` of 32 hex
+characters from `Math.random()`. Two renders of identical content produce
+different files, and the difference is invisible to anyone comparing the PDFs on
+screen — so the test fails and the obvious conclusion is that the test is wrong.
+The fix is two lines of public jsPDF API, and it improves the document: the
+creation date becomes a fact about the report, and the file's `/ID` becomes the
+first half of the content hash of the snapshot it renders.
+
+Three more findings are the plan's §29 disagreeing with itself now that the
+client-export decision of 2026-08-17 has put its paragraphs side by side. §29.5
+sends the client export to a `generated_reports` snapshot whose `kind` constraint
+has no value it can be. §29.1's Project overview names the subcontractors and
+§29.5 forbids naming them in a file that leaves the building — with a
+`client_visible` boolean one route away from doing it. And `content_hash` is
+specified as *"sha256 of the canonicalized snapshot"* in a repository that
+canonicalizes nothing, over a `jsonb` column that reorders keys on write: hash the
+object you built, read it back to verify, and the seal fails on every row, which
+is the same as having no seal.
+
+The most consequential of those is the disclosure one, and its resolution is why
+the packet was worth writing before the migration. A file is authorized once and
+then it is a file — emailed, printed, forwarded to a party CrewQuo has never heard
+of. So the boundary gets three independent layers rather than a filter: an
+immutable `audience` column, a check constraint binding `client_visible` to it,
+and **two snapshot builders over two type families**, so the client's document has
+no field that can hold a PAY figure or a provider name. §29.5 asked for exactly
+that in words — *"the exclusion cannot be forgotten by a later edit the way a
+`select` list can"* — and one snapshot with a disclosure flag would have made it
+the forgettable kind.
+
+It is also the packet that pays off three deferred debts at once, which is what
+being fourth in a row buys. `project-evidence.md` §13.6 said the report-versus-
+amended-diary conflict *"bites in Phase 10, not here"*; it does, and it is closed
+as that packet recommended and generalised to every record class a snapshot cites.
+Decision #27's promise that evidence referenced by an issued report remains
+addressable had nothing enforcing it, because a `jsonb` reference is not a
+reference. And the artifact-class hold Phase 7 refused to build — *"a mechanism
+with no caller"* — now has two callers on the day it lands: it is the retention
+hold, and it is the disclosure grant that lets a client open a photograph inside a
+document they were given without that photograph having to be published to them
+generally.
+
+Its §13 has one open entry and it is packaging rather than design: §43's tier
+placement for the four new feature keys is followed as proposed, with one stated
+departure — `client_signoff` on Starter rather than Pro, because a sign-off is how
+a small contractor proves a job is finished and costs nothing to serve, and
+putting the proof of completion two tiers above the work would stop the
+free-to-Starter path one step short of the thing the customer is selling.
