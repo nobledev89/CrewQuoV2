@@ -1048,6 +1048,23 @@ export type CreateMovement = z.infer<typeof createMovementSchema>;
 export const continueMovementSchema = createMovementSchema;
 export type ContinueMovement = z.infer<typeof continueMovementSchema>;
 
+/**
+ * Correcting a movement.
+ *
+ * **`continuesMovementId` is not here**, and its absence is the design. Re-pointing
+ * a chain through a patch would let somebody detach a storage leg from its outcome
+ * and leave both open — 12 chairs counted in the warehouse and 12 counted as
+ * recycled, from a line of 42 that also donated 30. The chain is written once, by
+ * the route that exists to write it.
+ */
+export const updateMovementSchema = createMovementSchema
+  .omit({ clientId: true })
+  .partial()
+  .extend({ expectedRevision: z.number().int().min(1).optional() })
+  .strict()
+  .refine((v) => Object.keys(v).length > 0, { message: 'Nothing to update' });
+export type UpdateMovement = z.infer<typeof updateMovementSchema>;
+
 export const DESTINATION_ORG_KINDS = [
   'CHARITY',
   'REUSE_ORG',
@@ -1113,3 +1130,45 @@ export function assetLinesRecordedEventPayload(args: {
     assetTypeCodes: [...new Set(args.rows.map((r) => r.assetTypeCode))].sort(),
   };
 }
+
+const destinationOrgFields = z.object({
+  name: z.string().trim().min(1).max(300),
+  kind: destinationOrgKindSchema,
+  /**
+   * Only a company this one already has an engagement edge with, checked in the
+   * API. §23's `provider_company_id` got the same bound in Phase 7 for the same
+   * reason: "Redstone Reuse take our donations" is an assertion about a named
+   * business, in a record that business cannot see and cannot contest.
+   */
+  linkedCompanyId: z.string().uuid().nullable(),
+  address: z.string().trim().max(500).nullable(),
+  /**
+   * A third party's personal data, held about somebody with no CrewQuo account,
+   * no consent flow and no way to ask what is held about them. Optional by
+   * design, and no screen pushes for them (packet §7).
+   */
+  contactName: z.string().trim().max(200).nullable(),
+  contactEmail: z.string().trim().email().max(320).nullable(),
+  contactPhone: z.string().trim().max(60).nullable(),
+  /** A waste carrier licence or permit number. Recorded and shown; never blocking. */
+  licenceNumber: z.string().trim().max(120).nullable(),
+  licenceExpiresOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'expected YYYY-MM-DD').nullable(),
+  notes: z.string().trim().max(4000).nullable(),
+});
+
+export const createDestinationOrgSchema = destinationOrgFields.partial().extend({
+  name: z.string().trim().min(1).max(300),
+  kind: destinationOrgKindSchema,
+  clientId: z.string().uuid().optional(),
+});
+export type CreateDestinationOrg = z.infer<typeof createDestinationOrgSchema>;
+
+export const updateDestinationOrgSchema = destinationOrgFields
+  .extend({
+    /** `false` retires it. The row stays, because a two-year-old movement names it. */
+    active: z.boolean(),
+  })
+  .partial()
+  .strict()
+  .refine((v) => Object.keys(v).length > 0, { message: 'Nothing to update' });
+export type UpdateDestinationOrg = z.infer<typeof updateDestinationOrgSchema>;

@@ -187,6 +187,18 @@ export const AUDIT_ACTIONS = [
   'asset.imported',
   'asset.updated',
   'asset.deleted',
+  /*
+   * The movement ledger (§25.4). `recorded` and `continued` are separate actions
+   * rather than one with a flag, because they answer different questions six
+   * months later: "where did this go" and "where did it go NEXT". Collapsing them
+   * would make the storage chain unreadable from the trail alone.
+   */
+  'asset.movement_recorded',
+  'asset.movement_continued',
+  'asset.movement_corrected',
+  'asset.movement_removed',
+  'destination_org.created',
+  'destination_org.updated',
 ] as const;
 export const auditActionSchema = z.enum(AUDIT_ACTIONS);
 export type AuditAction = z.infer<typeof auditActionSchema>;
@@ -198,6 +210,8 @@ export const AUDIT_ENTITY_TYPES = [
   'DOCUMENT',
   'SITE_DIARY_ENTRY',
   'PROJECT_ASSET',
+  'ASSET_MOVEMENT',
+  'DESTINATION_ORGANISATION',
   'TIME_LOG',
   'EXPENSE',
   'PROJECT_SUBMISSION',

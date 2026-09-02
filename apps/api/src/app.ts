@@ -46,6 +46,12 @@ import {
 } from './modules/documents/routes';
 import { diaryRouter, projectDiaryRouter } from './modules/diary/routes';
 import { assetsRouter, projectAssetsRouter } from './modules/assets/routes';
+import {
+  assetMovementsRouter,
+  destinationOrgsRouter,
+  destinationTypesRouter,
+  movementsRouter,
+} from './modules/assets/movementsRoutes';
 import { invitesRouter } from './modules/invites/routes';
 import { projectsRouter } from './modules/projects/routes';
 import {
@@ -293,7 +299,13 @@ export function buildApp(): Express {
   app.use('/v1/evidence', requireAuth, evidenceRouter);
   app.use('/v1/documents', requireAuth, documentsRouter);
   app.use('/v1/diary', requireAuth, diaryRouter);
+  // Mounted before `assetsRouter` so `/:id/movements` reaches the router that
+  // owns it rather than falling through to the asset handler.
+  app.use('/v1/assets', requireAuth, assetMovementsRouter);
   app.use('/v1/assets', requireAuth, assetsRouter);
+  app.use('/v1/movements', requireAuth, movementsRouter);
+  app.use('/v1/destination-types', requireAuth, destinationTypesRouter);
+  app.use('/v1/destination-organisations', requireAuth, destinationOrgsRouter);
   app.use('/v1/work-context', requireAuth, workContextRouter);
   app.use('/v1/time-logs', requireAuth, timeLogsRouter);
   app.use('/v1/expenses', requireAuth, expensesRouter);

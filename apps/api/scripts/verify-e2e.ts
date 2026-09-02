@@ -9726,6 +9726,379 @@ async function main(): Promise<void> {
   eq('...nor does any event payload, which is where a serial would leak first',
     asOwnPayload[0]?.n, '0');
 
+  /**
+   * Handled mass, computed the way §28.2 defines it, from the API's own answers.
+   *
+   * The roll-up endpoint is 8.5; this is the same arithmetic done in the test so
+   * step 3 can assert its own invariant without waiting for a screen. Unallocated
+   * mass comes from QUANTITY, never from subtracting masses — an overriding
+   * movement weight makes the subtraction negative, which is the packet's §0
+   * finding 2 and is asserted directly below.
+   */
+  const handledKg = async (assetId: string): Promise<number> => {
+    const a = await call('GET', `/v1/assets/${assetId}`, { ...evSubCtx });
+    const m = await call('GET', `/v1/assets/${assetId}/movements`, { ...evSubCtx });
+    const open = (m.json.movements as any[]).filter((x) => x.isOpen);
+    const movedQty = open.reduce((sum, x) => sum + x.quantity, 0);
+    const movedKg = open.reduce((sum, x) => sum + (x.effectiveWeightKg ?? 0), 0);
+    const unit = a.json.asset.unitWeightKg ?? 0;
+    const unallocated = Math.max(0, a.json.asset.quantity - movedQty) * unit;
+    return Number((movedKg + unallocated).toFixed(6));
+  };
+
+  // ── The movement ledger (§25.4) — Phase 8 build order step 3 ─────────────
+  section('Asset movements — the split, the chain, and the mass that does not move');
+
+  // ── 1. The hierarchy, as data the company can see ────────────────────────
+  const mvTypes = await call('GET', '/v1/destination-types', { ...asOwnerCtx });
+  eq('the destination catalog is readable', mvTypes.status, 200);
+  eq('...and ships the eleven', (mvTypes.json.destinationTypes as unknown[]).length, 11);
+  const byCode = Object.fromEntries(
+    (mvTypes.json.destinationTypes as { code: string }[]).map((d) => [d.code, d])
+  ) as Record<string, any>;
+  eq('storage has no tier and is not a final outcome — decision #18, as one row',
+    [byCode.STORAGE.hierarchyTier, byCode.STORAGE.isFinalOutcome], [null, false]);
+  eq('...and counts as nothing at all',
+    [byCode.STORAGE.countsAsReuse, byCode.STORAGE.countsAsDiverted], [false, false]);
+  eq('reuse outranks recycling, and both are separate flags (§41.8)',
+    [byCode.DONATION.hierarchyTier, byCode.RECYCLING.hierarchyTier], [2, 3]);
+  eq('...recycling is diverted but is not reuse',
+    [byCode.RECYCLING.countsAsDiverted, byCode.RECYCLING.countsAsReuse], [true, false]);
+  eq('...and landfill is neither', byCode.LANDFILL.countsAsDiverted, false);
+  check('the seeded semantics are marked as the system’s, so a customisation reads as a diff',
+    (mvTypes.json.destinationTypes as { isSystem: boolean }[]).every((d) => d.isSystem),
+    mvTypes.json.destinationTypes);
+
+  // ── 2. A destination organisation ────────────────────────────────────────
+  const mvCharity = await call('POST', '/v1/destination-organisations', {
+    ...evSubCtx,
+    body: {
+      name: `Bright Futures ${RUN}`, kind: 'CHARITY',
+      contactName: 'Ngozi', contactEmail: `ngozi+${RUN}@example.test`,
+      licenceNumber: 'WC/1234', licenceExpiresOn: '2027-06-30',
+    },
+  });
+  eq('a charity is recorded as a destination organisation', mvCharity.status, 201);
+  const mvCharityId = mvCharity.json.destinationOrganisation.id as string;
+
+  const mvDupe = await call('POST', '/v1/destination-organisations', {
+    ...evSubCtx,
+    body: { name: `bright futures ${RUN}`, kind: 'CHARITY' },
+  });
+  eq('a second organisation with the same name is refused, case-insensitively',
+    mvDupe.status, 409);
+
+  const mvBadLink = await call('POST', '/v1/destination-organisations', {
+    ...evSubCtx,
+    body: { name: `Rival Reuse ${RUN}`, kind: 'REUSE_ORG', linkedCompanyId: evSub2Company },
+  });
+  eq('a company you do not work with cannot be named as a linked organisation',
+    mvBadLink.status, 422);
+
+  const mvRecycler = await call('POST', '/v1/destination-organisations', {
+    ...evSubCtx,
+    body: { name: `Meridian Recycling ${RUN}`, kind: 'RECYCLER' },
+  });
+  const mvRecyclerId = mvRecycler.json.destinationOrganisation.id as string;
+
+  // ── 3. The milestone: 42 chairs in, 30 donated / 12 recycled out ─────────
+  const mvLine = await call('POST', `/v1/projects/${evProject}/assets`, {
+    ...evSubCtx,
+    body: {
+      assetTypeId: CHAIR, quantity: 42, weightBasis: 'UNIT', unitWeightKg: 16.5,
+      weightSource: 'USER_ESTIMATE',
+    },
+  });
+  const mvAsset = mvLine.json.asset.id as string;
+  eq('the milestone line starts at 693 kg', mvLine.json.asset.totalWeightKg, 693);
+
+  const mvDonated = await call('POST', `/v1/assets/${mvAsset}/movements`, {
+    ...evSubCtx,
+    body: {
+      destinationTypeId: byCode.DONATION.id, destinationOrgId: mvCharityId,
+      quantity: 30, movedOn: '2026-03-04', clientId: randomUUID(),
+    },
+  });
+  eq('30 are donated', mvDonated.status, 201);
+  eq('...and the line is partly done', mvDonated.json.outcomeState, 'PARTIAL');
+  eq('...with the mass derived from the line, not copied',
+    mvDonated.json.movement.effectiveWeightKg, 495);
+  eq('...and nothing overriding it', mvDonated.json.movement.weightIsOverridden, false);
+
+  const mvRecycled = await call('POST', `/v1/assets/${mvAsset}/movements`, {
+    ...evSubCtx,
+    body: {
+      destinationTypeId: byCode.RECYCLING.id, destinationOrgId: mvRecyclerId,
+      quantity: 12, movedOn: '2026-03-05',
+    },
+  });
+  eq('12 are recycled', mvRecycled.status, 201);
+  eq('...and the line is now final — derived, never typed',
+    mvRecycled.json.outcomeState, 'FINAL');
+  eq('...which is what the asset row says too',
+    (await call('GET', `/v1/assets/${mvAsset}`, { ...evSubCtx })).json.asset.outcomeState,
+    'FINAL');
+
+  // ── 4. The ceiling (§25.4 rule 1, restated over open movements) ──────────
+  const mvOver = await call('POST', `/v1/assets/${mvAsset}/movements`, {
+    ...evSubCtx,
+    body: { destinationTypeId: byCode.LANDFILL.id, quantity: 1, movedOn: '2026-03-06' },
+  });
+  eq('a 43rd chair is refused', mvOver.status, 409);
+  check('...saying all 42 are already recorded, rather than "conflict"',
+    JSON.stringify(mvOver.json).includes('All 42 are already recorded'), mvOver.json);
+
+  // ── 5. Storage, and the finding this whole packet was written for ────────
+  //
+  // §25.4 rule 1 caps the movement total at the line's quantity; rule 3 says
+  // leaving storage is a SECOND movement. Twelve in and twelve out is 24 against
+  // a line of 42 that also donated 30. The chain is what makes both true.
+  const mvDeskLine = await call('POST', `/v1/projects/${evProject}/assets`, {
+    ...evSubCtx,
+    body: {
+      assetTypeId: DESK, quantity: 8, weightBasis: 'UNIT', unitWeightKg: 30,
+      weightSource: 'USER_ESTIMATE',
+    },
+  });
+  const mvDeskAsset = mvDeskLine.json.asset.id as string;
+
+  const mvStored = await call('POST', `/v1/assets/${mvDeskAsset}/movements`, {
+    ...evSubCtx,
+    body: { destinationTypeId: byCode.STORAGE.id, quantity: 8, movedOn: '2026-03-04' },
+  });
+  eq('8 desks go into storage', mvStored.status, 201);
+  eq('...and the line reads IN_STORAGE, not FINAL', mvStored.json.outcomeState, 'IN_STORAGE');
+  const mvStoredId = mvStored.json.movement.id as string;
+
+  // The ceiling now refuses a fresh movement, which is rule 1 doing its job —
+  // and would make storage a one-way door without the chain.
+  const mvFreshAfterStorage = await call('POST', `/v1/assets/${mvDeskAsset}/movements`, {
+    ...evSubCtx,
+    body: { destinationTypeId: byCode.RESALE.id, quantity: 8, movedOn: '2026-04-02' },
+  });
+  eq('a fresh movement out of storage is refused by the ceiling', mvFreshAfterStorage.status, 409);
+
+  const mvHandledBefore = await handledKg(mvDeskAsset);
+  const mvContinued = await call('POST', `/v1/movements/${mvStoredId}/continue`, {
+    ...evSubCtx,
+    body: { destinationTypeId: byCode.RESALE.id, quantity: 8, movedOn: '2026-04-02' },
+  });
+  eq('...and continuing the storage leg is accepted', mvContinued.status, 201);
+  eq('...which makes the line final', mvContinued.json.outcomeState, 'FINAL');
+  eq('...the storage leg is no longer open',
+    (await call('GET', `/v1/assets/${mvDeskAsset}/movements`, { ...evSubCtx })).json.movements
+      .find((m: any) => m.id === mvStoredId)?.isOpen, false);
+  check('...but it is still on the ledger, because a ledger records where material has been',
+    (await call('GET', `/v1/assets/${mvDeskAsset}/movements`, { ...evSubCtx })).json.movements
+      .some((m: any) => m.id === mvStoredId), true);
+
+  // THE PROPERTY THE WHOLE DESIGN IS FOR.
+  eq('handled mass does not move by a gram when material leaves storage',
+    await handledKg(mvDeskAsset), mvHandledBefore);
+  eq('...and it is still the 240 kg that came off the floor', mvHandledBefore, 240);
+
+  // ── 6. The chain's three refusals ────────────────────────────────────────
+  const mvContinueFinal = await call('POST', `/v1/movements/${mvRecycled.json.movement.id}/continue`, {
+    ...evSubCtx,
+    body: { destinationTypeId: byCode.LANDFILL.id, quantity: 12, movedOn: '2026-05-01' },
+  });
+  eq('a final-outcome movement cannot be continued — that is a second claim', mvContinueFinal.status, 409);
+  check('...and says to correct it instead',
+    JSON.stringify(mvContinueFinal.json).includes('Correct that movement'), mvContinueFinal.json);
+
+  const mvForkChain = await call('POST', `/v1/movements/${mvStoredId}/continue`, {
+    ...evSubCtx,
+    body: { destinationTypeId: byCode.LANDFILL.id, quantity: 8, movedOn: '2026-05-01' },
+  });
+  eq('a movement cannot be continued twice — a fork double-counts', mvForkChain.status, 409);
+
+  const mvStore2 = await call('POST', `/v1/projects/${evProject}/assets`, {
+    ...evSubCtx,
+    body: { assetTypeId: DESK, quantity: 12, weightBasis: 'UNIT', unitWeightKg: 30, weightSource: 'USER_ESTIMATE' },
+  });
+  const mvStore2Asset = mvStore2.json.asset.id as string;
+  const mvStore2Leg = await call('POST', `/v1/assets/${mvStore2Asset}/movements`, {
+    ...evSubCtx,
+    body: { destinationTypeId: byCode.STORAGE.id, quantity: 12, movedOn: '2026-03-04' },
+  });
+  const mvStore2LegId = mvStore2Leg.json.movement.id as string;
+  const mvTooMany = await call('POST', `/v1/movements/${mvStore2LegId}/continue`, {
+    ...evSubCtx,
+    body: { destinationTypeId: byCode.RESALE.id, quantity: 15, movedOn: '2026-04-02' },
+  });
+  eq('15 cannot come out of a warehouse that 12 went into', mvTooMany.status, 409);
+
+  // A partial release leaves a remainder, and the API says so rather than
+  // inventing a movement nobody recorded.
+  const mvPartial = await call('POST', `/v1/movements/${mvStore2LegId}/continue`, {
+    ...evSubCtx,
+    body: { destinationTypeId: byCode.RESALE.id, quantity: 5, movedOn: '2026-04-02' },
+  });
+  eq('a partial release from storage is allowed', mvPartial.status, 201);
+  check('...and names the remainder rather than inventing a movement for it',
+    String(mvPartial.json.notice ?? '').includes('7 of these are still'), mvPartial.json.notice);
+  eq('...leaving the line partly done', mvPartial.json.outcomeState, 'PARTIAL');
+
+  // ── 7. Deleting a continued movement orphans the chain, so it is refused ──
+  const mvDeleteSource = await call('DELETE', `/v1/movements/${mvStoredId}`, { ...evSubCtx });
+  eq('a movement something was carried onward from cannot be removed', mvDeleteSource.status, 409);
+  check('...and names the movement that depends on it',
+    JSON.stringify(mvDeleteSource.json).includes('Remove that one first'), mvDeleteSource.json);
+
+  const mvDeleteLeaf = await call('DELETE', `/v1/movements/${mvContinued.json.movement.id}`, {
+    ...evSubCtx,
+  });
+  eq('the leaf can be removed', mvDeleteLeaf.status, 204);
+  eq('...which puts the desks back in storage, derived from what is left',
+    (await call('GET', `/v1/assets/${mvDeskAsset}`, { ...evSubCtx })).json.asset.outcomeState,
+    'IN_STORAGE');
+  eq('...and handled mass still has not moved', await handledKg(mvDeskAsset), 240);
+
+  // ── 8. Correcting a movement, and the trail it writes ────────────────────
+  const mvCorrect = await call('PATCH', `/v1/movements/${mvDonated.json.movement.id}`, {
+    ...evSubCtx,
+    body: { destinationOrgId: mvRecyclerId },
+  });
+  eq('a movement’s organisation can be corrected', mvCorrect.status, 200);
+  const { rows: mvRevs } = await db.query<{ action: string; changed_fields: string[] }>(
+    `select action, changed_fields from record_revisions
+      where entity_type = 'ASSET_MOVEMENT' and entity_id = $1`,
+    [mvDonated.json.movement.id]
+  );
+  eq('...and the correction is a revision, never a silent overwrite (§25.4 rule 4)',
+    mvRevs[0]?.action, 'UPDATE');
+  eq('...naming only what moved', mvRevs[0]?.changed_fields, ['destinationOrgId']);
+  eq('...and the mass balance did not change, because a charity is not a mass',
+    await handledKg(mvAsset), 693);
+
+  const mvShrink = await call('PATCH', `/v1/movements/${mvStore2LegId}`, {
+    ...evSubCtx, body: { quantity: 3 },
+  });
+  eq('a storage leg cannot shrink below what has already left it', mvShrink.status, 409);
+
+  const mvGrow = await call('PATCH', `/v1/movements/${mvDonated.json.movement.id}`, {
+    ...evSubCtx, body: { quantity: 40 },
+  });
+  eq('correcting a quantity is measured against the ceiling without itself',
+    mvGrow.status, 409);
+  const mvGrowOk = await call('PATCH', `/v1/movements/${mvDonated.json.movement.id}`, {
+    ...evSubCtx, body: { quantity: 29 },
+  });
+  eq('...and a correction that fits is accepted', mvGrowOk.status, 200);
+  eq('...leaving one chair unallocated, so the line is no longer final',
+    mvGrowOk.json.outcomeState, 'PARTIAL');
+  await call('PATCH', `/v1/movements/${mvDonated.json.movement.id}`, {
+    ...evSubCtx, body: { quantity: 30 },
+  });
+
+  // ── 9. An overriding weight, and what it does and does not move ──────────
+  const mvOverride = await call('PATCH', `/v1/movements/${mvRecycled.json.movement.id}`, {
+    ...evSubCtx, body: { weightKg: 205 },
+  });
+  eq('a movement may override its own weight — the weighbridge weighed this load',
+    mvOverride.json.movement?.weightKg, 205);
+  eq('...and handled mass rises, because the parts were weighed better than the whole',
+    await handledKg(mvAsset), 700);
+
+  await call('PATCH', `/v1/assets/${mvAsset}`, {
+    ...evSubCtx,
+    body: { weightBasis: 'UNIT', unitWeightKg: 16.7, weightSource: 'WEIGHBRIDGE' },
+  });
+  const mvAfterLineEdit = await call('GET', `/v1/assets/${mvAsset}/movements`, { ...evSubCtx });
+  const mvDonatedNow = (mvAfterLineEdit.json.movements as any[]).find(
+    (m) => m.id === mvDonated.json.movement.id
+  );
+  const mvRecycledNow = (mvAfterLineEdit.json.movements as any[]).find(
+    (m) => m.id === mvRecycled.json.movement.id
+  );
+  eq('correcting the line moves every DERIVED movement with it, with nothing back-filled',
+    mvDonatedNow?.effectiveWeightKg, 501);
+  eq('...and leaves the overridden one exactly where the weighbridge put it',
+    mvRecycledNow?.effectiveWeightKg, 205);
+
+  // ── 10. Two clerks racing the ceiling ────────────────────────────────────
+  const mvRace = await call('POST', `/v1/projects/${evProject}/assets`, {
+    ...evSubCtx,
+    body: { assetTypeId: CHAIR, quantity: 10, weightBasis: 'UNIT', unitWeightKg: 10, weightSource: 'USER_ESTIMATE' },
+  });
+  const mvRaceAsset = mvRace.json.asset.id as string;
+  const [mvRaceA, mvRaceB] = await Promise.all([
+    call('POST', `/v1/assets/${mvRaceAsset}/movements`, {
+      ...evSubCtx,
+      body: { destinationTypeId: byCode.DONATION.id, quantity: 7, movedOn: '2026-03-04' },
+    }),
+    call('POST', `/v1/assets/${mvRaceAsset}/movements`, {
+      ...evSubCtx,
+      body: { destinationTypeId: byCode.RECYCLING.id, quantity: 7, movedOn: '2026-03-04' },
+    }),
+  ]);
+  const mvRaceCodes = [mvRaceA.status, mvRaceB.status].sort();
+  eq('two movements racing one ceiling: exactly one lands', mvRaceCodes, [201, 409]);
+  const { rows: mvRaceTotal } = await db.query<{ total: string }>(
+    `select coalesce(sum(quantity), 0)::text as total from asset_movements
+      where asset_id = $1 and deleted_at is null`, [mvRaceAsset]);
+  check('...and the ledger never exceeds the line it belongs to',
+    Number(mvRaceTotal[0]?.total) <= 10, mvRaceTotal[0]);
+
+  // ── 11. Foreign ids, refused in the direction they would be used ─────────
+  const mvForeignOrg = await call('POST', `/v1/assets/${mvRaceAsset}/movements`, {
+    ...evSubCtx,
+    body: {
+      destinationTypeId: byCode.LANDFILL.id, destinationOrgId: randomUUID(),
+      quantity: 1, movedOn: '2026-03-04',
+    },
+  });
+  eq('a destination organisation that is not yours answers not found', mvForeignOrg.status, 404);
+
+  const mvForeignDoc = await call('POST', `/v1/assets/${mvRaceAsset}/movements`, {
+    ...evSubCtx,
+    body: {
+      destinationTypeId: byCode.LANDFILL.id, documentId: randomUUID(),
+      quantity: 1, movedOn: '2026-03-04',
+    },
+  });
+  eq('a document that is not on this project is refused', mvForeignDoc.status, 422);
+
+  const mvRivalMove = await call('POST', `/v1/assets/${mvAsset}/movements`, {
+    token: evSub2.token, companyId: evSub2Company,
+    body: { destinationTypeId: byCode.LANDFILL.id, quantity: 1, movedOn: '2026-03-04' },
+  });
+  eq('a rival on the same project cannot move somebody else’s material', mvRivalMove.status, 404);
+
+  const mvWorkerMove = await call('POST', `/v1/assets/${mvAsset}/movements`, {
+    token: evWorker.token, companyId: evCompany,
+    body: { destinationTypeId: byCode.LANDFILL.id, quantity: 1, movedOn: '2026-03-04' },
+  });
+  eq('a Worker bundle cannot set a destination', mvWorkerMove.status, 403);
+  check('...and the refusal names the capability',
+    JSON.stringify(mvWorkerMove.json).includes('asset.destination.set'), mvWorkerMove.json);
+
+  // ── 12. Retiring an organisation keeps it and drops the person ───────────
+  const mvRetire = await call('PATCH', `/v1/destination-organisations/${mvCharityId}`, {
+    ...evSubCtx, body: { active: false },
+  });
+  eq('an organisation can be retired', mvRetire.status, 200);
+  eq('...and its third-party contact details are cleared',
+    [mvRetire.json.destinationOrganisation.contactName,
+     mvRetire.json.destinationOrganisation.contactEmail], [null, null]);
+  eq('...while the organisation itself stays, because a movement names it',
+    mvRetire.json.destinationOrganisation.name, `Bright Futures ${RUN}`);
+
+  // ── 13. The back-references 0030 deferred ────────────────────────────────
+  const { rows: mvEvidenceCols } = await db.query<{ column_name: string }>(
+    `select column_name from information_schema.columns
+      where table_name = 'project_evidence' and column_name in ('asset_id','asset_movement_id')
+      order by column_name`
+  );
+  eq('project_evidence now carries the two foreign keys 0030 deferred',
+    mvEvidenceCols.map((c) => c.column_name), ['asset_id', 'asset_movement_id']);
+  const { rows: mvNoVehicle } = await db.query<{ n: string }>(
+    `select count(*)::text as n from information_schema.columns
+      where table_name = 'asset_movements' and column_name = 'vehicle_id'`
+  );
+  eq('...and asset_movements has no vehicle_id, whose table is Phase 11',
+    mvNoVehicle[0]?.n, '0');
+
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);
   if (failures.length === 0) {
