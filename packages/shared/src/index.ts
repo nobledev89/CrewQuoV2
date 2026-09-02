@@ -33,3 +33,4 @@ export * from './documents';
 export * from './diary';
 export * from './sync';
 export * from './assets';
+export * from './carbon-engine';
