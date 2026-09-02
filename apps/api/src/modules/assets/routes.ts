@@ -59,13 +59,20 @@ import {
  * claim* — see `applyWeight`.
  */
 
-interface ProjectAccess {
+export interface ProjectAccess {
   projectId: string;
   ownerCompanyId: string;
   isOwner: boolean;
 }
 
-async function projectAccess(projectId: string, companyId: string): Promise<ProjectAccess> {
+/*
+ * Exported, and that is deliberate rather than convenient. `massBalance.ts` needs
+ * the same company edge over the same key, and a second copy of the check that
+ * decides whether two businesses may see each other's project is the one kind of
+ * duplication worth a slightly odd import. `movementsRoutes.ts` keeps its own
+ * `assetAccess` because it resolves a different key — an asset id, not a project.
+ */
+export async function projectAccess(projectId: string, companyId: string): Promise<ProjectAccess> {
   const row = await queryOne<{ owner_company_id: string; assigned: boolean }>(
     `select p.owner_company_id,
             exists (
@@ -93,7 +100,7 @@ async function projectAccess(projectId: string, companyId: string): Promise<Proj
  * The two messages differ because the two situations do: one is something the
  * reader can buy, the other is something they can only ask about.
  */
-async function assertAssetFeature(access: ProjectAccess): Promise<void> {
+export async function assertAssetFeature(access: ProjectAccess): Promise<void> {
   if (!(await hasFeature(access.ownerCompanyId, 'asset_tracking'))) {
     throw new AppError(
       'FORBIDDEN',

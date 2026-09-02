@@ -46,6 +46,7 @@ import {
 } from './modules/documents/routes';
 import { diaryRouter, projectDiaryRouter } from './modules/diary/routes';
 import { assetsRouter, projectAssetsRouter } from './modules/assets/routes';
+import { projectMassBalanceRouter } from './modules/assets/massBalance';
 import {
   assetMovementsRouter,
   destinationOrgsRouter,
@@ -293,6 +294,7 @@ export function buildApp(): Express {
   app.use('/v1/projects', requireAuth, projectEvidenceRouter);
   app.use('/v1/projects', requireAuth, projectDocumentsRouter);
   app.use('/v1/projects', requireAuth, projectDiaryRouter);
+  app.use('/v1/projects', requireAuth, projectMassBalanceRouter);
   app.use('/v1/projects', requireAuth, projectAssetsRouter);
   app.use('/v1/projects', requireAuth, projectsRouter);
   app.use('/v1/locations', requireAuth, locationsRouter);

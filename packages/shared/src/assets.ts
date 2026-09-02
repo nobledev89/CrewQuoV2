@@ -362,6 +362,40 @@ export interface SystemDestinationType extends DestinationSemantics {
   sortOrder: number;
 }
 
+/**
+ * The six `counts_as` flags, as a vocabulary rather than six loose booleans.
+ *
+ * Decision #20 makes these customer-editable, and §10's containment for that is
+ * disclosure rather than validation: *"the roll-up reports which flags produced
+ * each figure, so Phase 10's report discloses a customised hierarchy the same way
+ * §29.1 §10 discloses every other material assumption."* A company that marks its
+ * own `LANDFILL` row as diverted gets a diversion rate that says so — and a
+ * breakdown that names the flag it used, next to the mass it moved.
+ *
+ * Deriving one from another is what §41.8 forbids, so this is a projection of six
+ * independent booleans and never a hierarchy.
+ */
+export const COUNTS_AS_FLAGS = [
+  'RETAINED_IN_USE',
+  'REUSE',
+  'RECYCLING',
+  'RECOVERY',
+  'LANDFILL',
+  'DIVERTED',
+] as const;
+export type CountsAsFlag = (typeof COUNTS_AS_FLAGS)[number];
+
+export function countsAsFlags(d: DestinationSemantics): CountsAsFlag[] {
+  const flags: CountsAsFlag[] = [];
+  if (d.countsAsRetainedInUse) flags.push('RETAINED_IN_USE');
+  if (d.countsAsReuse) flags.push('REUSE');
+  if (d.countsAsRecycling) flags.push('RECYCLING');
+  if (d.countsAsRecovery) flags.push('RECOVERY');
+  if (d.countsAsLandfill) flags.push('LANDFILL');
+  if (d.countsAsDiverted) flags.push('DIVERTED');
+  return flags;
+}
+
 const dest = (
   code: string,
   name: string,
@@ -702,6 +736,8 @@ export interface DestinationMass {
   code: string;
   hierarchyTier: number | null;
   massKg: number;
+  /** Which flags this destination set, and therefore which rates it fed (§10). */
+  countsAs: CountsAsFlag[];
 }
 
 export interface MassRates {
@@ -725,6 +761,17 @@ export interface MassBalance {
   rates: MassRates;
   lineCount: number;
   linesWithWeight: number;
+  /**
+   * §28.3's fourth component: lines with at least one evidence item or document.
+   *
+   * It could not be computed before 8.4 — the evidence links did not exist and the
+   * weight document had no reader — which is why `AssetForBalance` has carried
+   * `hasEvidenceOrDocument` since 8.0 with nothing reading it. This is its reader.
+   * It appears as a **named gap and never as a component of a published score**
+   * (§13.5): the fifth component is Phase 9's and a percentage over four fifths of
+   * a definition changes meaning when it lands.
+   */
+  linesWithSupport: number;
   documentedMassKg: number;
   /** Some mass could not be computed. Every figure above is a floor. */
   hasUnknownMass: boolean;
@@ -748,6 +795,7 @@ export function computeMassBalance(assets: readonly AssetForBalance[]): MassBala
   let inStorageKg = 0;
   let unallocatedKg = 0;
   let linesWithWeight = 0;
+  let linesWithSupport = 0;
   let documentedMassKg = 0;
   let hasUnknownMass = false;
 
@@ -769,6 +817,7 @@ export function computeMassBalance(assets: readonly AssetForBalance[]): MassBala
     unallocatedKg += summary.unallocatedKg;
     if (summary.hasUnknownMass) hasUnknownMass = true;
     if (asset.line.unitWeightKg !== null) linesWithWeight += 1;
+    if (asset.hasEvidenceOrDocument) linesWithSupport += 1;
     if (asset.weightConfidence !== null && !isEstimatedConfidence(asset.weightConfidence)) {
       documentedMassKg += summary.handledKg;
     }
@@ -783,6 +832,7 @@ export function computeMassBalance(assets: readonly AssetForBalance[]): MassBala
           code: m.destination.code,
           hierarchyTier: m.destination.hierarchyTier,
           massKg: mass,
+          countsAs: countsAsFlags(m.destination),
         });
 
       // Six independent flags, six independent sums. A destination may set
@@ -821,6 +871,7 @@ export function computeMassBalance(assets: readonly AssetForBalance[]): MassBala
     },
     lineCount: assets.length,
     linesWithWeight,
+    linesWithSupport,
     documentedMassKg,
     hasUnknownMass,
   };
@@ -890,6 +941,16 @@ export function describeGaps(
     // sentences reach a client's report (§28.3), so the grammar is not cosmetic.
     gaps.push(
       `${missing} of ${balance.lineCount} asset lines ${missing === 1 ? 'has' : 'have'} no weight recorded.`
+    );
+  }
+
+  if (balance.lineCount > 0 && balance.linesWithSupport < balance.lineCount) {
+    const missing = balance.lineCount - balance.linesWithSupport;
+    // §28.3's fourth component, said as a gap rather than folded into a score.
+    // Same grammar rule as the sentence above: the noun agrees with the set, the
+    // verb with the count.
+    gaps.push(
+      `${missing} of ${balance.lineCount} asset lines ${missing === 1 ? 'has' : 'have'} no photograph or document supporting ${missing === 1 ? 'it' : 'them'}.`
     );
   }
 

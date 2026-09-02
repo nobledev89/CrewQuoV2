@@ -11,6 +11,7 @@ import {
   canRecordMovement,
   compareByHierarchy,
   computeMassBalance,
+  countsAsFlags,
   createAssetSchema,
   deriveOutcomeState,
   deriveWeights,
@@ -671,8 +672,9 @@ describe('canContinueMovement (§13.1)', () => {
 const asset = (
   line: { quantity: number; unitWeightKg: number | null },
   movements: MovementRow[],
-  weightConfidence: WeightConfidence | null = 'ESTIMATED'
-): AssetForBalance => ({ line, movements, weightConfidence, hasEvidenceOrDocument: false });
+  weightConfidence: WeightConfidence | null = 'ESTIMATED',
+  hasEvidenceOrDocument = false
+): AssetForBalance => ({ line, movements, weightConfidence, hasEvidenceOrDocument });
 
 describe('computeMassBalance (§28.1, §28.2)', () => {
   it('reports nothing rather than zero rates for an empty project', () => {
@@ -883,12 +885,88 @@ describe('formatRate and formatQuantity', () => {
   });
 });
 
+
+describe('countsAsFlags — the disclosure decision #20 is contained by (§10)', () => {
+  it('projects the six booleans in a fixed order, never a hierarchy', () => {
+    expect(countsAsFlags(semantics('DONATION'))).toEqual([
+      'RETAINED_IN_USE',
+      'REUSE',
+      'DIVERTED',
+    ]);
+  });
+
+  it('reports landfill as landfill and not as diverted', () => {
+    expect(countsAsFlags(semantics('LANDFILL'))).toEqual(['LANDFILL']);
+  });
+
+  /*
+   * Storage is the row the domain turns on: it counts as nothing, so it feeds no
+   * rate. If this ever returns a flag, every diversion rate in the product has
+   * quietly started counting a warehouse as an outcome.
+   */
+  it('gives storage no flags at all — decision #18', () => {
+    expect(countsAsFlags(semantics('STORAGE'))).toEqual([]);
+  });
+
+  it('names every flag a customised destination sets, which is the point', () => {
+    // A company may mark its own row however it likes (decision #20). The
+    // containment is that the breakdown says which flags produced the figure.
+    const dishonest = { ...semantics('LANDFILL'), countsAsDiverted: true };
+    expect(countsAsFlags(dishonest)).toEqual(['LANDFILL', 'DIVERTED']);
+  });
+});
+
+describe('the breakdown carries its own provenance', () => {
+  it('names the flags beside the mass they moved', () => {
+    const b = computeMassBalance([
+      asset({ quantity: 42, unitWeightKg: 16.5 }, [move('DONATION', 30), move('RECYCLING', 12)]),
+    ]);
+    const donation = b.byDestination.find((d) => d.code === 'DONATION');
+    expect(donation?.massKg).toBe(495);
+    expect(donation?.countsAs).toEqual(['RETAINED_IN_USE', 'REUSE', 'DIVERTED']);
+    const recycling = b.byDestination.find((d) => d.code === 'RECYCLING');
+    expect(recycling?.countsAs).toEqual(['RECYCLING', 'DIVERTED']);
+  });
+
+  it('keeps reuse above recycling, which is §25.5 rather than an ordering by mass', () => {
+    const b = computeMassBalance([
+      asset({ quantity: 100, unitWeightKg: 1 }, [move('RECYCLING', 90), move('DONATION', 10)]),
+    ]);
+    expect(b.byDestination.map((d) => d.code)).toEqual(['DONATION', 'RECYCLING']);
+  });
+});
+
 describe('describeGaps (§28.3)', () => {
   it('says nothing about a complete project', () => {
     const b = computeMassBalance([
-      asset({ quantity: 10, unitWeightKg: 10 }, [move('DONATION', 10)], 'VERIFIED'),
+      // The fourth argument is 8.4's links, and it is what makes this line
+      // complete. Before they existed the fixture read as complete while missing
+      // a component nothing could compute — which is the whole reason §13.5
+      // refuses to publish a score over four fifths of a definition.
+      asset({ quantity: 10, unitWeightKg: 10 }, [move('DONATION', 10)], 'VERIFIED', true),
     ]);
     expect(describeGaps(b)).toEqual([]);
+  });
+
+  it('names lines with nothing supporting them (§28.3 component four)', () => {
+    const b = computeMassBalance([
+      asset({ quantity: 10, unitWeightKg: 10 }, [move('DONATION', 10)], 'VERIFIED', true),
+      asset({ quantity: 4, unitWeightKg: 10 }, [move('DONATION', 4)], 'VERIFIED', false),
+    ]);
+    expect(describeGaps(b)).toContainEqual(
+      '1 of 2 asset lines has no photograph or document supporting it.'
+    );
+  });
+
+  /* The same agreement bug the weight sentence had: the noun follows the set. */
+  it('...and agrees with the count and the set separately', () => {
+    const b = computeMassBalance([
+      asset({ quantity: 1, unitWeightKg: 1 }, [], 'VERIFIED', false),
+      asset({ quantity: 1, unitWeightKg: 1 }, [], 'VERIFIED', false),
+    ]);
+    expect(describeGaps(b)).toContainEqual(
+      '2 of 2 asset lines have no photograph or document supporting them.'
+    );
   });
 
   it('names lines with no weight', () => {

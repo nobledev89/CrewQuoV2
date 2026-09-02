@@ -7600,7 +7600,11 @@ async function main(): Promise<void> {
     who: { token: string; companyId: string },
     filename: string,
     bytes: Buffer,
-    contentType = 'image/png'
+    contentType = 'image/png',
+    // Defaults to the evidence fixture's project, which every earlier caller
+    // wants. The mass-balance section builds a project of its own so its totals
+    // are exact rather than "whatever the suite has recorded by the time it runs".
+    projectId: string = evProject
   ): Promise<string> {
     const presigned = await call('POST', '/v1/files/presign', {
       token: who.token,
@@ -7610,7 +7614,7 @@ async function main(): Promise<void> {
         filename,
         contentType,
         byteSize: bytes.byteLength,
-        projectId: evProject,
+        projectId,
         clientId: randomUUID(),
       },
     });
@@ -10388,6 +10392,205 @@ async function main(): Promise<void> {
     alConstraintError, 'project_evidence_movement_implies_asset');
   await db.query(
     `update project_evidence set asset_movement_id = null where id = $1`, [alTaggedId]);
+
+
+  // ── The mass roll-up (§28.1–§28.2) — Phase 8 build order step 5 ───────────
+  section('Mass balance — the split, the two gates, and the gaps without a score');
+
+  /*
+   * A project of its own, so the totals are exact figures rather than "whatever
+   * the suite has recorded by the time it runs". It carries the §12 milestone —
+   * 42 chairs, 30 donated and 12 recycled — plus the two shapes that make the
+   * gaps interesting: 8 desks in storage, and a line with no weight at all.
+   */
+  const mbProject = (await call('POST', '/v1/projects', {
+    ...asOwnerCtx,
+    body: {
+      name: `Kings Court — Floor 2 ${RUN}`,
+      clientCompanyId: evClientCompany,
+      engagementId: evClientRes.json.client.engagementId,
+    },
+  })).json.project.id as string;
+  await call('POST', `/v1/projects/${mbProject}/assignments`, {
+    ...asOwnerCtx,
+    body: { providerCompanyId: evSubCompany, engagementId: evEdge?.id },
+  });
+
+  // ── 1. Empty is not zero ─────────────────────────────────────────────────
+  const mbEmpty = await call('GET', `/v1/projects/${mbProject}/mass-balance`, { ...asOwnerCtx });
+  eq('an empty project answers with a balance', mbEmpty.status, 200);
+  eq('...of no lines', mbEmpty.json.massBalance.lineCount, 0);
+  eq('...and every rate is null rather than 0%, which would be a claim',
+    [mbEmpty.json.massBalance.rates.diverted, mbEmpty.json.massBalance.rates.reuse], [null, null]);
+  eq('...with nothing in the breakdown to render', mbEmpty.json.massBalance.byDestination, []);
+
+  // ── 2. The milestone, and 240 kg that is not in any rate ─────────────────
+  const mbChairs = (await call('POST', `/v1/projects/${mbProject}/assets`, {
+    ...asOwnerCtx,
+    body: {
+      assetTypeId: CHAIR, quantity: 42, weightBasis: 'UNIT', unitWeightKg: 16.5,
+      weightSource: 'USER_ESTIMATE',
+    },
+  })).json.asset.id as string;
+  await call('POST', `/v1/assets/${mbChairs}/movements`, {
+    ...asOwnerCtx,
+    body: { destinationTypeId: byCode.DONATION.id, quantity: 30, movedOn: '2026-03-04' },
+  });
+  await call('POST', `/v1/assets/${mbChairs}/movements`, {
+    ...asOwnerCtx,
+    body: { destinationTypeId: byCode.RECYCLING.id, quantity: 12, movedOn: '2026-03-05' },
+  });
+
+  const mbDesks = (await call('POST', `/v1/projects/${mbProject}/assets`, {
+    ...asOwnerCtx,
+    body: {
+      assetTypeId: DESK, quantity: 8, weightBasis: 'UNIT', unitWeightKg: 30,
+      weightSource: 'USER_ESTIMATE',
+    },
+  })).json.asset.id as string;
+  await call('POST', `/v1/assets/${mbDesks}/movements`, {
+    ...asOwnerCtx,
+    body: { destinationTypeId: byCode.STORAGE.id, quantity: 8, movedOn: '2026-03-06' },
+  });
+
+  const mbUnweighed = (await call('POST', `/v1/projects/${mbProject}/assets`, {
+    ...asOwnerCtx, body: { assetTypeId: CHAIR, quantity: 5 },
+  })).json.asset.id as string;
+
+  const mbFull = await call('GET', `/v1/projects/${mbProject}/mass-balance`, { ...asOwnerCtx });
+  eq('the owner gets the full view', mbFull.json.massBalance.view, 'FULL');
+  eq('total material handled is allocated plus pending (§28.2)',
+    mbFull.json.massBalance.handledKg, 933);
+  eq('...of which 693 kg reached a final outcome',
+    mbFull.json.massBalance.allocatedKg, 693);
+  eq('...240 kg is in storage and 0 kg is unallocated',
+    [mbFull.json.massBalance.inStorageKg, mbFull.json.massBalance.unallocatedKg], [240, 0]);
+  eq('...which is the pending figure, returned BESIDE the rates rather than in them',
+    mbFull.json.massBalance.pendingKg, 240);
+
+  // ── 3. Reuse above recycling, and no combined figure standing in (§41.8) ──
+  const mbDest = mbFull.json.massBalance.byDestination as {
+    code: string; massKg: number; countsAs: string[]; name: string; hierarchyTier: number | null;
+  }[];
+  eq('the breakdown is ordered by hierarchy, reuse above recycling — not by mass',
+    mbDest.map((d) => d.code), ['DONATION', 'RECYCLING']);
+  eq('...with the milestone split', mbDest.map((d) => d.massKg), [495, 198]);
+  eq('...and storage in neither, because it is not an outcome (decision #18)',
+    mbDest.some((d) => d.code === 'STORAGE'), false);
+  eq('the breakdown names its own display label, so §28.1 renders without a second call',
+    mbDest[0]?.name, 'Donation');
+  eq('...and discloses which flags produced each figure (§10, decision #20)',
+    mbDest.map((d) => d.countsAs),
+    [['RETAINED_IN_USE', 'REUSE', 'DIVERTED'], ['RECYCLING', 'DIVERTED']]);
+
+  const mbRates = mbFull.json.massBalance.rates as Record<string, number | null>;
+  const round3 = (n: number | null | undefined): number | null =>
+    n === null || n === undefined ? null : Math.round(n * 1000) / 1000;
+  eq('the six rates divide by ALLOCATED mass, not by handled',
+    [round3(mbRates.reuse), round3(mbRates.recycling), round3(mbRates.diverted)],
+    [0.714, 0.286, 1]);
+  eq('...landfill and recovery are 0 because something was allocated, not null',
+    [mbRates.landfill, mbRates.recovery], [0, 0]);
+  eq('...and reuse is reported separately from diversion rather than folded into it',
+    round3(mbRates.reuse) !== round3(mbRates.diverted), true);
+
+  /*
+   * The rate would be 74% if pending were in the denominator — 693 of 933 — and
+   * that is the number §28.2 calls a lie. Asserted directly so a later
+   * "improvement" to the denominator has to delete a test that says why.
+   */
+  eq('pending mass is never hidden in a denominator (§28.2)',
+    round3(693 / 933) !== round3(mbRates.diverted!), true);
+
+  // ── 4. The gaps, and no composite score anywhere ─────────────────────────
+  const mbGaps = mbFull.json.massBalance.gaps as string[];
+  check('a line with no weight is named', mbGaps.includes(
+    '1 of 3 asset lines has no weight recorded.'), mbGaps);
+  check('...and so is the fact that every figure is therefore a floor',
+    mbGaps.some((g) => g.includes('minimum rather than a total')), mbGaps);
+  check('storage is named as an unknown destination, in mass',
+    mbGaps.some((g) => g.includes('stored material')), mbGaps);
+  check('...and the estimate share is named',
+    mbGaps.some((g) => g.includes('of project weight is estimated')), mbGaps);
+  check('§28.3’s fourth component ships as a gap: nothing supports these lines',
+    mbGaps.includes('3 of 3 asset lines have no photograph or document supporting them.'), mbGaps);
+  check('and there is no composite completeness score anywhere in the payload',
+    !/completeness|score/i.test(JSON.stringify(mbFull.json)), mbFull.json.massBalance);
+
+  // 8.4's links are what make that fourth component computable at all.
+  const mbPhotoId = await uploadPhoto(
+    asOwnerCtx, `mb-chairs-${RUN}.png`, evPhoto, 'image/png', mbProject);
+  await call('POST', `/v1/projects/${mbProject}/evidence`, {
+    ...asOwnerCtx,
+    body: {
+      batchClientId: randomUUID(),
+      items: [{ fileId: mbPhotoId, category: 'ASSET', assetId: mbChairs }],
+    },
+  });
+  const mbAfterPhoto = await call('GET', `/v1/projects/${mbProject}/mass-balance`, { ...asOwnerCtx });
+  eq('one photograph moves the fourth component, which is 8.4 feeding 8.5',
+    mbAfterPhoto.json.massBalance.linesWithSupport, 1);
+  check('...and the sentence counts down with it',
+    (mbAfterPhoto.json.massBalance.gaps as string[]).includes(
+      '2 of 3 asset lines have no photograph or document supporting them.'),
+    mbAfterPhoto.json.massBalance.gaps);
+
+  // ── 5. Two read gates, and the softer one is deliberate (§4) ─────────────
+  //
+  // A Supervisor has project.read and not sustainability.read, and is the person
+  // who most needs to know that eight desks are still unallocated. Gating the
+  // masses would hide an aggregate of rows they can already read one at a time.
+  const mbSup = await call('GET', `/v1/projects/${mbProject}/mass-balance`, { ...asSupCtx });
+  eq('a Supervisor without sustainability.read still gets the masses', mbSup.status, 200);
+  eq('...as the mass-only view', mbSup.json.massBalance.view, 'MASS_ONLY');
+  eq('...with handled, allocated and pending all present',
+    [mbSup.json.massBalance.handledKg, mbSup.json.massBalance.allocatedKg,
+     mbSup.json.massBalance.pendingKg], [933, 693, 240]);
+  eq('...and the caveat that makes those figures a floor travels with them',
+    mbSup.json.massBalance.hasUnknownMass, true);
+  eq('...while the rates, the breakdown and the gaps are absent rather than null',
+    ['rates' in mbSup.json.massBalance, 'byDestination' in mbSup.json.massBalance,
+     'gaps' in mbSup.json.massBalance], [false, false, false]);
+
+  /*
+   * And the scope departs from the asset list one file over: a provider sees the
+   * PROJECT's total, not its own rows. Every line here was recorded by the owner,
+   * so a per-company scope would have shown this subcontractor 0 kg.
+   */
+  eq('a provider sees the project’s mass, not only its own — a total is not a row',
+    mbSup.json.massBalance.handledKg, mbAfterPhoto.json.massBalance.handledKg);
+
+  // ── 6. The plan gate is the owner's, as everywhere else in this phase ────
+  if (asSubOwnProject) {
+    const mbOwnProject = await call('GET', `/v1/projects/${asSubOwnProject}/mass-balance`, {
+      ...evSubCtx,
+    });
+    eq('a company with no asset_tracking is refused on its OWN project',
+      mbOwnProject.status, 403);
+    check('...naming the key rather than saying Forbidden',
+      JSON.stringify(mbOwnProject.json).includes('asset_tracking'), mbOwnProject.json);
+  }
+  const mbOutsider = await call('GET', `/v1/projects/${mbProject}/mass-balance`, {
+    token: evClientUser.token, companyId: evClientCompany,
+  });
+  eq('the client sees no roll-up at all in Phase 8 — §4 says nobody', mbOutsider.status, 404);
+
+  // ── 7. Nothing is stored, so a tombstone simply stops counting (§7) ──────
+  eq('the unweighed line is removed',
+    (await call('DELETE', `/v1/assets/${mbUnweighed}`, { ...asOwnerCtx })).status, 204);
+  const mbAfterDelete = await call('GET', `/v1/projects/${mbProject}/mass-balance`, { ...asOwnerCtx });
+  eq('...and the roll-up stops counting it, because it has no stored form',
+    mbAfterDelete.json.massBalance.lineCount, 2);
+  eq('...the unknown-mass caveat goes with it',
+    mbAfterDelete.json.massBalance.hasUnknownMass, false);
+  eq('...and the handled mass is unchanged, because that line weighed nothing',
+    mbAfterDelete.json.massBalance.handledKg, 933);
+  const { rows: mbNoTable } = await db.query<{ n: string }>(
+    `select count(*)::text as n from information_schema.tables
+      where table_schema = 'public' and table_name in ('mass_balances','project_mass_balance')`
+  );
+  eq('no table holds a roll-up: §7 classifies it derived, and §3 says you correct its inputs',
+    mbNoTable[0]?.n, '0');
 
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);
