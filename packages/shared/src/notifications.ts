@@ -60,6 +60,22 @@ export const NOTIFICATION_KINDS = [
    */
   'diary.closed',
   'diary.amended',
+  /**
+   * Assets & materials (§25, `assets-materials.md` §5). One kind for a batch,
+   * not one per line.
+   *
+   * **`asset.line_recorded` is deliberately not one of them**, for the reason
+   * `evidence.uploaded` is not: sixty pasted lines is one act by one person, and
+   * sixty Action Centre items is an inbox that teaches people to clear it without
+   * reading. `batchClientId` keys the single event, exactly as
+   * `project_evidence.batch_client_id` does.
+   *
+   * There is no `asset.weight_changed` either. Every weight edit writes a
+   * `record_revisions` row, which is the durable trail; an *event* is for
+   * something a person elsewhere needs to know about, and an estimate refined
+   * from 16 kg to 16.5 kg is not.
+   */
+  'asset.lines_recorded',
   'delivery.dead_lettered',
   // Account security (`docs/operating-model/access.md` §6). The first kinds in
   // this catalog that belong to a *person* rather than to a company, which is why
@@ -195,6 +211,14 @@ export const NOTIFICATION_KIND_SPECS: Readonly<Record<NotificationKind, Notifica
    * week arrives as one message or five.
    */
   'diary.closed': { requiresAction: false, urgency: 'NORMAL', defaultChannels: ['EMAIL'] },
+
+  /*
+   * A subcontractor recorded what it took off the floor. News rather than a task:
+   * the hiring company now knows the register has grown, and owes nothing. The
+   * one asset kind that DOES require action is the storage-ageing item (8.7),
+   * which is a question with something to do about it.
+   */
+  'asset.lines_recorded': { requiresAction: false, urgency: 'NORMAL', defaultChannels: ['EMAIL'] },
   /*
    * **The one kind in the product that must never be digested**, and the packet
    * says so in a row written for exactly this line. Changing a closed day alters a

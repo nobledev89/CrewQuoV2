@@ -981,13 +981,40 @@ export const updateAssetSchema = assetMetadata
 export type UpdateAsset = z.infer<typeof updateAssetSchema>;
 
 /**
+ * One row of a pasted schedule.
+ *
+ * **It names its asset type by `assetTypeCode`, not only by `assetTypeId`**, and
+ * that is the difference between an importer and a form with more fields. What
+ * somebody pastes out of a client's asset schedule is text — `OPERATOR_CHAIR`,
+ * `Desk` — and a caller that could only supply a uuid would have to resolve every
+ * type itself before pasting, which is the work the import exists to save. A row
+ * may give either; giving both is a contradiction rather than a convenience,
+ * because the two can disagree and nothing here could say which was meant.
+ */
+export const importAssetRowSchema = createAssetSchema
+  .omit({ clientId: true, assetTypeId: true })
+  .extend({
+    assetTypeId: z.string().uuid().optional(),
+    /** Matched case-insensitively against the company catalog, then the system one. */
+    assetTypeCode: z.string().trim().min(1).max(100).optional(),
+  })
+  .refine((v) => (v.assetTypeId === undefined) !== (v.assetTypeCode === undefined), {
+    message: 'Give either an asset type id or an asset type code, not both',
+  });
+export type ImportAssetRow = z.infer<typeof importAssetRowSchema>;
+
+/**
  * A pasted schedule. **One `clientId` for the batch, and partial success is the
  * design** (packet §8): sixty rows where four name an unknown type import
  * fifty-six and return four errors by row number. Rolling back all sixty means a
- * person retypes fifty-nine rows identically.
+ * person retypes fifty-nine rows identically, and they will get one of them wrong.
+ *
+ * The 500 cap is a paste, not a migration. §12 of the packet is explicit that any
+ * v1 customer-data onboarding needs its own specification; an importer that
+ * quietly accepts fifty thousand rows becomes that, without one.
  */
 export const importAssetsSchema = z.object({
-  rows: z.array(createAssetSchema.omit({ clientId: true })).min(1).max(500),
+  rows: z.array(importAssetRowSchema).min(1).max(500),
   clientId: z.string().uuid().optional(),
 });
 export type ImportAssets = z.infer<typeof importAssetsSchema>;
@@ -1046,3 +1073,43 @@ export const DESTINATION_ORG_KIND_LABELS: Readonly<Record<DestinationOrgKind, st
   MANUFACTURER: 'Manufacturer',
   OTHER: 'Other',
 };
+
+// ── Events (§5 of the packet) ────────────────────────────────────────────────
+
+/**
+ * The payload of `asset.lines_recorded`, built by an **allowlist**.
+ *
+ * The same discipline `evidenceBatchEventPayload` uses, and here it is protecting
+ * a stronger field than a filename. §11 excludes descriptions, manufacturer,
+ * model, notes and destination names — and **serial numbers**, which identify a
+ * specific physical machine, usually with a client's asset tag on it, and would
+ * otherwise travel to an email provider as an ordinary string.
+ *
+ * What survives is counts, masses and type codes: enough to say *"12 items —
+ * 340 kg — recorded"* and nothing that names what they are or whose they were.
+ */
+export function assetLinesRecordedEventPayload(args: {
+  projectId: string;
+  ownerCompanyId: string;
+  recordingCompanyId: string;
+  actorUserId: string;
+  batchClientId: string | null;
+  rows: readonly { assetTypeCode: string; quantity: number; totalWeightKg: number | null }[];
+}): Record<string, string | number | string[] | null> {
+  const weighed = args.rows.filter((r) => r.totalWeightKg !== null);
+  return {
+    projectId: args.projectId,
+    ownerCompanyId: args.ownerCompanyId,
+    recordingCompanyId: args.recordingCompanyId,
+    actorUserId: args.actorUserId,
+    batchClientId: args.batchClientId,
+    lineCount: args.rows.length,
+    totalQuantity: args.rows.reduce((sum, r) => sum + r.quantity, 0),
+    // Null rather than 0 when nothing was weighed. A zero here would read as
+    // "they recorded nothing heavy" rather than "nobody has weighed it yet",
+    // and the notification composed from it would say the wrong thing.
+    totalWeightKg: weighed.length > 0 ? weighed.reduce((s, r) => s + (r.totalWeightKg ?? 0), 0) : null,
+    linesWithoutWeight: args.rows.length - weighed.length,
+    assetTypeCodes: [...new Set(args.rows.map((r) => r.assetTypeCode))].sort(),
+  };
+}

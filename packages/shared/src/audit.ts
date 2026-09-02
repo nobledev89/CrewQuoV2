@@ -174,6 +174,19 @@ export const AUDIT_ACTIONS = [
   'subscription.cancel_scheduled',
   'subscription.cancel_withdrawn',
   'subscription.plan_changed',
+  /*
+   * Assets & materials (§25). Four actions and no `asset.weight_verified` among
+   * them: `audit_logs` records *that* something happened, and the before/after of
+   * a weight is `record_revisions`' job (§36) — which is where §25.3 puts it, and
+   * where it sits behind the same authorization as the line itself.
+   *
+   * `asset.imported` is on the PROJECT rather than on any line, because sixty
+   * pasted rows is one act and sixty trail entries is a trail nobody reads.
+   */
+  'asset.created',
+  'asset.imported',
+  'asset.updated',
+  'asset.deleted',
 ] as const;
 export const auditActionSchema = z.enum(AUDIT_ACTIONS);
 export type AuditAction = z.infer<typeof auditActionSchema>;
@@ -184,6 +197,7 @@ export const AUDIT_ENTITY_TYPES = [
   'EVIDENCE',
   'DOCUMENT',
   'SITE_DIARY_ENTRY',
+  'PROJECT_ASSET',
   'TIME_LOG',
   'EXPENSE',
   'PROJECT_SUBMISSION',

@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_CONFIDENCE_FOR_SOURCE,
+  assetLinesRecordedEventPayload,
+  importAssetRowSchema,
+  importAssetsSchema,
   SYSTEM_ASSET_TYPES,
   SYSTEM_DESTINATION_TYPES,
   WEIGHT_SOURCES,
@@ -983,5 +986,104 @@ describe('the write schemas', () => {
     expect(() =>
       createAssetSchema.parse({ assetTypeId: crypto.randomUUID(), unitWeightKg: -1 })
     ).toThrow();
+  });
+});
+
+// ── The import row, and the event allowlist ──────────────────────────────────
+
+describe('importAssetRowSchema', () => {
+  it('accepts a row naming its type by code, which is what a paste carries', () => {
+    const row = importAssetRowSchema.parse({ assetTypeCode: 'OPERATOR_CHAIR', quantity: 42 });
+    expect(row.assetTypeCode).toBe('OPERATOR_CHAIR');
+    expect(row.assetTypeId).toBeUndefined();
+  });
+
+  it('accepts a row naming its type by id', () => {
+    const id = crypto.randomUUID();
+    expect(importAssetRowSchema.parse({ assetTypeId: id, quantity: 1 }).assetTypeId).toBe(id);
+  });
+
+  /** The two can disagree, and nothing here could say which was meant. */
+  it('refuses a row naming its type both ways', () => {
+    expect(() =>
+      importAssetRowSchema.parse({ assetTypeId: crypto.randomUUID(), assetTypeCode: 'DESK', quantity: 1 })
+    ).toThrow();
+  });
+
+  it('refuses a row naming its type neither way', () => {
+    expect(() => importAssetRowSchema.parse({ quantity: 1 })).toThrow();
+  });
+
+  it('caps a paste at 500 rows — beyond that it is a migration, not a paste', () => {
+    const row = { assetTypeCode: 'DESK', quantity: 1 };
+    expect(() => importAssetsSchema.parse({ rows: Array(501).fill(row) })).toThrow();
+    expect(importAssetsSchema.parse({ rows: Array(500).fill(row) }).rows).toHaveLength(500);
+  });
+
+  it('refuses an empty paste rather than reporting nothing imported', () => {
+    expect(() => importAssetsSchema.parse({ rows: [] })).toThrow();
+  });
+});
+
+describe('assetLinesRecordedEventPayload', () => {
+  const rows = [
+    { assetTypeCode: 'OPERATOR_CHAIR', quantity: 42, totalWeightKg: 693 },
+    { assetTypeCode: 'DESK', quantity: 8, totalWeightKg: 240 },
+    { assetTypeCode: 'DESK', quantity: 3, totalWeightKg: null },
+  ];
+  const payload = assetLinesRecordedEventPayload({
+    projectId: 'p1',
+    ownerCompanyId: 'c1',
+    recordingCompanyId: 'c2',
+    actorUserId: 'u1',
+    batchClientId: 'b1',
+    rows,
+  });
+
+  it('carries the counts and masses a notification is composed from', () => {
+    expect(payload.lineCount).toBe(3);
+    expect(payload.totalQuantity).toBe(53);
+    expect(payload.totalWeightKg).toBe(933);
+    expect(payload.linesWithoutWeight).toBe(1);
+    expect(payload.assetTypeCodes).toEqual(['DESK', 'OPERATOR_CHAIR']);
+  });
+
+  /**
+   * §11's exclusion list asserted as an allowlist, the way `evidence.test.ts`
+   * asserts its own. A serial number identifies a specific physical machine,
+   * usually with a client's asset tag on it, and this payload reaches an email
+   * provider.
+   */
+  it('is an allowlist: nothing that names what the things are can get in', () => {
+    expect(Object.keys(payload).sort()).toEqual([
+      'actorUserId',
+      'assetTypeCodes',
+      'batchClientId',
+      'lineCount',
+      'linesWithoutWeight',
+      'ownerCompanyId',
+      'projectId',
+      'recordingCompanyId',
+      'totalQuantity',
+      'totalWeightKg',
+    ]);
+  });
+
+  /**
+   * Null, not zero. A zero would read as "they recorded nothing heavy" rather
+   * than "nobody has weighed it yet", and the notification composed from it
+   * would say the wrong thing to the one person who could fix the gap.
+   */
+  it('reports an unweighed batch as null mass rather than as zero', () => {
+    const unweighed = assetLinesRecordedEventPayload({
+      projectId: 'p1',
+      ownerCompanyId: 'c1',
+      recordingCompanyId: 'c2',
+      actorUserId: 'u1',
+      batchClientId: null,
+      rows: [{ assetTypeCode: 'DESK', quantity: 3, totalWeightKg: null }],
+    });
+    expect(unweighed.totalWeightKg).toBeNull();
+    expect(unweighed.linesWithoutWeight).toBe(1);
   });
 });

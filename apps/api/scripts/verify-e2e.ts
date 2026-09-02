@@ -9326,6 +9326,406 @@ async function main(): Promise<void> {
     `select status from site_diary_entries where id = $1`, [dySubEntry]);
   eq('...and it is still closed, still there', dyStillThere[0]?.status, 'CLOSED');
 
+  // ── Project assets (§25.2, §25.3) — Phase 8 build order step 2 ───────────
+  section('Project assets — the weight, the degrade, and the serial that is already somewhere');
+
+  const asType = async (code: string): Promise<string> => {
+    const { rows } = await db.query<{ id: string }>(
+      `select id from asset_types where company_id is null and code = $1`, [code]);
+    return rows[0]!.id;
+  };
+  const CHAIR = await asType('OPERATOR_CHAIR');
+  const DESK = await asType('DESK');
+  const SERVER = await asType('SERVER');
+
+  const asOwnerCtx = { token: evOwner.token, companyId: evCompany };
+
+  // ── 1. Empty ──────────────────────────────────────────────────────────────
+  const asEmpty = await call('GET', `/v1/projects/${evProject}/assets`, { ...asOwnerCtx });
+  eq('a project with no assets answers with an empty register', asEmpty.status, 200);
+  eq('...and not with a zero tonnage, which would be a claim',
+    (asEmpty.json.assets as unknown[]).length, 0);
+
+  // ── 2. Ade records 42 chairs, on somebody else's project, on the free plan ─
+  //
+  // The packaging rule of 2026-09-01 with a different noun: the entitlement is
+  // checked against the project OWNER, so a Crew-plan subcontractor can record
+  // what it removed. A clearance contractor who cannot do that cannot work.
+  const asChairs = await call('POST', `/v1/projects/${evProject}/assets`, {
+    ...evSubCtx,
+    body: {
+      assetTypeId: CHAIR,
+      quantity: 42,
+      weightBasis: 'UNIT',
+      unitWeightKg: 16.5,
+      weightSource: 'USER_ESTIMATE',
+      originLocationId: evFloor.json.location.id,
+      clientId: randomUUID(),
+    },
+  });
+  eq('a Crew-plan subcontractor records assets on the owner’s project', asChairs.status, 201);
+  const asChairId = asChairs.json.asset.id as string;
+  eq('...and the total is derived from the unit weight it typed',
+    asChairs.json.asset.totalWeightKg, 693);
+  eq('...with the basis recording which side was entered',
+    asChairs.json.asset.weightBasis, 'UNIT');
+  eq('...an estimate, because that is what USER_ESTIMATE supports',
+    asChairs.json.asset.weightConfidence, 'ESTIMATED');
+  eq('...and outcome state starts derived at PENDING, never typed',
+    asChairs.json.asset.outcomeState, 'PENDING');
+
+  // ── 3. Its own project, its own plan, and the opposite answer ─────────────
+  const asOwnProject = await call('POST', '/v1/projects', {
+    ...evSubCtx,
+    body: { name: `Ade’s own job ${RUN}` },
+  });
+  const asSubOwnProject = asOwnProject.json.project?.id as string | undefined;
+  if (asSubOwnProject) {
+    const asOwnAsset = await call('POST', `/v1/projects/${asSubOwnProject}/assets`, {
+      ...evSubCtx,
+      body: { assetTypeId: CHAIR, quantity: 5 },
+    });
+    eq('the same company is refused on its OWN project — the key is the owner’s',
+      asOwnAsset.status, 403);
+    check('...and the refusal names asset_tracking rather than saying Forbidden',
+      JSON.stringify(asOwnAsset.json).includes('asset_tracking'), asOwnAsset.json);
+  }
+
+  // ── 4. The degrade: a failed verification saves the work ──────────────────
+  //
+  // A Supervisor holds asset.write and deliberately not asset.weight.verify
+  // (§37, and capabilities.ts says why). The measurement is the data the product
+  // exists to collect, so it is SAVED as an estimate rather than thrown away to
+  // protect a label.
+  const asSup = await register('assup', undefined, `assup+${RUN}@verify.crewquo.test`);
+  const asSupInvite = await call('POST', '/v1/members/invite', {
+    ...evSubCtx,
+    body: { email: asSup.email, role: 'MEMBER' },
+  });
+  await call('POST', `/v1/invites/${asSupInvite.json.inviteToken}/accept`, { token: asSup.token });
+  await db.query(
+    `update memberships set bundle_key = 'supervisor' where company_id = $1 and user_id = $2`,
+    [evSubCompany, asSup.userId]
+  );
+  const asSupCtx = { token: asSup.token, companyId: evSubCompany };
+
+  const asSupWeighed = await call('POST', `/v1/projects/${evProject}/assets`, {
+    ...asSupCtx,
+    body: {
+      assetTypeId: DESK,
+      quantity: 8,
+      weightBasis: 'UNIT',
+      unitWeightKg: 30,
+      weightSource: 'WEIGHED',
+      weightConfidence: 'VERIFIED',
+      weighedByUserId: asSup.userId,
+    },
+  });
+  eq('a supervisor without asset.weight.verify still gets the line written',
+    asSupWeighed.status, 201);
+  eq('...the weight is kept, to the gram', asSupWeighed.json.asset.totalWeightKg, 240);
+  eq('...but the claim is downgraded to an estimate',
+    asSupWeighed.json.asset.weightConfidence, 'ESTIMATED');
+  check('...and the response says why, naming the permission',
+    String(asSupWeighed.json.notice ?? '').includes('weight-verification permission'),
+    asSupWeighed.json.notice);
+
+  const asSupDeskId = asSupWeighed.json.asset.id as string;
+
+  // The same claim from someone who does hold it, with a named weigher.
+  const asVerified = await call('PATCH', `/v1/assets/${asSupDeskId}`, {
+    ...evSubCtx,
+    body: { weightSource: 'WEIGHED', weightConfidence: 'VERIFIED', weighedByUserId: asSup.userId },
+  });
+  eq('...and an admin who holds the capability may make the same claim stick',
+    asVerified.json.asset?.weightConfidence, 'VERIFIED');
+  eq('...which flips the denormalized estimate flag with it',
+    asVerified.json.asset?.weightIsEstimated, false);
+
+  // A VERIFIED weighbridge figure with no ticket attached is refused the label —
+  // WEIGHED is the only source whose provenance is a person rather than paper.
+  const asNoTicket = await call('PATCH', `/v1/assets/${asSupDeskId}`, {
+    ...evSubCtx,
+    body: { weightSource: 'WEIGHBRIDGE', weightConfidence: 'VERIFIED', weighedByUserId: null },
+  });
+  eq('a weighbridge claim with no ticket attached degrades to an estimate',
+    asNoTicket.json.asset?.weightConfidence, 'ESTIMATED');
+  check('...and says the document is what is missing',
+    String(asNoTicket.json.notice ?? '').includes('document'), asNoTicket.json.notice);
+
+  // ── 5. Editing quantity recomputes the derived side, never the entered one ─
+  const asQtyUp = await call('PATCH', `/v1/assets/${asChairId}`, {
+    ...evSubCtx,
+    body: { quantity: 50 },
+  });
+  eq('a UNIT line keeps its unit weight when the quantity grows',
+    asQtyUp.json.asset?.unitWeightKg, 16.5);
+  eq('...and the total moves with it', asQtyUp.json.asset?.totalWeightKg, 825);
+
+  const asTotalLine = await call('POST', `/v1/projects/${evProject}/assets`, {
+    ...evSubCtx,
+    body: {
+      assetTypeId: DESK, quantity: 10, weightBasis: 'TOTAL',
+      totalWeightKg: 300, weightSource: 'WEIGHBRIDGE',
+    },
+  });
+  const asTotalId = asTotalLine.json.asset.id as string;
+  eq('a TOTAL line derives its unit weight', asTotalLine.json.asset.unitWeightKg, 30);
+  const asTotalQty = await call('PATCH', `/v1/assets/${asTotalId}`, {
+    ...evSubCtx, body: { quantity: 12 },
+  });
+  eq('...and finding two more desks does not make the lorry heavier',
+    asTotalQty.json.asset?.totalWeightKg, 300);
+  eq('...the unit weight falls instead', asTotalQty.json.asset?.unitWeightKg, 25);
+
+  // Restore, so later mass assertions read the number this section describes.
+  await call('PATCH', `/v1/assets/${asChairId}`, { ...evSubCtx, body: { quantity: 42 } });
+
+  // ── 6. A line with no weight is valid, and drags completeness down ────────
+  const asNoWeight = await call('POST', `/v1/projects/${evProject}/assets`, {
+    ...evSubCtx,
+    body: { assetTypeId: CHAIR, quantity: 3 },
+  });
+  eq('a line with no weight at all is accepted', asNoWeight.status, 201);
+  eq('...and holds null rather than zero, because zero is a claim',
+    asNoWeight.json.asset.totalWeightKg, null);
+
+  // ── 7. The serial number, and the refusal that is a route ─────────────────
+  const asServer = await call('POST', `/v1/projects/${evProject}/assets`, {
+    ...evSubCtx,
+    body: {
+      assetTypeId: SERVER, trackingMode: 'ITEM', quantity: 1,
+      serialNumber: `SN-${RUN}-4471`, manufacturer: 'Dell', model: 'R740',
+    },
+  });
+  eq('an ITEM line records a serial number', asServer.status, 201);
+
+  const asServerDupe = await call('POST', `/v1/projects/${evProject}/assets`, {
+    ...evSubCtx,
+    body: {
+      assetTypeId: SERVER, trackingMode: 'ITEM', quantity: 1,
+      serialNumber: `SN-${RUN}-4471`,
+    },
+  });
+  eq('the same serial is refused inside the company (§13.2)', asServerDupe.status, 409);
+  check('...and the refusal names the project it is already on, so it is a route',
+    JSON.stringify(asServerDupe.json).includes('Riverside Fit-Out'), asServerDupe.json);
+
+  const asItemQty = await call('POST', `/v1/projects/${evProject}/assets`, {
+    ...evSubCtx,
+    body: { assetTypeId: SERVER, trackingMode: 'ITEM', quantity: 4 },
+  });
+  check('ITEM mode refuses a quantity above one — per-unit rows are the point',
+    asItemQty.status >= 400, asItemQty.status);
+
+  // A tombstoned line must not block its own re-creation (finding 9).
+  await call('DELETE', `/v1/assets/${asServer.json.asset.id}`, { ...evSubCtx });
+  const asServerAgain = await call('POST', `/v1/projects/${evProject}/assets`, {
+    ...evSubCtx,
+    body: {
+      assetTypeId: SERVER, trackingMode: 'ITEM', quantity: 1,
+      serialNumber: `SN-${RUN}-4471`,
+    },
+  });
+  eq('a removed line does not block its own serial for ever', asServerAgain.status, 201);
+
+  // ── 8. The paste-import, and partial success by row number ───────────────
+  const asImportClientId = randomUUID();
+  const asImport = await call('POST', `/v1/projects/${evProject}/assets/import`, {
+    ...evSubCtx,
+    body: {
+      clientId: asImportClientId,
+      rows: [
+        { assetTypeCode: 'OPERATOR_CHAIR', quantity: 12, weightBasis: 'UNIT', unitWeightKg: 16.5, weightSource: 'USER_ESTIMATE' },
+        { assetTypeCode: 'desk', quantity: 4 },
+        { assetTypeCode: 'Chiar', quantity: 9 },
+        { assetTypeCode: 'PEDESTAL', quantity: 6 },
+        { assetTypeCode: 'LOKKER', quantity: 2 },
+      ],
+    },
+  });
+  eq('a pasted schedule imports the rows it understands', asImport.status, 201);
+  eq('...three of five', asImport.json.imported, 3);
+  eq('...and returns the other two rather than rolling back the paste',
+    (asImport.json.errors as unknown[]).length, 2);
+  eq('...by row number', (asImport.json.errors as { row: number }[]).map((e) => e.row), [3, 5]);
+  check('...naming the text that failed, so it can be found on the spreadsheet',
+    (asImport.json.errors as { value?: string }[]).map((e) => e.value).join(',') === 'Chiar,LOKKER',
+    asImport.json.errors);
+  check('...matching a type code case-insensitively, since a paste is not typed carefully',
+    (asImport.json.assets as { assetTypeCode: string }[]).some((a) => a.assetTypeCode === 'DESK'),
+    asImport.json.assets);
+
+  const asRepaste = await call('POST', `/v1/projects/${evProject}/assets/import`, {
+    ...evSubCtx,
+    body: {
+      clientId: asImportClientId,
+      rows: [
+        { assetTypeCode: 'OPERATOR_CHAIR', quantity: 12, weightBasis: 'UNIT', unitWeightKg: 16.5, weightSource: 'USER_ESTIMATE' },
+        { assetTypeCode: 'desk', quantity: 4 },
+        { assetTypeCode: 'Chiar', quantity: 9 },
+        { assetTypeCode: 'PEDESTAL', quantity: 6 },
+        { assetTypeCode: 'LOKKER', quantity: 2 },
+      ],
+    },
+  });
+  eq('re-pasting under the same client id replays the first answer', asRepaste.status, 201);
+  const { rows: asImportedCount } = await db.query<{ n: string }>(
+    `select count(*)::text as n from project_assets
+      where batch_client_id = $1 and deleted_at is null`, [asImportClientId]);
+  eq('...and creates nothing the second time', asImportedCount[0]?.n, '3');
+
+  const asBothWays = await call('POST', `/v1/projects/${evProject}/assets/import`, {
+    ...evSubCtx,
+    body: { rows: [{ assetTypeId: CHAIR, assetTypeCode: 'DESK', quantity: 1 }] },
+  });
+  eq('a row naming its type twice is refused — the two can disagree', asBothWays.status, 422);
+
+  // ── 9. The revision trail (§36, §25.3) ───────────────────────────────────
+  const { rows: asRevCreate } = await db.query<{ action: string; changed_fields: string[] }>(
+    `select action, changed_fields from record_revisions
+      where entity_type = 'PROJECT_ASSET' and entity_id = $1 order by revision`,
+    [asChairId]
+  );
+  eq('the weight trail starts at the create, not at the first correction',
+    asRevCreate[0]?.action, 'CREATE');
+  check('...so "it was always 16.5" and "somebody typed 16.5" are distinguishable',
+    (asRevCreate[0]?.changed_fields ?? []).includes('unitWeightKg'), asRevCreate[0]);
+
+  const asRevBefore = asRevCreate.length;
+  await call('PATCH', `/v1/assets/${asChairId}`, {
+    ...evSubCtx, body: { notes: 'Stacked by the lift' },
+  });
+  const { rows: asRevAfterNotes } = await db.query<{ n: string }>(
+    `select count(*)::text as n from record_revisions
+      where entity_type = 'PROJECT_ASSET' and entity_id = $1`, [asChairId]);
+  eq('editing a note writes no revision — §36 is about the numbers',
+    Number(asRevAfterNotes[0]?.n), asRevBefore);
+
+  await call('PATCH', `/v1/assets/${asChairId}`, {
+    ...evSubCtx, body: { weightBasis: 'TOTAL', totalWeightKg: 701.4, weightSource: 'WEIGHBRIDGE' },
+  });
+  const { rows: asRevWeight } = await db.query<{ n: string; company_id: string }>(
+    `select count(*)::text as n, max(company_id::text) as company_id from record_revisions
+      where entity_type = 'PROJECT_ASSET' and entity_id = $1`, [asChairId]);
+  eq('...and correcting the weight does', Number(asRevWeight[0]?.n), asRevBefore + 1);
+  eq('...against the company whose record changed, not the one that changed it',
+    asRevWeight[0]?.company_id, evSubCompany);
+
+  // ── 10. The offline contract on this record set ──────────────────────────
+  const asCurrent = await call('GET', `/v1/assets/${asChairId}`, { ...evSubCtx });
+  const asStale = await call('PATCH', `/v1/assets/${asChairId}`, {
+    ...evSubCtx,
+    body: { quantity: 99, expectedRevision: 1 },
+  });
+  eq('a stale expected revision is refused', asStale.status, 409);
+  check('...and the refusal carries the current row, so both sides can be shown',
+    asStale.json?.error?.details?.current?.revision === asCurrent.json.asset.revision,
+    asStale.json?.error?.details);
+
+  const asFresh = await call('PATCH', `/v1/assets/${asChairId}`, {
+    ...evSubCtx,
+    body: { quantity: 42, expectedRevision: asCurrent.json.asset.revision },
+  });
+  eq('...and the same edit against the current revision lands', asFresh.status, 200);
+
+  await call('DELETE', `/v1/assets/${asNoWeight.json.asset.id}`, { ...evSubCtx });
+  const asGone = await call('GET', `/v1/assets/${asNoWeight.json.asset.id}`, { ...evSubCtx });
+  eq('a removed line answers GONE, not 404 — a 404 also means "not allowed"',
+    asGone.status, 410);
+  const { rows: asStillThere } = await db.query<{ n: string }>(
+    `select count(*)::text as n from project_assets where id = $1`,
+    [asNoWeight.json.asset.id]
+  );
+  eq('...and the row is still there: an asset line is a hiring company’s proof of a tonne',
+    asStillThere[0]?.n, '1');
+
+  // ── 11. Who may write, and who may not ───────────────────────────────────
+  const asWorkerWrite = await call('POST', `/v1/projects/${evProject}/assets`, {
+    token: evWorker.token, companyId: evCompany,
+    body: { assetTypeId: CHAIR, quantity: 1 },
+  });
+  eq('a Worker bundle cannot record assets', asWorkerWrite.status, 403);
+  check('...and the refusal names the capability',
+    JSON.stringify(asWorkerWrite.json).includes('asset.write'), asWorkerWrite.json);
+
+  // The asymmetry with the diary, made explicit: the project owner MAY correct a
+  // subcontractor's measurement, because the chairs are a shared physical fact
+  // and the hiring company reports the tonne.
+  const asOwnerEdit = await call('PATCH', `/v1/assets/${asChairId}`, {
+    ...asOwnerCtx,
+    // A different figure from the subcontractor's, deliberately: an edit that
+    // changes no weight fact correctly writes no revision, and asserting
+    // attribution against a no-op proves nothing. The first run of this section
+    // used 701.4 twice and caught exactly that.
+    body: { weightBasis: 'TOTAL', totalWeightKg: 705, weightSource: 'WEIGHBRIDGE' },
+  });
+  eq('the project owner may correct a subcontractor’s asset line', asOwnerEdit.status, 200);
+  const { rows: asOwnerRev } = await db.query<{ changed_by_user_id: string }>(
+    `select changed_by_user_id from record_revisions
+      where entity_type = 'PROJECT_ASSET' and entity_id = $1 order by revision desc limit 1`,
+    [asChairId]
+  );
+  eq('...and the trail names who did it, which is the protection rather than a refusal',
+    asOwnerRev[0]?.changed_by_user_id, evOwner.userId);
+
+  const asRivalRead = await call('GET', `/v1/assets/${asChairId}`, {
+    token: evSub2.token, companyId: evSub2Company,
+  });
+  eq('a rival subcontractor on the same project cannot read the line', asRivalRead.status, 404);
+
+  // ── 12. Cross-project ids are refused in the direction they would be used ─
+  const asForeignDoc = await call('PATCH', `/v1/assets/${asChairId}`, {
+    ...asOwnerCtx,
+    body: { weightSource: 'TRANSFER_NOTE', weightDocumentId: randomUUID() },
+  });
+  eq('a document id that is not on this project is refused', asForeignDoc.status, 422);
+
+  const asForeignType = await call('POST', `/v1/projects/${evProject}/assets`, {
+    ...asOwnerCtx,
+    body: { assetTypeId: randomUUID(), quantity: 1 },
+  });
+  eq('an asset type id the caller may not use answers not found, not forbidden',
+    asForeignType.status, 404);
+
+  // ── 13. outcome_state is derived and there is no way to type it ──────────
+  const asTypedState = await call('PATCH', `/v1/assets/${asChairId}`, {
+    ...asOwnerCtx, body: { outcomeState: 'FINAL' },
+  });
+  eq('there is no field for typing an outcome state', asTypedState.status, 422);
+  const asStateNow = await call('GET', `/v1/assets/${asChairId}`, { ...asOwnerCtx });
+  eq('...and it is still what the movements say it is', asStateNow.json.asset.outcomeState, 'PENDING');
+
+  // ── 14. One notification for a batch, naming no serial ───────────────────
+  for (let pass = 0; pass < 4; pass += 1) {
+    await recoverStaleOutboxClaims(0);
+    const o = await runOutboxBatch({
+      workerId: 'verify-e2e-assets', handlers: NOTIFICATION_HANDLERS, limit: 200,
+    });
+    await runNotificationDeliveryBatch(200);
+    if (o.claimed === 0) break;
+  }
+  const { rows: asNotices } = await db.query<{ title: string; body: string }>(
+    `select title, body from notifications
+      where company_id = $1 and kind = 'asset.lines_recorded' order by created_at`,
+    [evCompany]
+  );
+  check('the owner is told its subcontractor recorded assets', asNotices.length > 0, asNotices);
+  check('...once for the whole paste, not once per line',
+    asNotices.some((n) => n.title.includes('3 asset lines')), asNotices.map((n) => n.title));
+  check('...and no notification names a serial number, a model or a description',
+    !JSON.stringify(asNotices).includes('4471') &&
+    !JSON.stringify(asNotices).includes('R740') &&
+    !JSON.stringify(asNotices).includes('Stacked by the lift'),
+    asNotices);
+
+  const { rows: asOwnPayload } = await db.query<{ n: string }>(
+    `select count(*)::text as n from delivery_outbox
+      where topic = 'asset.lines_recorded' and payload::text like '%4471%'`
+  );
+  eq('...nor does any event payload, which is where a serial would leak first',
+    asOwnPayload[0]?.n, '0');
+
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);
   if (failures.length === 0) {

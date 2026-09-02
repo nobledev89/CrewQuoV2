@@ -45,6 +45,7 @@ import {
   projectDocumentsRouter,
 } from './modules/documents/routes';
 import { diaryRouter, projectDiaryRouter } from './modules/diary/routes';
+import { assetsRouter, projectAssetsRouter } from './modules/assets/routes';
 import { invitesRouter } from './modules/invites/routes';
 import { projectsRouter } from './modules/projects/routes';
 import {
@@ -286,11 +287,13 @@ export function buildApp(): Express {
   app.use('/v1/projects', requireAuth, projectEvidenceRouter);
   app.use('/v1/projects', requireAuth, projectDocumentsRouter);
   app.use('/v1/projects', requireAuth, projectDiaryRouter);
+  app.use('/v1/projects', requireAuth, projectAssetsRouter);
   app.use('/v1/projects', requireAuth, projectsRouter);
   app.use('/v1/locations', requireAuth, locationsRouter);
   app.use('/v1/evidence', requireAuth, evidenceRouter);
   app.use('/v1/documents', requireAuth, documentsRouter);
   app.use('/v1/diary', requireAuth, diaryRouter);
+  app.use('/v1/assets', requireAuth, assetsRouter);
   app.use('/v1/work-context', requireAuth, workContextRouter);
   app.use('/v1/time-logs', requireAuth, timeLogsRouter);
   app.use('/v1/expenses', requireAuth, expensesRouter);

@@ -3,6 +3,7 @@ import {
   describeDiaryDay,
   describeExpiry,
   describeSupersession,
+  formatMassKg,
   type DocumentCategory,
 } from '@crewquo/shared';
 import { PermanentDeliveryError } from '../delivery/model';
@@ -766,6 +767,61 @@ async function onDiaryClosed(event: OutboxEvent): Promise<void> {
 }
 
 /**
+ * A subcontractor recorded what it took off the floor (§25, packet §6).
+ *
+ * **One item for the batch, whatever its size.** Sixty pasted lines is one act by
+ * one person; sixty items is an inbox that teaches people to clear it without
+ * reading, which is the same reason `evidence.uploaded` does not exist.
+ *
+ * **The body names counts, masses and nothing else.** No description, no
+ * manufacturer, no serial number — a serial identifies a specific machine, usually
+ * with a client's asset tag on it, and this body travels to an email provider.
+ * §11's exclusion list is enforced upstream by the payload allowlist, so there is
+ * nothing here to leak even by accident; what this composes from is the count, the
+ * mass and the number of lines still unweighed.
+ *
+ * That last figure is in the body on purpose. A register that arrives with
+ * "18 lines, no weights yet" is a to-do; one that says only "18 lines" reads as
+ * finished, and §28.3 exists because an unweighed line is the commonest gap there
+ * is.
+ *
+ * Only the project owner is told, and only when somebody else did the recording. A
+ * company recording assets on its own project is telling itself.
+ */
+async function onAssetLinesRecorded(event: OutboxEvent): Promise<void> {
+  const ownerCompanyId = required(event.payload, 'ownerCompanyId');
+  const recordingCompanyId = required(event.payload, 'recordingCompanyId');
+  const projectId = required(event.payload, 'projectId');
+  const actorUserId = optional(event.payload, 'actorUserId');
+  if (recordingCompanyId === ownerCompanyId) return;
+
+  const lineCount = Number(event.payload.lineCount ?? 0);
+  if (lineCount === 0) return;
+  const totalWeightKg = event.payload.totalWeightKg;
+  const withoutWeight = Number(event.payload.linesWithoutWeight ?? 0);
+
+  const mass =
+    typeof totalWeightKg === 'number' ? ` — ${formatMassKg(totalWeightKg)}` : '';
+  const gap =
+    withoutWeight > 0
+      ? ` ${withoutWeight} of them ${withoutWeight === 1 ? 'has' : 'have'} no weight recorded yet.`
+      : '';
+
+  await dispatchNotification({
+    kind: 'asset.lines_recorded',
+    companyId: ownerCompanyId,
+    recipientUserIds: without(await managerRecipients(ownerCompanyId), actorUserId),
+    title: `${lineCount} asset ${lineCount === 1 ? 'line' : 'lines'} recorded`,
+    body: `A subcontractor recorded what came off site${mass}.${gap}`,
+    subjectType: 'PROJECT',
+    subjectId: projectId,
+    actionUrl: `/projects/${projectId}`,
+    topic: event.topic,
+    aggregateId: event.aggregateId,
+  });
+}
+
+/**
  * A closed day was changed (§23, packet §6).
  *
  * **Both the hiring company and the authoring company's own decision-makers**, and
@@ -854,6 +910,7 @@ export const NOTIFICATION_HANDLERS: ReadonlyMap<string, DeliveryHandler> = new M
   ['document.expiring', onDocumentExpiring],
   ['diary.closed', onDiaryClosed],
   ['diary.amended', onDiaryAmended],
+  ['asset.lines_recorded', onAssetLinesRecorded],
   ['auth.token_reuse', onAuthSecurityEvent],
   ['auth.session_revoked', onAuthSecurityEvent],
   ['auth.mfa_enrolled', onAuthSecurityEvent],
