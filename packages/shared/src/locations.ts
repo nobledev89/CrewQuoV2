@@ -276,7 +276,7 @@ export function locationPath(id: string, all: readonly LocationView[]): string[]
  *
  * A *registry*, not a hand-written `or` chain, and that shape is the point. Every
  * later phase adds a table that points here — evidence and documents in 7.3/7.4,
- * the diary in 7.6, assets in Phase 8, schedule assignments in Phase 11 — and a
+ * the diary in 7.5, assets in Phase 8, schedule assignments in Phase 11 — and a
  * condition written inline is one each of those five people has to remember to
  * extend. The one who forgets deletes a location out from under a year of
  * evidence.
@@ -299,7 +299,10 @@ export const LOCATION_REFERENCE_TABLES: readonly LocationReferenceTable[] = [
   // from under a year of photographs is the failure the shape exists to prevent.
   { table: 'project_evidence', column: 'location_id', label: 'photos and files' },
   { table: 'project_documents', column: 'location_id', label: 'documents' },
-  // Phase 7.6 adds site_diary_locations.location_id.
+  // 7.5. A diary entry names the areas a day's work happened in, and a day is the
+  // one record here that can never be deleted — so a location it cites is one the
+  // product has promised to keep rendering.
+  { table: 'site_diary_locations', column: 'location_id', label: 'diary entries' },
   // Phase 8 adds project_assets.location_id.
   // Phase 11 adds schedule_assignments.location_id.
 ];

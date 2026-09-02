@@ -1,4 +1,10 @@
-import { describeExpiry, describeSupersession, type DocumentCategory } from '@crewquo/shared';
+import {
+  describeAmendments,
+  describeDiaryDay,
+  describeExpiry,
+  describeSupersession,
+  type DocumentCategory,
+} from '@crewquo/shared';
 import { PermanentDeliveryError } from '../delivery/model';
 import type { DeliveryHandler } from '../delivery/worker';
 import type { OutboxEvent } from '../delivery/repo';
@@ -718,6 +724,110 @@ async function onDocumentExpiring(event: OutboxEvent): Promise<void> {
 }
 
 /**
+ * A subcontractor closed a day on the hiring company's project (§23, packet §6).
+ *
+ * The title names the **day**, not the person, and the difference is what makes it
+ * readable a week later: *"Tuesday 3 March closed"* is findable in an inbox and
+ * *"Ade closed a day"* is not. The attendance totals ride in the body because they
+ * are the one thing a hiring company checks first — they are numbers the payload
+ * already carries, and §11 excludes the attendance *names* rather than the counts.
+ *
+ * Only the project owner is told, and only when somebody else closed it. A company
+ * closing a day on its own project is telling itself.
+ */
+async function onDiaryClosed(event: OutboxEvent): Promise<void> {
+  const ownerCompanyId = required(event.payload, 'ownerCompanyId');
+  const authorCompanyId = required(event.payload, 'authorCompanyId');
+  const projectId = required(event.payload, 'projectId');
+  const diaryEntryId = required(event.payload, 'diaryEntryId');
+  const entryDate = required(event.payload, 'entryDate');
+  const actorUserId = optional(event.payload, 'actorUserId');
+  if (authorCompanyId === ownerCompanyId) return;
+
+  const workers = Number(event.payload.workersPresentCount ?? 0);
+  const subs = Number(event.payload.subcontractorsPresentCount ?? 0);
+  const present = workers + subs;
+
+  await dispatchNotification({
+    kind: 'diary.closed',
+    companyId: ownerCompanyId,
+    recipientUserIds: without(await managerRecipients(ownerCompanyId), actorUserId),
+    title: `${describeDiaryDay(entryDate)} closed`,
+    body:
+      present > 0
+        ? `A subcontractor closed their site diary for the day, with ${present} on site.`
+        : 'A subcontractor closed their site diary for the day.',
+    subjectType: 'SITE_DIARY_ENTRY',
+    subjectId: diaryEntryId,
+    actionUrl: `/projects/${projectId}`,
+    topic: event.topic,
+    aggregateId: event.aggregateId,
+  });
+}
+
+/**
+ * A closed day was changed (§23, packet §6).
+ *
+ * **Both the hiring company and the authoring company's own decision-makers**, and
+ * the second half is the one that looks redundant and is not: the person who
+ * amended it knows, and their owner — who may have quoted the original in a report
+ * — does not. §6 names both recipients for exactly that reason.
+ *
+ * The **reason** is in the body. It is the single piece of customer prose any
+ * Phase 7 payload carries, §5 puts it there by name, and §6 writes it into the
+ * item verbatim: an amendment notice that cannot say why has to be clicked to be
+ * useful, which for the one kind that is never digested defeats the point of not
+ * digesting it. The before and after values stay in `record_revisions`, behind the
+ * same authorization as the entry.
+ */
+async function onDiaryAmended(event: OutboxEvent): Promise<void> {
+  const ownerCompanyId = required(event.payload, 'ownerCompanyId');
+  const authorCompanyId = required(event.payload, 'authorCompanyId');
+  const projectId = required(event.payload, 'projectId');
+  const diaryEntryId = required(event.payload, 'diaryEntryId');
+  const entryDate = required(event.payload, 'entryDate');
+  const reason = required(event.payload, 'reason');
+  const actorUserId = optional(event.payload, 'actorUserId');
+  const revision = Number(event.payload.revision ?? 0);
+
+  const title = `${describeDiaryDay(entryDate)} amended — reason: ${reason}`;
+  const body = `This day was closed and has been changed since (${
+    describeAmendments(revision) ?? 'amended'
+  }). The full history is on the entry.`;
+
+  await dispatchNotification({
+    kind: 'diary.amended',
+    companyId: ownerCompanyId,
+    recipientUserIds: without(await managerRecipients(ownerCompanyId), actorUserId),
+    title,
+    body,
+    subjectType: 'SITE_DIARY_ENTRY',
+    subjectId: diaryEntryId,
+    actionUrl: `/projects/${projectId}`,
+    topic: event.topic,
+    aggregateId: event.aggregateId,
+  });
+
+  if (authorCompanyId !== ownerCompanyId) {
+    await dispatchNotification({
+      kind: 'diary.amended',
+      companyId: authorCompanyId,
+      recipientUserIds: without(await managerRecipients(authorCompanyId), actorUserId),
+      title,
+      body,
+      subjectType: 'SITE_DIARY_ENTRY',
+      subjectId: diaryEntryId,
+      actionUrl: `/projects/${projectId}`,
+      topic: event.topic,
+      // A distinct aggregate suffix, or the dedupe key would make the second
+      // company's copy look like a redelivery of the first company's and silently
+      // drop it — the same shape the closure notices and `document.expiring` use.
+      aggregateId: `${event.aggregateId}:author`,
+    });
+  }
+}
+
+/**
  * The registered consumers. A topic with no handler here is simply not claimed by
  * this worker — `claimOutboxEvents` filters on the registered topic list, so an
  * unconsumed event waits rather than being marked delivered by a worker that did
@@ -742,6 +852,8 @@ export const NOTIFICATION_HANDLERS: ReadonlyMap<string, DeliveryHandler> = new M
   ['file.scan_failed', onFileScanFailed],
   ['document.superseded', onDocumentSuperseded],
   ['document.expiring', onDocumentExpiring],
+  ['diary.closed', onDiaryClosed],
+  ['diary.amended', onDiaryAmended],
   ['auth.token_reuse', onAuthSecurityEvent],
   ['auth.session_revoked', onAuthSecurityEvent],
   ['auth.mfa_enrolled', onAuthSecurityEvent],

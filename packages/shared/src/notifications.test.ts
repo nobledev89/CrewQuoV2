@@ -416,6 +416,32 @@ describe('composing digests, quiet hours and urgency', () => {
     })).toBe(8 * 60);
   });
 
+  /*
+   * `diary.amended` (§23, packet §6) is the only kind that sets `neverDigest`, and
+   * the pair of tests below is the reason it is not simply marked URGENT: it must
+   * escape the batching and keep the courtesy. Marking it urgent would have got the
+   * first test passing and silently broken the second.
+   */
+  it('never batches a kind that refuses to be digested', () => {
+    expect(deliveryHoldMinutes({
+      ...base, digest: 'DAILY', localTime: '09:00', neverDigest: true,
+    })).toBe(0);
+  });
+
+  it('still respects quiet hours for a kind that refuses to be digested', () => {
+    expect(deliveryHoldMinutes({
+      ...base, digest: 'DAILY', localTime: '23:00', neverDigest: true,
+      quietHoursStart: '22:00', quietHoursEnd: '07:00',
+    })).toBe(8 * 60);
+  });
+
+  it('exactly one kind in the catalog refuses to be digested', () => {
+    const refusing = Object.entries(NOTIFICATION_KIND_SPECS)
+      .filter(([, spec]) => spec.neverDigest)
+      .map(([kind]) => kind);
+    expect(refusing).toEqual(['diary.amended']);
+  });
+
   it('never holds an urgent alert, digest or quiet hours notwithstanding', () => {
     expect(deliveryHoldMinutes({
       ...base, digest: 'DAILY', urgency: 'URGENT', localTime: '03:00',

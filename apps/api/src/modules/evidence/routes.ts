@@ -147,6 +147,7 @@ projectEvidenceRouter.get(
       to: raw.to,
       uploadedByUserId: raw.uploadedByUserId,
       locationId: raw.locationId,
+      diaryEntryId: raw.diaryEntryId,
       clientVisible:
         raw.clientVisible === undefined ? undefined : raw.clientVisible === 'true',
       batchClientId: raw.batchClientId,
@@ -220,6 +221,23 @@ projectEvidenceRouter.post(
         );
         const validLocations = await validLocationIds(access.projectId, [...locationIds]);
 
+        /*
+         * Diary days are validated the same way and for a sharper reason: a diary
+         * entry belongs to a project AND to an authoring company, so an id that is
+         * merely a real uuid could file this company's photographs under a
+         * counterparty's written-up day. Scoped by both, once for the batch.
+         */
+        const diaryIds = new Set(
+          input.items
+            .map((item) => applyBatchDefaults(input.defaults, item).diaryEntryId)
+            .filter((id): id is string => id !== null)
+        );
+        const validDiaryEntries = await validDiaryEntryIds(
+          access.projectId,
+          ctx.companyId,
+          [...diaryIds]
+        );
+
         const created: EvidenceView[] = [];
         const rejected: EvidenceBatchRejection[] = [];
 
@@ -254,6 +272,14 @@ projectEvidenceRouter.post(
               });
               continue;
             }
+            if (meta.diaryEntryId !== null && !validDiaryEntries.has(meta.diaryEntryId)) {
+              rejected.push({
+                fileId: item.fileId,
+                code: 'FILE_NOT_USABLE',
+                message: 'That diary day is not one of this company’s on this project',
+              });
+              continue;
+            }
 
             const row = await insertEvidence(
               {
@@ -266,6 +292,7 @@ projectEvidenceRouter.post(
                 evidenceDate: meta.evidenceDate,
                 capturedAt: meta.capturedAt,
                 locationId: meta.locationId,
+                diaryEntryId: meta.diaryEntryId,
                 sortOrder: meta.sortOrder,
                 uploadedByUserId: ctx.userId,
                 batchClientId: input.batchClientId ?? null,
@@ -373,6 +400,14 @@ projectEvidenceRouter.patch(
       const valid = await validLocationIds(access.projectId, [input.patch.locationId]);
       if (!valid.has(input.patch.locationId)) {
         throw new AppError('VALIDATION', 'That location is not on this project');
+      }
+    }
+    if (input.patch.diaryEntryId != null) {
+      const valid = await validDiaryEntryIds(access.projectId, ctx.companyId, [
+        input.patch.diaryEntryId,
+      ]);
+      if (!valid.has(input.patch.diaryEntryId)) {
+        throw new AppError('VALIDATION', 'That diary day is not one of yours on this project');
       }
     }
 
@@ -580,6 +615,20 @@ evidenceRouter.patch(
         throw new AppError('VALIDATION', 'That location is not on this project');
       }
     }
+    if (fields.diaryEntryId != null) {
+      // Scoped to the row's OWNING company rather than the caller's: the project
+      // owner re-tagging a subcontractor's photograph may only file it under a day
+      // that subcontractor wrote, never under one of their own.
+      const valid = await validDiaryEntryIds(row.project_id, row.company_id, [
+        fields.diaryEntryId,
+      ]);
+      if (!valid.has(fields.diaryEntryId)) {
+        throw new AppError(
+          'VALIDATION',
+          'That diary day is not one written by the company that uploaded this'
+        );
+      }
+    }
 
     const updated = await updateEvidence(id, fields, expectedRevision);
     if (!updated) {
@@ -726,6 +775,30 @@ async function validLocationIds(projectId: string, ids: string[]): Promise<Set<s
     `select id from project_locations
       where project_id = $1 and id = any($2::uuid[]) and deleted_at is null`,
     [projectId, ids]
+  );
+  return new Set(rows.map((r) => r.id));
+}
+
+/**
+ * The diary days this company has written on this project (0032).
+ *
+ * **Scoped by company as well as project**, because §23's key is
+ * `(project_id, company_id, entry_date)` and two companies keep two diaries for
+ * one day. Without the second column a subcontractor could file its photographs
+ * under the hiring company's written-up day — which is not a permission failure a
+ * reader would ever notice, it is a photograph appearing in somebody else's
+ * narrative record.
+ */
+async function validDiaryEntryIds(
+  projectId: string,
+  companyId: string,
+  ids: string[]
+): Promise<Set<string>> {
+  if (ids.length === 0) return new Set();
+  const rows = await query<{ id: string }>(
+    `select id from site_diary_entries
+      where project_id = $1 and company_id = $2 and id = any($3::uuid[])`,
+    [projectId, companyId, ids]
   );
   return new Set(rows.map((r) => r.id));
 }

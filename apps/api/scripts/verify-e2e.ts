@@ -8733,6 +8733,599 @@ async function main(): Promise<void> {
   });
   eq('...while an outsider gets the same 404 as always', dcGoneOutsider.status, 404);
 
+  // ── The site diary ────────────────────────────────────────────────────────
+  section('Site diary — attendance, Close Day and the amendment nobody can hide');
+
+  /*
+   * Reuses the evidence fixture, so the diary is proved on a project that
+   * genuinely has a hiring company, a subcontractor on the free Crew plan, a rival
+   * trade, a Worker-bundle member and a client on it — which is what makes the
+   * scope assertions below mean anything.
+   */
+  const dyOwnerCtx = { token: evOwner.token, companyId: evCompany };
+  const dySubCtx = evSubCtx;
+  const dyRivalCtx = { token: evSub2.token, companyId: evSub2Company };
+  const DAY = '2026-03-03'; // a Tuesday, which the notification titles assert
+
+  /*
+   * A second decision-maker inside Ade's company, and the amendment assertions
+   * below are the reason it exists.
+   *
+   * §6 says an amendment reaches Priya **and the authoring company's owners**, and
+   * on a one-person company those two claims collapse: the only owner is the
+   * person who amended it, and "nobody is told about their own action" quite
+   * correctly silences the second notice. The first version of this section
+   * asserted the second dispatch against exactly that fixture and read a
+   * deliberate rule as a bug. A Crew plan sells one seat, so the seat is granted
+   * the way an operator would grant it.
+   */
+  await db.query(
+    `insert into company_entitlement_overrides (company_id, limit_key, limit_value, note)
+     values ($1, 'internal_seats', 3, 'verify-e2e: a second decision-maker for the diary')`,
+    [evSubCompany]
+  );
+  const dySubPartner = await register(
+    'dysubpartner', undefined, `dysubpartner+${RUN}@verify.crewquo.test`);
+  const dySubPartnerInvite = await call('POST', '/v1/members/invite', {
+    ...evSubCtx,
+    body: { email: dySubPartner.email, role: 'ADMIN' },
+  });
+  eq('a second decision-maker is invited into the subcontractor',
+    dySubPartnerInvite.status, 201);
+  const dySubPartnerJoin = await call(
+    'POST', `/v1/invites/${dySubPartnerInvite.json.inviteToken}/accept`,
+    { token: dySubPartner.token });
+  eq('...and joins it', dySubPartnerJoin.status, 201);
+
+  // ── 1. Opening a day ─────────────────────────────────────────────────────
+  const dyEmpty = await call('GET', `/v1/projects/${evProject}/diary`, { ...dyOwnerCtx });
+  eq('a project with no diary says so', dyEmpty.status, 200);
+  eq('...with an empty list rather than an invented today', dyEmpty.json.entries, []);
+
+  const dyFuture = await call('POST', `/v1/projects/${evProject}/diary`, {
+    ...dySubCtx,
+    body: { entryDate: '2099-01-01' },
+  });
+  eq('a diary entry cannot be written for a day that has not happened', dyFuture.status, 422);
+
+  const dyBadTimes = await call('POST', `/v1/projects/${evProject}/diary`, {
+    ...dySubCtx,
+    body: { entryDate: DAY, startTime: '17:00', finishTime: '07:30' },
+  });
+  eq('a day that finishes before it starts is a typo, not a shift', dyBadTimes.status, 422);
+
+  const dySubDay = await call('POST', `/v1/projects/${evProject}/diary`, {
+    ...dySubCtx,
+    body: {
+      entryDate: DAY,
+      startTime: '07:30',
+      finishTime: '17:00',
+      workCompleted: 'Second fix to Floor 3',
+      weather: 'Dry, cold',
+      locationIds: [evFloorId],
+      clientId: randomUUID(),
+    },
+  });
+  eq('a subcontractor on a free plan writes up the day on the hiring company’s job',
+    dySubDay.status, 201);
+  eq('...as an OPEN entry', dySubDay.json.entry.status, 'OPEN');
+  eq('...attributed to its own company', dySubDay.json.entry.companyId, evSubCompany);
+  eq('...with the times trimmed to what a time input speaks', dySubDay.json.entry.startTime, '07:30');
+  eq('...and nobody has amended anything yet', dySubDay.json.entry.amendedTimes, 0);
+  const dySubEntry = dySubDay.json.entry.id as string;
+
+  // §23: one entry per project per day per company. Asking twice is one day.
+  const dyAgain = await call('POST', `/v1/projects/${evProject}/diary`, {
+    ...dySubCtx,
+    body: { entryDate: DAY },
+  });
+  eq('opening the same day twice returns the same day rather than refusing', dyAgain.status, 200);
+  eq('...the very same entry', dyAgain.json.entry.id, dySubEntry);
+
+  /*
+   * The hiring company keeps its own diary for the same day. Two companies on one
+   * site, two records, both attributed and both true — §2's rule, and the reason
+   * the unique key has three columns rather than two.
+   */
+  const dyOwnerDay = await call('POST', `/v1/projects/${evProject}/diary`, {
+    ...dyOwnerCtx,
+    body: { entryDate: DAY, workCompleted: 'Client walkthrough at 14:00' },
+  });
+  eq('the hiring company keeps its own diary for the same day', dyOwnerDay.status, 201);
+  const dyOwnerEntry = dyOwnerDay.json.entry.id as string;
+  check('...and it is a different record', dyOwnerEntry !== dySubEntry,
+    { dyOwnerEntry, dySubEntry });
+
+  // ── 2. Who reads whose, and who may correct it ───────────────────────────
+  const dyOwnerList = await call('GET', `/v1/projects/${evProject}/diary`, { ...dyOwnerCtx });
+  eq('the project owner sees both companies’ diaries', dyOwnerList.json.entries.length, 2);
+  eq('...each naming who wrote it',
+    (dyOwnerList.json.entries as any[]).map((e) => e.companyId).sort(),
+    [evCompany, evSubCompany].sort());
+
+  const dySubList = await call('GET', `/v1/projects/${evProject}/diary`, { ...dySubCtx });
+  eq('the subcontractor sees only its own', dySubList.json.entries.length, 1);
+  eq('...its own', dySubList.json.entries[0].id, dySubEntry);
+
+  const dySubPeek = await call('GET', `/v1/diary/${dyOwnerEntry}`, { ...dySubCtx });
+  eq('a subcontractor asking for the hiring company’s day is told it does not exist',
+    dySubPeek.status, 404);
+
+  const dyOutsiderRead = await call('GET', `/v1/diary/${dySubEntry}`, {
+    token: dcOutsider.token,
+    companyId: dcOutsider.companyId!,
+  });
+  eq('an unrelated company gets the same 404', dyOutsiderRead.status, 404);
+
+  /*
+   * The one asymmetry in the phase, and it is deliberate: Priya may re-tag Ade's
+   * photograph and share his document with her client, and may not edit his
+   * statement about what he saw.
+   */
+  const dyOwnerEdits = await call('PATCH', `/v1/diary/${dySubEntry}`, {
+    ...dyOwnerCtx,
+    body: { delays: 'Actually the crane was fine' },
+  });
+  eq('the project owner cannot edit a subcontractor’s diary entry', dyOwnerEdits.status, 403);
+  check('...and the refusal says whose record it is',
+    /written by another company/.test(dyOwnerEdits.json?.error?.message ?? ''),
+    dyOwnerEdits.json?.error?.message);
+
+  // ── 3. Prefill, and the confirm that must not double the crew ────────────
+  /*
+   * The role lives in the HIRING company's catalog, not the subcontractor's:
+   * `assertRoleInCompany` checks it against the engagement's client side, because
+   * a role is what the hiring company is buying rather than what the crew calls
+   * itself. Written the other way round first, and the 422 said so.
+   */
+  const dyRole = await call('POST', '/v1/role-catalog', {
+    ...dyOwnerCtx,
+    body: { name: `Fit-out labourer ${RUN}` },
+  });
+  const dyRoleId = dyRole.json.role.id as string;
+
+  const dySubmittedLog = await call('POST', '/v1/time-logs', {
+    ...dySubCtx,
+    body: {
+      projectId: evProject,
+      roleId: dyRoleId,
+      shiftType: 'WEEKDAY_DAY',
+      workDate: DAY,
+      hoursRegular: 8,
+      hoursOt: 0,
+    },
+  });
+  eq('the subcontractor logs 8h against the same day', dySubmittedLog.status, 201);
+  const dyDraftLog = await call('POST', '/v1/time-logs', {
+    ...dySubCtx,
+    body: {
+      projectId: evProject, roleId: dyRoleId, shiftType: 'WEEKDAY_DAY',
+      workDate: DAY, hoursRegular: 6, hoursOt: 0,
+    },
+  });
+  eq('...and a second, which stays a draft', dyDraftLog.status, 201);
+
+  const dySubmit = await call('POST', `/v1/time-logs/${dySubmittedLog.json.timeLog.id}/submit`, {
+    ...dySubCtx,
+  });
+  eq('...and submits the first one, leaving one of each status on the day',
+    dySubmit.status, 200);
+
+  const dyPrefill = await call(
+    'GET', `/v1/projects/${evProject}/diary/prefill?date=${DAY}`, { ...dySubCtx });
+  eq('the prefill answers for the day', dyPrefill.status, 200);
+  eq('...offering the submitted timesheet and not the draft', dyPrefill.json.attendance.length, 1);
+  eq('...linked to the timesheet it came from',
+    dyPrefill.json.attendance[0].timeLogId, dySubmittedLog.json.timeLog.id);
+  eq('...as the diary company’s own person rather than a subcontracted crew',
+    dyPrefill.json.attendance[0].providerCompanyId, null);
+  eq('...saying where it came from', dyPrefill.json.attendance[0].source, 'TIME_LOG');
+  eq('...counting the draft nobody has submitted', dyPrefill.json.unsubmittedTimeLogs, 1);
+  eq('...and naming the schedule as a source it does not yet have',
+    dyPrefill.json.sources, { timeLogs: true, schedule: false });
+
+  const dyConfirmBody = {
+    userId: dyPrefill.json.attendance[0].userId,
+    roleId: dyRoleId,
+    hours: 8,
+    timeLogId: dySubmittedLog.json.timeLog.id,
+  };
+  const dyConfirm = await call('POST', `/v1/diary/${dySubEntry}/attendance`, {
+    ...dySubCtx,
+    body: dyConfirmBody,
+  });
+  eq('the supervisor confirms the prefilled line rather than retyping it', dyConfirm.status, 201);
+  eq('...and one person is on site', dyConfirm.json.entry.workersPresentCount, 1);
+
+  /*
+   * The confirm button is the one a person on a tablet presses twice. Without the
+   * one-per-time-log index the second press produces a day with an imaginary
+   * person on it and nothing in the record saying which one.
+   */
+  const dyConfirmAgain = await call('POST', `/v1/diary/${dySubEntry}/attendance`, {
+    ...dySubCtx,
+    body: dyConfirmBody,
+  });
+  eq('confirming the prefill twice is a no-op, not a second person', dyConfirmAgain.status, 201);
+  eq('...and it says so rather than pretending', dyConfirmAgain.json.added, false);
+  eq('...with the headcount unmoved', dyConfirmAgain.json.entry.workersPresentCount, 1);
+
+  const dyPrefillAgain = await call(
+    'GET', `/v1/projects/${evProject}/diary/prefill?date=${DAY}`, { ...dySubCtx });
+  eq('a confirmed suggestion is marked rather than hidden, so nothing vanishes silently',
+    dyPrefillAgain.json.attendance[0].alreadyPresent, true);
+
+  const dyCrew = await call('POST', `/v1/diary/${dySubEntry}/attendance`, {
+    ...dySubCtx,
+    body: { providerCompanyId: evSub2Company, name: 'Scaffold crew', headcount: 4 },
+  });
+  eq('a subcontracted crew is recorded as a crew', dyCrew.status, 201);
+  eq('...counted separately from the company’s own people',
+    dyCrew.json.entry.subcontractorsPresentCount, 4);
+  eq('...which does not change the worker count', dyCrew.json.entry.workersPresentCount, 1);
+  const dyCrewLineId = (dyCrew.json.entry.attendance as any[])
+    .find((a) => a.providerCompanyId === evSub2Company)?.id as string;
+
+  const dyNobody = await call('POST', `/v1/diary/${dySubEntry}/attendance`, {
+    ...dySubCtx,
+    body: { headcount: 3 },
+  });
+  eq('an attendance line that names nobody is a headcount, not attendance', dyNobody.status, 422);
+
+  /*
+   * Naming a real company that is not on this job is an assertion about a business
+   * that cannot see the record it appears in. An off-platform crew has no company
+   * row at all and is recorded by name, which is the column that exists for it.
+   */
+  const dyStrangerCrew = await call('POST', `/v1/diary/${dySubEntry}/attendance`, {
+    ...dySubCtx,
+    body: { providerCompanyId: dcOutsider.companyId, headcount: 2 },
+  });
+  eq('a company that is not on this project cannot be recorded as present on it',
+    dyStrangerCrew.status, 422);
+
+  const dyForeignLog = await call('POST', `/v1/diary/${dyOwnerEntry}/attendance`, {
+    ...dyOwnerCtx,
+    body: { name: 'Borrowed', timeLogId: dySubmittedLog.json.timeLog.id },
+  });
+  eq('one company cannot cite another company’s timesheet in its diary',
+    dyForeignLog.status, 422);
+
+  // ── 4. Photographs belong to a day ───────────────────────────────────────
+  const dyPhotoFile = await uploadPhoto(dySubCtx, `diary-floor-3-${RUN}.png`, evPhoto);
+  const dyPhoto = await call('POST', `/v1/projects/${evProject}/evidence`, {
+    ...dySubCtx,
+    body: {
+      batchClientId: randomUUID(),
+      defaults: { category: 'DURING', evidenceDate: DAY, diaryEntryId: dySubEntry },
+      items: [{ fileId: dyPhotoFile }],
+    },
+  });
+  eq('a photograph is filed against the written-up day', dyPhoto.status, 201);
+  eq('...carrying the day it belongs to', dyPhoto.json.created[0].diaryEntryId, dySubEntry);
+
+  const dyWrongDiary = await call('POST', `/v1/projects/${evProject}/evidence`, {
+    ...dySubCtx,
+    body: {
+      batchClientId: randomUUID(),
+      defaults: { diaryEntryId: dyOwnerEntry },
+      items: [{ fileId: await uploadPhoto(dySubCtx, `stray-${RUN}.png`, evPhoto) }],
+    },
+  });
+  eq('a photograph cannot be filed under another company’s written-up day',
+    dyWrongDiary.json.created.length, 0);
+  eq('...and the batch says which file and why',
+    dyWrongDiary.json.rejected[0]?.code, 'FILE_NOT_USABLE');
+
+  const dyFiltered = await call(
+    'GET', `/v1/projects/${evProject}/evidence?diaryEntryId=${dySubEntry}`, { ...dySubCtx });
+  eq('the day reads its own photographs back', dyFiltered.json.evidence.length, 1);
+
+  // ── 5. The per-field merge (§8) ──────────────────────────────────────────
+  const dyRev = (await call('GET', `/v1/diary/${dySubEntry}`, { ...dySubCtx })).json.entry
+    .revision as number;
+  const dyFirstEdit = await call('PATCH', `/v1/diary/${dySubEntry}`, {
+    ...dySubCtx,
+    body: { delays: 'Crane late', expectedRevision: dyRev },
+  });
+  eq('an edit against the version it read applies', dyFirstEdit.status, 200);
+
+  /*
+   * The case the merge exists for. This edit was composed against the version
+   * before "Crane late" landed and touches a different field — so whole-row
+   * optimistic concurrency would raise a conflict prompt about a change nobody
+   * made, and whole-row last-write-wins would delete a colleague's paragraph.
+   */
+  const dyMerged = await call('PATCH', `/v1/diary/${dySubEntry}`, {
+    ...dySubCtx,
+    body: { issues: 'Water ingress in 3.12', expectedRevision: dyRev, base: { issues: null } },
+  });
+  eq('a stale edit to a field nobody else touched merges rather than refusing',
+    dyMerged.status, 200);
+  eq('...keeping the colleague’s paragraph', dyMerged.json.entry.delays, 'Crane late');
+  eq('...and landing its own', dyMerged.json.entry.issues, 'Water ingress in 3.12');
+
+  const dyCollision = await call('PATCH', `/v1/diary/${dySubEntry}`, {
+    ...dySubCtx,
+    body: { delays: 'Crane cancelled entirely', expectedRevision: dyRev, base: { delays: null } },
+  });
+  eq('two people writing the same field is a question, not a merge', dyCollision.status, 409);
+  eq('...named as a field conflict', dyCollision.json?.error?.details?.reason, 'FIELD_CONFLICT');
+  eq('...naming the field a person has to decide about',
+    (dyCollision.json?.error?.details?.conflicts ?? []).map((c: any) => c.field), ['delays']);
+  eq('...and showing both sides of it',
+    dyCollision.json?.error?.details?.conflicts?.[0]?.theirs, 'Crane late');
+
+  const dyStillMine = await call('GET', `/v1/diary/${dySubEntry}`, { ...dySubCtx });
+  eq('...having written nothing, because a 409 that already wrote would be a lie',
+    dyStillMine.json.entry.delays, 'Crane late');
+
+  const dyStale = await call('PATCH', `/v1/diary/${dySubEntry}`, {
+    ...dySubCtx,
+    body: { notes: 'Composed offline', expectedRevision: dyRev },
+  });
+  eq('a stale edit with no base takes the ordinary contract and refuses', dyStale.status, 409);
+  eq('...as a plain stale revision', dyStale.json?.error?.details?.reason, 'STALE_REVISION');
+
+  const dyStatusPatch = await call('PATCH', `/v1/diary/${dySubEntry}`, {
+    ...dySubCtx,
+    body: { status: 'CLOSED' },
+  });
+  eq('a day cannot be closed by PATCHing its status', dyStatusPatch.status, 422);
+
+  // ── 6. Close Day, and its prompts ────────────────────────────────────────
+  const dyBeforeClose = await call('GET', `/v1/diary/${dyOwnerEntry}`, { ...dyOwnerCtx });
+  const dyPromptCodes = (dyBeforeClose.json.closePrompts as any[]).map((p) => p.code);
+  check('a day with nothing on it is told what is missing, one prompt at a time',
+    dyPromptCodes.includes('NO_ATTENDANCE') && dyPromptCodes.includes('NO_EVIDENCE'),
+    dyPromptCodes);
+  check('...and never prompted about assets, which this product cannot record yet',
+    !JSON.stringify(dyPromptCodes).toLowerCase().includes('asset'), dyPromptCodes);
+
+  const dyWorkerClose = await call('POST', `/v1/diary/${dyOwnerEntry}/close`, {
+    token: evWorker.token,
+    companyId: evCompany,
+    body: {},
+  });
+  eq('a Worker bundle cannot close a day', dyWorkerClose.status, 403);
+  check('...and the refusal names the capability',
+    JSON.stringify(dyWorkerClose.json).includes('diary.close'), dyWorkerClose.json);
+
+  /*
+   * The owner's digest is set to DAILY first, so the two notifications below are
+   * distinguishable by *when* they are due rather than only by what they say —
+   * which is the only way to prove `diary.amended` escapes batching.
+   */
+  await db.query(
+    `insert into notification_preferences (user_id, digest) values ($1, 'DAILY')
+     on conflict (user_id) do update set digest = 'DAILY'`,
+    [evOwner.userId]
+  );
+
+  const dyClose = await call('POST', `/v1/diary/${dySubEntry}/close`, {
+    ...dySubCtx,
+    body: { clientId: randomUUID() },
+  });
+  eq('the supervisor closes the day', dyClose.status, 200);
+  eq('...and it is closed', dyClose.json.entry.status, 'CLOSED');
+  eq('...stamped with who closed it', dyClose.json.entry.closedByUserId, evSub.userId);
+  check('...and when', typeof dyClose.json.entry.closedAt === 'string',
+    dyClose.json.entry.closedAt);
+  check('...returning the prompts again rather than having blocked on them',
+    Array.isArray(dyClose.json.closePrompts), dyClose.json.closePrompts);
+
+  // The packet's §9 row: a second device tries, and is told who won and when.
+  const dyRaceLoser = await call('POST', `/v1/diary/${dySubEntry}/close`, {
+    ...dySubCtx,
+    body: {},
+  });
+  eq('a second device closing the same day is refused', dyRaceLoser.status, 409);
+  eq('...by name', dyRaceLoser.json?.error?.details?.reason, 'ALREADY_CLOSED');
+  check('...telling it who closed the day, and offering the amendment rather than a retry',
+    /closed this day at \d\d:\d\d\. Amend it with a reason\?$/.test(
+      dyRaceLoser.json?.error?.message ?? ''),
+    dyRaceLoser.json?.error?.message);
+
+  await drainWorkers();
+  const { rows: dyClosedNotice } = await db.query<{ title: string; body: string }>(
+    `select title, body from notifications
+      where kind = 'diary.closed' and company_id = $1
+      order by created_at desc limit 1`,
+    [evCompany]
+  );
+  eq('the hiring company is told, and the day is named the way a person would find it',
+    dyClosedNotice[0]?.title, 'Tuesday 3 March closed');
+  check('...with the attendance the day closed with', /5 on site/.test(dyClosedNotice[0]?.body ?? ''),
+    dyClosedNotice[0]?.body);
+
+  const { rows: dySelfNotice } = await db.query<{ n: string }>(
+    `select count(*)::int as n from notifications
+      where kind = 'diary.closed' and company_id = $1`,
+    [evSubCompany]
+  );
+  eq('nobody is told about their own action', Number(dySelfNotice[0]?.n), 0);
+
+  // ── 7. The amendment ─────────────────────────────────────────────────────
+  const dyNoReason = await call('PATCH', `/v1/diary/${dySubEntry}`, {
+    ...dySubCtx,
+    body: { deliveries: 'Two pallets of board, 15:40' },
+  });
+  eq('changing a closed day without saying why is refused', dyNoReason.status, 422);
+  eq('...by name', dyNoReason.json?.error?.details?.reason, 'REASON_REQUIRED');
+
+  const dyAmend = await call('PATCH', `/v1/diary/${dySubEntry}`, {
+    ...dySubCtx,
+    body: {
+      deliveries: 'Two pallets of board, 15:40',
+      reason: 'Delivery note arrived the next morning',
+    },
+  });
+  eq('an amendment with a reason is accepted', dyAmend.status, 200);
+  eq('...and the day is still closed, because there is no reopen',
+    dyAmend.json.entry.status, 'CLOSED');
+  eq('...counted once', dyAmend.json.entry.amendedTimes, 1);
+  eq('...and said in the singular', dyAmend.json.amendedLabel, 'amended 1 time');
+
+  const { rows: dyRevision } = await db.query<{
+    revision: number; before: any; after: any; changed_fields: string[]; reason: string;
+  }>(
+    `select revision, before, after, changed_fields, reason from record_revisions
+      where entity_type = 'site_diary_entry' and entity_id = $1 order by revision desc limit 1`,
+    [dySubEntry]
+  );
+  eq('§36’s row names the field that changed', dyRevision[0]?.changed_fields, ['deliveries']);
+  eq('...carrying what it was', dyRevision[0]?.before?.deliveries, null);
+  eq('...what it became', dyRevision[0]?.after?.deliveries, 'Two pallets of board, 15:40');
+  eq('...and the reason, which is what makes the trail readable',
+    dyRevision[0]?.reason, 'Delivery note arrived the next morning');
+
+  const dyHistory = await call('GET', `/v1/diary/${dySubEntry}/history`, { ...dyOwnerCtx });
+  eq('the hiring company can read the history it was notified about', dyHistory.status, 200);
+  eq('...one amendment', dyHistory.json.revisions.length, 1);
+  eq('...labelled the way every screen renders it', dyHistory.json.amendedLabel, 'amended 1 time');
+
+  const dyAttendanceAmend = await call(
+    'PATCH', `/v1/diary/${dySubEntry}/attendance/${dyCrewLineId}`, {
+      ...dySubCtx,
+      body: { headcount: 3, reason: 'One of the scaffolders left at midday' },
+    });
+  eq('attendance on a closed day is an amendment too, not a free edit',
+    dyAttendanceAmend.status, 200);
+  eq('...and the derived count follows it',
+    dyAttendanceAmend.json.entry.subcontractorsPresentCount, 3);
+  eq('...counted as a second amendment', dyAttendanceAmend.json.entry.amendedTimes, 2);
+
+  const dyAttendanceNoReason = await call('POST', `/v1/diary/${dySubEntry}/attendance`, {
+    ...dySubCtx,
+    body: { name: 'Late arrival' },
+  });
+  eq('adding somebody to a closed day without a reason is refused',
+    dyAttendanceNoReason.status, 422);
+
+  await drainWorkers();
+  const { rows: dyAmendNotice } = await db.query<{ title: string; deliver_after: Date | null }>(
+    `select n.title,
+            (select min(d.deliver_after) from notification_deliveries d
+              where d.notification_id = n.id and d.channel = 'EMAIL') as deliver_after
+       from notifications n
+      where n.kind = 'diary.amended' and n.company_id = $1
+      order by n.created_at asc limit 1`,
+    [evCompany]
+  );
+  eq('the amendment notice names the day and says why',
+    dyAmendNotice[0]?.title,
+    'Tuesday 3 March amended — reason: Delivery note arrived the next morning');
+
+  const { rows: dyClosedDue } = await db.query<{ deliver_after: Date }>(
+    `select min(d.deliver_after) as deliver_after
+       from notifications n join notification_deliveries d on d.notification_id = n.id
+      where n.kind = 'diary.closed' and n.company_id = $1 and d.channel = 'EMAIL'`,
+    [evCompany]
+  );
+  /*
+   * The whole point of `neverDigest`, proved rather than asserted: with the reader
+   * on a DAILY digest, the close is held to the digest boundary and the amendment
+   * is not. A digest is a promise that nothing in it was urgent, and an amendment
+   * to a closed day is precisely the thing that is.
+   */
+  check('a closed day is batched into the reader’s digest',
+    (dyClosedDue[0]?.deliver_after?.getTime() ?? 0) > Date.now() + 60_000,
+    dyClosedDue[0]?.deliver_after);
+  check('...and an amendment never is',
+    (dyAmendNotice[0]?.deliver_after?.getTime() ?? Number.POSITIVE_INFINITY) <=
+      Date.now() + 60_000,
+    dyAmendNotice[0]?.deliver_after);
+
+  const { rows: dyAuthorNotice } = await db.query<{ recipient_user_id: string }>(
+    `select recipient_user_id from notifications
+      where kind = 'diary.amended' and company_id = $1`,
+    [evSubCompany]
+  );
+  const dyAuthorRecipients = dyAuthorNotice.map((r) => r.recipient_user_id);
+  check('the authoring company’s own decision-makers are told too, because they may have quoted it',
+    dyAuthorRecipients.includes(dySubPartner.userId!), dyAuthorRecipients);
+  check('...and the person who made the amendment is not told about their own act',
+    !dyAuthorRecipients.includes(evSub.userId!), dyAuthorRecipients);
+
+  await db.query(`update notification_preferences set digest = 'IMMEDIATE' where user_id = $1`,
+    [evOwner.userId]);
+
+  // ── 8. Locations, documents, and the packaging ───────────────────────────
+  const dyBay = await call('POST', `/v1/projects/${evProject}/locations`, {
+    ...dyOwnerCtx,
+    body: { kind: 'SITE_AREA', name: `Loading bay ${RUN}` },
+  });
+  const dyBayId = dyBay.json.location.id as string;
+  const dyOwnerLocs = await call('PATCH', `/v1/diary/${dyOwnerEntry}`, {
+    ...dyOwnerCtx,
+    body: { locationIds: [dyBayId] },
+  });
+  eq('a day names the areas its work happened in', dyOwnerLocs.status, 200);
+  eq('...and reads them back', dyOwnerLocs.json.entry.locationIds, [dyBayId]);
+
+  const dyLocDelete = await call('DELETE', `/v1/locations/${dyBayId}`, { ...dyOwnerCtx });
+  eq('...so that location can no longer be deleted', dyLocDelete.status, 409);
+  check('...with the refusal naming diary entries specifically',
+    /\bdiary entries\b/.test(dyLocDelete.json?.error?.message ?? ''),
+    dyLocDelete.json?.error?.message);
+
+  const dyCiteRams = await call('PATCH', `/v1/diary/${dySubEntry}`, {
+    ...dySubCtx,
+    body: { documentIds: [dcRamsV1Id], reason: 'The RAMS that was current on the day' },
+  });
+  eq('a day may cite a project-wide document', dyCiteRams.status, 200);
+  eq('...and reads it back', dyCiteRams.json.entry.documentIds, [dcRamsV1Id]);
+
+  const dyRivalInsurance = await call('POST', `/v1/projects/${evProject}/documents`, {
+    ...dyRivalCtx,
+    body: {
+      fileId: await uploadDoc(dyRivalCtx, `rival-insurance-${RUN}.pdf`,
+        Buffer.from('%PDF-1.4 rival insurance', 'ascii')),
+      category: 'INSURANCE',
+      title: 'Rival public liability',
+    },
+  });
+  eq('the rival trade files its own insurance', dyRivalInsurance.status, 201);
+  const dyCiteRival = await call('PATCH', `/v1/diary/${dySubEntry}`, {
+    ...dySubCtx,
+    body: {
+      documentIds: [dyRivalInsurance.json.document.id],
+      reason: 'Trying it on',
+    },
+  });
+  /*
+   * Citing is a way of showing. A scope check that stopped at the project would
+   * make the diary a route around the document scope: file a competitor's
+   * insurance certificate into your Tuesday and it becomes readable from there.
+   */
+  eq('a day cannot cite a competitor’s paperwork into view', dyCiteRival.status, 422);
+
+  const dySubOwn = await call('GET', `/v1/projects/${evSubOwnProject.json.project.id}/diary`, {
+    ...dySubCtx,
+  });
+  eq('a Crew-plan company gets no diary on its OWN project', dySubOwn.status, 403);
+  check('...naming the key it would need',
+    JSON.stringify(dySubOwn.json).includes('site_diary'), dySubOwn.json);
+
+  const dyWorkerWrite = await call('POST', `/v1/projects/${evProject}/diary`, {
+    token: evWorker.token,
+    companyId: evCompany,
+    body: { entryDate: DAY, notes: 'Not my job' },
+  });
+  eq('a Worker bundle cannot write the diary', dyWorkerWrite.status, 403);
+  check('...and the refusal names the capability',
+    JSON.stringify(dyWorkerWrite.json).includes('diary.write'), dyWorkerWrite.json);
+
+  // ── 9. There is no delete, and the absence is the design ─────────────────
+  const dyDelete = await call('DELETE', `/v1/diary/${dySubEntry}`, { ...dySubCtx });
+  check('no route deletes a day: a day that can be removed is a day somebody can ' +
+    'make not have happened',
+    dyDelete.status === 404 || dyDelete.status === 405, dyDelete.status);
+
+  const { rows: dyStillThere } = await db.query<{ status: string }>(
+    `select status from site_diary_entries where id = $1`, [dySubEntry]);
+  eq('...and it is still closed, still there', dyStillThere[0]?.status, 'CLOSED');
+
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);
   if (failures.length === 0) {

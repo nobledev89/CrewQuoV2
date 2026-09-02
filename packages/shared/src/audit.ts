@@ -64,6 +64,26 @@ export const AUDIT_ACTIONS = [
   'document.updated',
   'document.superseded',
   'document.deleted',
+  /*
+   * The site diary (§23, 0032). `diary.updated` and `diary.amended` are two
+   * actions and the split is the whole point of the record: an update is ordinary
+   * work on an open day, an amendment is a change to a day somebody may already
+   * have relied on. A trail that called both "updated" would make "was this
+   * changed after it was closed" — the only question anybody asks a diary trail —
+   * answerable only by reading every row's payload.
+   *
+   * The three attendance actions are separate from the entry's own for the same
+   * reason `evidence.published` is separate from `evidence.updated`: who was
+   * recorded as being on site is the part of a closed day a dispute is most likely
+   * to be about, and it must be findable without a full-text search of `changes`.
+   */
+  'diary.opened',
+  'diary.updated',
+  'diary.closed',
+  'diary.amended',
+  'diary.attendance_added',
+  'diary.attendance_updated',
+  'diary.attendance_removed',
   // A whole-company export (packet §14 step 5). Audited because it is a disclosure of
   // the company's record by one of its members, and the other owners are entitled to
   // know it happened. A *personal* export is not here on purpose: it has no company
@@ -163,6 +183,7 @@ export const AUDIT_ENTITY_TYPES = [
   'LOCATION',
   'EVIDENCE',
   'DOCUMENT',
+  'SITE_DIARY_ENTRY',
   'TIME_LOG',
   'EXPENSE',
   'PROJECT_SUBMISSION',

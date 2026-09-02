@@ -191,6 +191,30 @@ durable task for the owning company and, where the document is filed against a
 subcontractor, for that subcontractor too. Each rung fires once; re-issuing the
 document closes the task the old version raised.
 
+**A day is closed once and never reopened.** `POST /v1/projects/:id/diary` opens
+an entry for a date — one per project, per company, per day, so a subcontractor
+keeps its own diary beside the hiring company's and both are attributed. While it
+is `OPEN` it is a live document. `POST /v1/diary/:id/close` freezes it, stamping
+who and when; after that every change is an **amendment**, which needs
+`diary.close`, needs a reason, writes a `record_revisions` row with before, after
+and changed fields, and makes the entry read *"amended N times"* wherever it
+appears. There is no reopen and no delete: a day that can be removed is a day
+somebody can make not have happened.
+
+`GET /v1/projects/:id/diary/prefill?date=` offers attendance from the day's
+submitted and approved time logs so the supervisor confirms rather than retypes —
+confirming twice is a no-op rather than a second person. Close Day returns prompts
+for what is obviously missing (nobody recorded, nothing written, no photos, drafts
+still unsubmitted) and **closes anyway**: a close that refuses until a photograph
+exists teaches people to photograph the floor twice.
+
+Two people writing different parts of one open day both land. An edit may carry
+the `revision` it was composed against plus a `base` of the fields it started
+from; the thirteen narrative fields then merge per field, so a stale edit touching
+nothing anybody else touched applies rather than raising a prompt about a change
+nobody made. A genuine collision — both sides editing the same field — returns
+409 naming the field and both values, and writes nothing.
+
 ## Useful commands
 
 | Command | What it does |

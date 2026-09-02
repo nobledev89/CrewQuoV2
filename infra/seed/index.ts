@@ -18,6 +18,7 @@ const FEATURES: Array<[key: string, name: string, category: string]> = [
   ['client_portal_notes', 'Client portal notes', 'portal'],
   ['project_evidence', 'Photos & evidence', 'evidence'],
   ['project_documents', 'Project documents', 'evidence'],
+  ['site_diary', 'Site diary', 'evidence'],
   ['invoicing', 'Invoicing', 'billing'],
   ['audit_visibility', 'Audit trail visibility', 'portal'],
   ['api_access', 'API access', 'platform'],
@@ -98,6 +99,7 @@ const PLANS: PlanSeed[] = [
       'client_portal',
       'project_evidence',
       'project_documents',
+      'site_diary',
     ],
     limits: { active_subcontractors: 5, internal_seats: 2, clients: null, audit_retention_days: 30 },
     prices: [
@@ -122,6 +124,7 @@ const PLANS: PlanSeed[] = [
       'audit_visibility',
       'project_evidence',
       'project_documents',
+      'site_diary',
     ],
     limits: { active_subcontractors: 30, internal_seats: 8, clients: null, audit_retention_days: 90 },
     prices: [
@@ -149,6 +152,7 @@ const PLANS: PlanSeed[] = [
       'white_label',
       'project_evidence',
       'project_documents',
+      'site_diary',
     ],
     limits: {
       active_subcontractors: 150,

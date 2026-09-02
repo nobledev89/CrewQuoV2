@@ -155,6 +155,9 @@ export async function dispatchNotification(
         quietHoursStart: prefs.quietHoursStart,
         quietHoursEnd: prefs.quietHoursEnd,
         urgency: spec.urgency,
+        // `diary.amended` and nothing else, today. Quiet hours are still applied
+        // below it: the flag removes the batching, not the courtesy.
+        neverDigest: spec.neverDigest,
       });
       await query(
         `insert into notification_deliveries

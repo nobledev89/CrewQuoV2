@@ -31,6 +31,16 @@ export const FEATURE_KEYS = [
    * subcontractor who cannot produce a WTN cannot legally move the waste.
    */
   'project_documents',
+  /**
+   * Phase 7.5 (§43), gated against the project owner exactly as the other two
+   * are. A subcontractor keeps its own diary on a hiring company's job — §23's
+   * unique key is `(project_id, company_id, entry_date)` precisely so it can — and
+   * consumes the owner's entitlement doing it. **Reading a counterparty's diary is
+   * the one place the packet's §4 checks the key on the *reader* instead:** the
+   * hiring company is being shown a record it did not author, which is a feature
+   * of its own plan rather than of the plan that produced the record.
+   */
+  'site_diary',
   'invoicing',
   'audit_visibility',
   'api_access',

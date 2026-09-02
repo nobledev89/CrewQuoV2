@@ -6,10 +6,11 @@ every one of them sits on: the §37 capability model, and the offline/sync
 contract decision #22 requires settled *before* these APIs harden.
 **Phase:** 7 · **Status:** **adopted** — §13's four load-bearing questions were
 answered by the owner on 2026-09-01, every one as recommended; three remain open
-and none of them blocks the build. Steps 0 to 3 of §14 — the capability layer,
-project locations, the offline contract and the storage service — are all
-shipped, leaving the records themselves: evidence, documents and the diary
-· **Last updated:** 2026-09-01
+and none of them blocks the build. **Every step of §14 has now shipped**: the
+capability layer, project locations, the offline contract, the storage service,
+evidence, documents and the site diary. What is left of Phase 7 is 7.6, the
+screens — which render decisions this layer has already made and tested
+· **Last updated:** 2026-09-02
 **Plan refs:** §21 (locations), §22 (evidence + the storage layer), §23 (site
 diary), §24 (documents), §37 (capabilities), §39 (`capture_gps_on_evidence`),
 §41.1 (no invented numbers), §43 (the new entitlement keys), §44 (the tests this
@@ -84,6 +85,52 @@ infallible, and the honest response to a contradiction is to name it.
 7. **The setting that governs GPS lives in a Phase 9 table.**
    `capture_gps_on_evidence` is a column of `sustainability_settings` (§39),
    built two phases after the capture it governs. §13.7.
+
+### What building the diary found (2026-09-02, step 6)
+
+Four more, recorded here rather than fixed silently, because three of them are
+places where **this packet or §23 says something the code deliberately does not
+do**.
+
+8. **The diary is the one record in this phase with no tombstone, and therefore
+   no delete route.** §8's tombstone primitive is written as universal and every
+   other record here obeys it. A day is different in kind: it is what somebody
+   reads in a dispute, and a day that can be removed is a day somebody can make
+   not have happened. The only case a `deleted_at` would serve — an entry opened
+   on the wrong date — is an `OPEN` entry with nothing in it, which is already
+   indistinguishable from a day nobody has written yet. Adding the column with no
+   writer would be worse than either.
+9. **§23's two attendance counters and the amendment counter are all derived.**
+   `workers_present_count` and `subcontractors_present_count` are in the plan's
+   DDL as *"denormalized from attendance for quick display"*; they are the same
+   shape as the `superseded` boolean 0031 refused, and they disagree with the
+   attendance rows the first time a closed day is corrected — which is precisely
+   the day somebody is reading them as evidence. All three are computed in the
+   read projection.
+10. **The field-wise merge is all-or-nothing when anything conflicts, and this
+    was decided rather than assumed.** §9's *"a partial batch must never lose the
+    files that worked"* points toward applying the clean fields and reporting the
+    contested one — but a `409` that has already written is a status code that
+    lies, and a `200` carrying a `conflicted` array is a silent discard waiting
+    for the first client that does not read it. Nothing is lost either way: §8's
+    queued item stays on the device with its reason. What the merge actually buys
+    is the *other* case, and it is the common one — a stale edit touching nothing
+    anybody else touched now applies where whole-row concurrency would have
+    raised a prompt about a change nobody made.
+11. **`diary.amended` needed a per-kind flag that 7.3 had argued against.** §6's
+    row says **never digested**; 7.3's evidence kinds are annotated *"the product
+    has exactly one place where batching is configured and this does not become a
+    second"*. Both are right about different things: for the evidence kinds
+    digesting is a reader's preference, and for this one it is not a preference at
+    all. `neverDigest` is therefore a flag of its own rather than `urgency:
+    URGENT`, which would have produced the same delay of zero and also bypassed
+    quiet hours — which §6 says this kind respects.
+
+**And one thing the packet got wrong about itself:** §3 and §8 both say the diary
+has *"fourteen independent free-text fields"*. §23's column list defines
+**thirteen**. The code follows the columns; inventing a fourteenth field to make
+a sentence true would be the wrong correction, and the count matters only as the
+argument for merging per field, which thirteen makes exactly as well.
 
 ---
 
@@ -286,6 +333,24 @@ ever narrow what `policies.ts` has already allowed.
 | Close a day | `site_diary` | `diary.close` | the authoring company only | the entry |
 | Amend a closed day | `site_diary` | `diary.close` + a reason | the authoring company only | the entry |
 | Read a counterparty's diary | `site_diary` on the reader | `project.read` | one hop, engagement `ACTIVE` | the project |
+| Correct somebody else's diary | — | **nobody, including the project owner** | n/a | n/a |
+
+**The project owner may not edit a subcontractor's diary entry, and this is the
+one place in the phase where they are not the exception.** Priya may re-tag Ade's
+photograph (`evidence.manage`) and share his document with her client, because
+those are filing and disclosure decisions on her own project. A diary entry is a
+*statement by a person about what they saw*. Editing somebody else's statement
+and leaving it attributed to them is the one thing an evidence trail must never
+permit, whatever it does about the paperwork around it. Refused with a 403 that
+says whose record it is.
+
+**A crew line naming a company may only name one that is on this job.** §23's
+`provider_company_id` is a bare foreign key to `companies`, so any real id would
+pass — and "Redstone Scaffolding were on site" is then an assertion about a named
+business, in a record that business cannot see and cannot contest. Bounded to the
+authoring company, the project owner, and anybody assigned. A genuine off-platform
+crew is unaffected: it has no `companies` row to name and is recorded by `name`,
+the column that exists for exactly that case.
 
 **Locations carry no feature entitlement, and this row is a correction rather
 than a design.** It first read `project_evidence`, written before step 1 was
@@ -359,6 +424,16 @@ faithfulness to this document. Phase 12 still owns the **escalation**: who else 
 told at 14 days, whether it becomes urgent, and the portfolio compliance surface.
 What ships now is the durable Action Centre item, which `notifications.md`
 requires of every kind regardless.
+
+**`diary.amended` carries the one piece of customer prose in any Phase 7
+payload, and it is the reason §11's exclusion list needs reading carefully.** The
+list is about the *content* of the record — the narrative fields, captions,
+attendance names, filenames — and those stay out: the payload carries the
+**names** of the changed fields and never their values, which live in
+`record_revisions` behind the same authorization as the entry. The `reason` is
+different in kind, §5 names it, and §6 writes it into the item verbatim. An
+amendment notice that cannot say why has to be clicked to be useful, which for
+the one kind that is never digested defeats the point of not digesting it.
 
 **The ladder gained a sixth rung, `0`.** §24's steps are 90/60/30/14/7, and a
 ladder that warns a week out and then says nothing on the day itself goes quiet
@@ -818,7 +893,7 @@ a queue.**
 | **3** ✅ | **Storage service (§22.1, item 7.0) — shipped 2026-09-01.** `stored_files`, presign → PUT → complete → scan → READY, `sharp` derivatives, authorized presigned downloads, the byte meter. | **shipped 2026-09-01** |
 | **4** ✅ | **Evidence (§22, item 7.3) — shipped 2026-09-01.** `project_evidence`, batch create with per-item overrides, publish/hide, filters and category counts, the client's portal view, and the three timestamps kept three. Gallery / timeline / table and sticky selection are the **screens**, which are 7.6; the ordering and grouping they render are built and tested here. | **shipped** |
 | **5** ✅ | **Documents (§24, item 7.4) — shipped 2026-09-02.** Sixteen categories, `supersedes_id` versioning with a one-successor index, expiry dates, the scan, and `document.expiring` — **with a consumer**, see §5. The document manager screen is 7.6. | **shipped** |
-| **6** | **Site diary (§23).** Entry, structured attendance, prefill from schedule and time logs, Close Day, post-close amendment with a required reason and the amendment count everywhere. | steps 0, 1, 2 |
+| **6** ✅ | **Site diary (§23) — shipped 2026-09-02.** `site_diary_entries` with the natural key `(project, company, date)`, structured attendance, prefill from the day's submitted and approved time logs, Close Day with prompts that never gate it, and post-close amendment with a required reason, a `record_revisions` row and the count everywhere. **Prefill from §31's schedule is not here and could not be** — the schedule is Phase 11, and the response says so rather than returning an empty list somebody has to interpret. The diary editor screen is 7.6. | **shipped** |
 | **7** ✅ | **Retro-fit the Phase 3 expense receipt upload — shipped 2026-09-01 with step 3.** `expenses.receipt_url` has been null since `0004` with the comment *"upload deferred"*. It is the smallest real consumer of the storage service and therefore its best first proof. | **shipped** |
 
 **Steps 0–2 are also the answer to "what does Phase 7 do while the owner is

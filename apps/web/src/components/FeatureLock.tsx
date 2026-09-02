@@ -23,6 +23,8 @@ const FEATURE_COPY: Record<FeatureKey, string> = {
     'Photos & evidence keeps site photographs, scans and files against a project, with categories, dates and locations.',
   project_documents:
     'Project documents file RAMS, insurance, waste transfer notes and drawings, with versions kept and expiry dates tracked.',
+  site_diary:
+    'The site diary is a day-by-day record of what happened on site — attendance, delays, deliveries and health & safety — closed at the end of the day and amendable only with a recorded reason.',
   invoicing: 'Invoicing turns approved work into an invoice you can issue.',
   audit_visibility: 'Audit visibility lets a client see the trail of activity you publish.',
   api_access: 'API access issues keys for your own integrations.',

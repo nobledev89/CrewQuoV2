@@ -30,4 +30,5 @@ export * from './storage';
 export * from './locations';
 export * from './evidence';
 export * from './documents';
+export * from './diary';
 export * from './sync';

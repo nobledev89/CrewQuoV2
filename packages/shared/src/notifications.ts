@@ -51,6 +51,15 @@ export const NOTIFICATION_KINDS = [
    */
   'document.superseded',
   'document.expiring',
+  /*
+   * The site diary (§23, 0032). `diary.closed` is news — the hiring company
+   * learns a subcontractor wrote up and closed a day. `diary.amended` is the one
+   * act in this whole domain that alters a record somebody may already have
+   * relied on, which is why it is the only kind in the catalog that carries the
+   * reason it happened.
+   */
+  'diary.closed',
+  'diary.amended',
   'delivery.dead_lettered',
   // Account security (`docs/operating-model/access.md` §6). The first kinds in
   // this catalog that belong to a *person* rather than to a company, which is why
@@ -101,6 +110,29 @@ export interface NotificationKindSpec {
    * the security ones by silencing everything.
    */
   unconditional?: boolean;
+  /**
+   * Never hold this kind for a digest boundary, whatever the reader has set.
+   *
+   * **Exactly one kind sets it: `diary.amended`** (packet §6, and the row is
+   * written for this line). Changing a closed day alters a record somebody may
+   * already have relied on, and a digest is a promise that nothing inside it was
+   * urgent.
+   *
+   * **This revisits a line 7.3 wrote and does not contradict it.** The evidence
+   * kinds are annotated *"the product has exactly one place where batching is
+   * configured and this does not become a second"*, and that is still true of
+   * every kind for which digesting is a preference. What was missing there is that
+   * for one kind digesting is not a preference at all — the packet's own §6
+   * column says **never digested**, not "digested if the reader wants".
+   *
+   * Deliberately not `urgency: 'URGENT'`, which would have been the cheap way to
+   * get the same delay of zero. `URGENT` also bypasses quiet hours, and §6 says
+   * this one **respects** them: an amendment is not worth waking somebody at 3am,
+   * it is worth not being buried in tomorrow's summary of eleven other things.
+   * Collapsing the two flags into one would have made every future "do not batch
+   * this" also a "wake them up".
+   */
+  neverDigest?: boolean;
 }
 
 /**
@@ -155,6 +187,30 @@ export const NOTIFICATION_KIND_SPECS: Readonly<Record<NotificationKind, Notifica
    * somebody at 3am, and the ladder starts 90 days out precisely so it never has to.
    */
   'document.expiring': { requiresAction: true, urgency: 'NORMAL', defaultChannels: ['EMAIL'] },
+
+  /*
+   * A subcontractor closed a day on the hiring company's project. News rather than
+   * a task — Priya owes nothing, she now knows Friday is written up — so no
+   * `requiresAction`, and the reader's own digest setting decides whether a busy
+   * week arrives as one message or five.
+   */
+  'diary.closed': { requiresAction: false, urgency: 'NORMAL', defaultChannels: ['EMAIL'] },
+  /*
+   * **The one kind in the product that must never be digested**, and the packet
+   * says so in a row written for exactly this line. Changing a closed day alters a
+   * record somebody may already have relied on — quoted in a report, sent to a
+   * client, argued from in a meeting — and a digest is a promise that nothing in
+   * it was urgent.
+   *
+   * `neverDigest` rather than `URGENT`, because the two say different things and
+   * only one of them is true here: an amendment is not worth waking somebody at
+   * 3am, it is worth not being buried in tomorrow morning's summary of eleven
+   * other things. Quiet hours still apply — §6 says so — which is precisely the
+   * distinction `URGENT` would have thrown away.
+   */
+  'diary.amended': {
+    requiresAction: false, urgency: 'NORMAL', defaultChannels: ['EMAIL'], neverDigest: true,
+  },
 
   // The only URGENT kind among the *product* events, and deliberately an operator
   // one. A customer event is never urgent enough to wake somebody: their work will
@@ -470,10 +526,16 @@ export function deliveryHoldMinutes(args: {
   quietHoursStart: string | null;
   quietHoursEnd: string | null;
   urgency: NotificationUrgency;
+  /**
+   * The kind refuses to be batched (`diary.amended`). Quiet hours still apply,
+   * which is the whole reason this is a separate flag from `urgency` — it removes
+   * the digest hold and nothing else.
+   */
+  neverDigest?: boolean;
 }): number {
   if (args.urgency === 'URGENT') return 0;
   const digestDelay =
-    args.channel === 'EMAIL'
+    args.channel === 'EMAIL' && !args.neverDigest
       ? digestDelayMinutes({
           localTime: args.localTime,
           digest: args.digest,

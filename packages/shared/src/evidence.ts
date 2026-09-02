@@ -103,6 +103,18 @@ export const evidenceViewSchema = z.object({
   createdAt: z.string(),
 
   locationId: z.string().uuid().nullable(),
+  /**
+   * The site diary day this photograph belongs to (§22.2, 0032).
+   *
+   * First of the five back-references §22.2 lists and 0030 deliberately withheld,
+   * and it arrives with the table it points at rather than as a bare uuid. It is
+   * **not** the same claim as `evidenceDate`: the date is what the photograph
+   * depicts, and this is the written-up day it was filed under. They usually
+   * agree, and when they do not it is because somebody attached Friday's
+   * photograph to Friday's entry on Monday — which is the case the diary exists
+   * to make legible rather than the case to reject.
+   */
+  diaryEntryId: z.string().uuid().nullable(),
 
   /**
    * GPS, captured by nothing in this phase (§13.7).
@@ -231,6 +243,8 @@ export const evidenceMetadataSchema = z.object({
     .nullable(),
   capturedAt: z.string().datetime({ offset: true }).nullable(),
   locationId: z.string().uuid().nullable(),
+  /** The diary day this belongs to (0032). Batch-defaultable like the location. */
+  diaryEntryId: z.string().uuid().nullable(),
   sortOrder: z.number().int().min(0).max(100000),
 });
 export type EvidenceMetadata = z.infer<typeof evidenceMetadataSchema>;
@@ -285,6 +299,7 @@ export function applyBatchDefaults(
     evidenceDate: pick('evidenceDate') ?? null,
     capturedAt: pick('capturedAt') ?? null,
     locationId: pick('locationId') ?? null,
+    diaryEntryId: pick('diaryEntryId') ?? null,
     sortOrder: pick('sortOrder') ?? 0,
   };
 }
@@ -365,6 +380,8 @@ export const evidenceFilterSchema = z.object({
   to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   uploadedByUserId: z.string().uuid().optional(),
   locationId: z.string().uuid().optional(),
+  /** One written-up day's photographs, which is how the diary reads its own back. */
+  diaryEntryId: z.string().uuid().optional(),
   /** `true` shows only what the client can see; `false` only what it cannot. */
   clientVisible: z.boolean().optional(),
   /** The batch a selection arrived in, which is how "what did I just upload" is asked. */

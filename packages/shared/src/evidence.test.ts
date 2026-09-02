@@ -35,6 +35,7 @@ function view(overrides: Partial<EvidenceView> = {}): EvidenceView {
     capturedAt: null,
     createdAt: '2026-03-05T09:00:00.000Z',
     locationId: null,
+    diaryEntryId: null,
     gpsLat: null,
     gpsLng: null,
     gpsAccuracyM: null,
