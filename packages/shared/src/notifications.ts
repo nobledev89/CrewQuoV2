@@ -51,6 +51,8 @@ export const NOTIFICATION_KINDS = [
    */
   'document.superseded',
   'document.expiring',
+  /** Phase 12's company-level compliance ladder (§33). */
+  'compliance.expiring',
   /*
    * The site diary (§23, 0032). `diary.closed` is news — the hiring company
    * learns a subcontractor wrote up and closed a day. `diary.amended` is the one
@@ -153,6 +155,34 @@ export const NOTIFICATION_KINDS = [
   'report.superseded',
   'signoff.captured',
   'signoff.superseded',
+  /*
+   * Commercial & operations (§30, §31; `commercial-operations.md` §6). Four kinds,
+   * and the shape of the set is decided by what is deliberately absent from it.
+   *
+   * **`variation.created` is not a kind.** A draft is a piece of thinking, and
+   * telling somebody about a thought is the sort of item that teaches people to
+   * clear an inbox without reading it. `variation.submitted` is when a person
+   * acquires a decision to make, which is what an event is for — the same
+   * distinction `report.generated` was refused on.
+   *
+   * **`budget.set` is not a kind either**, and it is the entry in this block that
+   * could most plausibly have gone the other way. A revised budget is a genuinely
+   * interesting fact — to the person who revised it, who did it on purpose thirty
+   * seconds ago, and to nobody else in a way that survives the second week. Its
+   * durable trail is `record_revisions`, which answers *what did we think in March*
+   * without producing an item somebody has to clear. That is
+   * `sustainability.calculations_superseded`'s reasoning with a different noun.
+   *
+   * **And there is no kind for a schedule clash.** §31 surfaces a conflict in the
+   * response to the save that created it, to the person who created it, at the
+   * moment they created it — which is strictly better than an item they read later.
+   * A conflict warning that arrives as a notification arrives after the crew has
+   * been told.
+   */
+  'variation.submitted',
+  'variation.decided',
+  'schedule.assigned',
+  'schedule.changed',
 ] as const;
 export const notificationKindSchema = z.enum(NOTIFICATION_KINDS);
 export type NotificationKind = z.infer<typeof notificationKindSchema>;
@@ -258,6 +288,7 @@ export const NOTIFICATION_KIND_SPECS: Readonly<Record<NotificationKind, Notifica
    * somebody at 3am, and the ladder starts 90 days out precisely so it never has to.
    */
   'document.expiring': { requiresAction: true, urgency: 'NORMAL', defaultChannels: ['EMAIL'] },
+  'compliance.expiring': { requiresAction: true, urgency: 'NORMAL', defaultChannels: ['EMAIL'] },
 
   /*
    * A subcontractor closed a day on the hiring company's project. News rather than
@@ -358,6 +389,25 @@ export const NOTIFICATION_KIND_SPECS: Readonly<Record<NotificationKind, Notifica
    * EMAIL only. Push has had no client since Phase 6 and none of these is a thing
    * anybody needs within the minute.
    */
+  /*
+   * §30, §31. **Only the first of the four earns an email**, and the reasoning is
+   * `rate_proposal.submitted`'s: money being negotiated is rare, and the person who
+   * must decide is frequently not the person watching the app. A variation is that
+   * event with a different counterparty — and it has a deadline nobody records,
+   * because the crew is going to do the work on Wednesday whether or not anybody
+   * approved it.
+   *
+   * The two schedule kinds are **push-only and require no action**, which is the
+   * honest reading: *"you are on Marina Bay on Tuesday"* is news, not a task. There
+   * is nothing owed to anybody, an Action Centre item that can only be dismissed is
+   * an inbox that teaches people to dismiss without reading, and Priya's plan
+   * changes four times a week.
+   */
+  'variation.submitted': { requiresAction: true, urgency: 'NORMAL', defaultChannels: ['PUSH', 'EMAIL'] },
+  'variation.decided': { requiresAction: false, urgency: 'NORMAL', defaultChannels: ['PUSH', 'EMAIL'] },
+  'schedule.assigned': { requiresAction: false, urgency: 'NORMAL', defaultChannels: ['PUSH'] },
+  'schedule.changed': { requiresAction: false, urgency: 'NORMAL', defaultChannels: ['PUSH'] },
+
   'report.disclosed': { requiresAction: false, urgency: 'NORMAL', defaultChannels: ['EMAIL'] },
   'report.superseded': { requiresAction: false, urgency: 'NORMAL', defaultChannels: ['EMAIL'] },
   /*

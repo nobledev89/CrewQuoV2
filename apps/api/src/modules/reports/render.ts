@@ -617,6 +617,39 @@ function renderEvidencePack(
     drawDocumentTable(c, body.donationEvidence);
   }
 
+  /*
+   * §29.2's variations (Phase 11, packet finding 11). This block did not exist and
+   * did not need to: `PACK_VARIATIONS` carries `availableFrom: 11`, so it was
+   * absent from the toggle list and absent from the document until
+   * `CURRENT_BUILD_PHASE` moved — never rendered as an empty section asserting *no
+   * variations* about a feature that did not exist.
+   *
+   * **`clientApprovalRecorded` prints as a column**, and that is the one decision
+   * in this table. A completion pack listing a variation the contractor approved
+   * without the client's own agreement on file, and not saying so, would be
+   * asserting an agreement it cannot evidence — to the reader most likely to be
+   * quoting it back during a dispute.
+   *
+   * No cost and no margin: the pack has both audiences, and the snapshot type has
+   * no field either could come from.
+   */
+  if (has('PACK_VARIATIONS')) {
+    drawSectionHeading(c, 'Variations');
+    drawTable(
+      c,
+      ['Reference', 'Extra works', 'Requested', 'Agreed by client', 'To client'],
+      [{ width: 70 }, { width: 190 }, { width: 65 }, { width: 100 }, { width: 90, right: true }],
+      body.variations.map((v) => [
+        v.reference ?? '-',
+        v.description,
+        v.requestedOn,
+        v.clientApprovalRecorded ? (v.clientApprovedBy ?? 'Yes') : 'Not on file',
+        formatMoney(v.sellTotalCents, body.currency),
+      ]),
+      'No variations were agreed on this project.'
+    );
+  }
+
   if (has('PACK_SIGNOFF')) {
     drawSectionHeading(c, 'Client sign-off');
     drawCompletion(c, input, { completedOn: body.project.endsOn, signoff: body.signoff });

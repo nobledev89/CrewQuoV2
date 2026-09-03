@@ -725,6 +725,45 @@ async function onDocumentExpiring(event: OutboxEvent): Promise<void> {
   }
 }
 
+/** Company-level compliance expiry (§33), filed under each recipient's tenant. */
+async function onComplianceExpiring(event: OutboxEvent): Promise<void> {
+  const ownerCompanyId = required(event.payload, 'ownerCompanyId');
+  const subjectCompanyId = required(event.payload, 'subjectCompanyId');
+  const documentId = required(event.payload, 'documentId');
+  const title = required(event.payload, 'title');
+  const daysRemaining = Number(event.payload.daysRemaining);
+  if (!Number.isFinite(daysRemaining)) {
+    throw new PermanentDeliveryError('daysRemaining missing from compliance expiry payload');
+  }
+  const heading =
+    daysRemaining <= 7
+      ? `Action needed: ${title} expires in ${String(daysRemaining)} day${daysRemaining === 1 ? '' : 's'}`
+      : `${title} expires in ${String(daysRemaining)} days`;
+  const body =
+    daysRemaining <= 14
+      ? 'Renew this record now. Mandatory records can block bookings or submissions where enforcement is enabled.'
+      : 'Arrange a renewal before this record lapses.';
+
+  const suppliedTracking = Array.isArray(event.payload.trackingCompanyIds)
+    ? event.payload.trackingCompanyIds.filter((id): id is string => typeof id === 'string')
+    : [];
+  const companies = [...new Set([ownerCompanyId, subjectCompanyId, ...suppliedTracking])];
+  for (const companyId of companies) {
+    await dispatchNotification({
+      kind: 'compliance.expiring',
+      companyId,
+      recipientUserIds: await managerRecipients(companyId),
+      title: heading,
+      body,
+      subjectType: 'COMPLIANCE_DOCUMENT',
+      subjectId: documentId,
+      actionUrl: '/compliance',
+      topic: event.topic,
+      aggregateId: companyId === ownerCompanyId ? event.aggregateId : `${event.aggregateId}:${companyId}`,
+    });
+  }
+}
+
 /**
  * A subcontractor closed a day on the hiring company's project (§23, packet §6).
  *
@@ -1229,6 +1268,195 @@ async function onSignoffCaptured(event: OutboxEvent): Promise<void> {
   }
 }
 
+
+/**
+ * A variation is waiting for a decision (§30.1, `commercial-operations.md` §6).
+ *
+ * Sent to the project owner's `variation.approve` holders — the capability, not the
+ * role, because §37 separated *capture the price* from *agree to charge it* and this
+ * is the item only the second group can act on. A supervisor who raised it does not
+ * need telling that they raised it.
+ */
+async function onVariationSubmitted(event: OutboxEvent): Promise<void> {
+  const ownerCompanyId = required(event.payload, 'ownerCompanyId');
+  const variationId = required(event.payload, 'variationId');
+  const projectId = required(event.payload, 'projectId');
+  const reference = optional(event.payload, 'reference');
+  const description = optional(event.payload, 'description') ?? 'extra works';
+  const sellTotalCents = Number(event.payload.sellTotalCents ?? 0);
+
+  await dispatchNotification({
+    kind: 'variation.submitted',
+    companyId: ownerCompanyId,
+    recipientUserIds: await capabilityRecipients(ownerCompanyId, 'variation.approve'),
+    title: `Variation${reference ? ` ${reference}` : ''} needs a decision`,
+    /*
+     * The figure is in the body, and it belongs there: this notification only ever
+     * reaches holders of `variation.approve`, which every bundle that has it also
+     * pairs with `commercial.read` or is `admin`. It is never sent to the client and
+     * never to a supervisor.
+     */
+    body: `${description.slice(0, 120)} — ${(sellTotalCents / 100).toFixed(2)} to the client.`,
+    subjectType: 'VARIATION',
+    subjectId: variationId,
+    actionUrl: `/projects/${projectId}?section=variations`,
+    topic: event.topic,
+    aggregateId: event.aggregateId,
+  });
+}
+
+/**
+ * A variation was approved, rejected or completed.
+ *
+ * Goes to the **recording** company's managers, which on a subcontractor's job is
+ * not the project owner — they are the party waiting on the answer. A rejection
+ * carries its reason, because "no" on its own costs somebody a phone call they
+ * should not need.
+ */
+async function onVariationDecided(event: OutboxEvent): Promise<void> {
+  const companyId = required(event.payload, 'companyId');
+  const variationId = required(event.payload, 'variationId');
+  const projectId = required(event.payload, 'projectId');
+  const decision = optional(event.payload, 'decision') ?? 'decided';
+  const reference = optional(event.payload, 'reference');
+  const reason = optional(event.payload, 'reason');
+  const approvalRecorded = event.payload.clientApprovalRecorded === true;
+
+  const label = decision.toLowerCase();
+  await dispatchNotification({
+    kind: 'variation.decided',
+    companyId,
+    recipientUserIds: await managerRecipients(companyId),
+    title: `Variation${reference ? ` ${reference}` : ''} ${label}`,
+    body:
+      decision === 'REJECTED'
+        ? `${reason ?? 'No reason was given.'}`
+        : approvalRecorded
+          ? 'Approved, with the client’s own agreement on file.'
+          : /*
+             * Packet §3's warning surfacing where somebody can act on it. Approval
+             * without the client's agreement recorded is permitted — the paperwork
+             * arrives on Friday and the crew works on Wednesday — and this is the
+             * one place it is said to a person rather than only shown as a badge.
+             */
+            'Approved. The client’s own agreement is not on file yet.',
+    subjectType: 'VARIATION',
+    subjectId: variationId,
+    actionUrl: `/projects/${projectId}?section=variations`,
+    topic: event.topic,
+    aggregateId: event.aggregateId,
+  });
+}
+
+/**
+ * Crew has been scheduled, or a booking moved (§31).
+ *
+ * **One item per recipient for a whole planning act**, not one per row: Priya's
+ * Monday morning is eleven people onto three jobs, and eleven items is a channel
+ * every recipient turns off — then the one that mattered is missed. The batch is the
+ * unit, which is `evidence.batch_uploaded`'s and `asset.lines_recorded`'s rule for
+ * the third time.
+ *
+ * Each assigned subcontractor is told about its own booking and nothing else. The
+ * scheduling company is not told: it just did this.
+ */
+async function onScheduleAssigned(event: OutboxEvent): Promise<void> {
+  const projectId = required(event.payload, 'projectId');
+  const count = Number(event.payload.count ?? 1);
+  const from = optional(event.payload, 'from');
+  const providerIds = Array.isArray(event.payload.providerCompanyIds)
+    ? (event.payload.providerCompanyIds as string[])
+    : [];
+  const userIds = Array.isArray(event.payload.userIds)
+    ? (event.payload.userIds as string[])
+    : [];
+  const when = from === null ? '' : ` from ${from.slice(0, 10)}`;
+
+  for (const providerCompanyId of providerIds) {
+    await dispatchNotification({
+      kind: 'schedule.assigned',
+      companyId: providerCompanyId,
+      recipientUserIds: await managerRecipients(providerCompanyId),
+      title: 'You have been scheduled on a project',
+      body: `Your crew is booked${when}. Confirm or raise it with the contractor.`,
+      subjectType: 'PROJECT',
+      subjectId: projectId,
+      actionUrl: `/projects/${projectId}?section=schedule`,
+      topic: event.topic,
+      // Per-company, so two subcontractors in one batch each get their own item and
+      // neither collapses into the other.
+      aggregateId: `${event.aggregateId}:${providerCompanyId}`,
+    });
+  }
+
+  /*
+   * And the named people, who are members of the scheduling company. One item each
+   * rather than one per row — somebody booked on four days of one week is being told
+   * about one plan.
+   */
+  const companyId = required(event.payload, 'companyId');
+  if (userIds.length > 0) {
+    await dispatchNotification({
+      kind: 'schedule.assigned',
+      companyId,
+      recipientUserIds: userIds,
+      title: 'Your schedule has been updated',
+      body: `${count} booking${count === 1 ? '' : 's'}${when}.`,
+      subjectType: 'PROJECT',
+      subjectId: projectId,
+      actionUrl: `/projects/${projectId}?section=schedule`,
+      topic: event.topic,
+      aggregateId: `${event.aggregateId}:users`,
+    });
+  }
+}
+
+/** A booking moved or was cancelled — the person whose Tuesday changed is told. */
+async function onScheduleChanged(event: OutboxEvent): Promise<void> {
+  const projectId = required(event.payload, 'projectId');
+  const assignmentId = required(event.payload, 'assignmentId');
+  const status = optional(event.payload, 'status') ?? 'PLANNED';
+  const providerCompanyId = optional(event.payload, 'providerCompanyId');
+  const userId = optional(event.payload, 'userId');
+  const from = optional(event.payload, 'from');
+  const movedFrom = optional(event.payload, 'movedFrom');
+
+  const cancelled = status === 'CANCELLED';
+  const title = cancelled ? 'A booking was cancelled' : 'A booking moved';
+  const body = cancelled
+    ? 'You are no longer scheduled for this one.'
+    : movedFrom !== null && from !== null && movedFrom !== from
+      ? `Moved from ${movedFrom.slice(0, 16).replace('T', ' ')} to ${from.slice(0, 16).replace('T', ' ')}.`
+      : 'The details changed.';
+
+  // The named party only — the company that made the change already knows.
+  const targets: { companyId: string; recipientUserIds: string[] }[] = [];
+  if (providerCompanyId !== null) {
+    targets.push({
+      companyId: providerCompanyId,
+      recipientUserIds: await managerRecipients(providerCompanyId),
+    });
+  }
+  if (userId !== null) {
+    targets.push({ companyId: required(event.payload, 'companyId'), recipientUserIds: [userId] });
+  }
+
+  for (const target of targets) {
+    await dispatchNotification({
+      kind: 'schedule.changed',
+      companyId: target.companyId,
+      recipientUserIds: target.recipientUserIds,
+      title,
+      body,
+      subjectType: 'SCHEDULE_ASSIGNMENT',
+      subjectId: assignmentId,
+      actionUrl: `/projects/${projectId}?section=schedule`,
+      topic: event.topic,
+      aggregateId: `${event.aggregateId}:${target.companyId}`,
+    });
+  }
+}
+
 /**
  * The registered consumers. A topic with no handler here is simply not claimed by
  * this worker — `claimOutboxEvents` filters on the registered topic list, so an
@@ -1254,6 +1482,7 @@ export const NOTIFICATION_HANDLERS: ReadonlyMap<string, DeliveryHandler> = new M
   ['file.scan_failed', onFileScanFailed],
   ['document.superseded', onDocumentSuperseded],
   ['document.expiring', onDocumentExpiring],
+  ['compliance.expiring', onComplianceExpiring],
   ['diary.closed', onDiaryClosed],
   ['diary.amended', onDiaryAmended],
   ['asset.lines_recorded', onAssetLinesRecorded],
@@ -1270,6 +1499,15 @@ export const NOTIFICATION_HANDLERS: ReadonlyMap<string, DeliveryHandler> = new M
   ['report.superseded', onReportSuperseded],
   ['signoff.captured', onSignoffCaptured],
   ['signoff.superseded', onSignoffCaptured],
+  /*
+   * Commercial & operations (§30, §31). `variation.created` and `budget.set` are
+   * deliberately absent — a draft is a thought, and a revised budget is something
+   * its author did on purpose thirty seconds ago. Both are audit-and-revisions only.
+   */
+  ['variation.submitted', onVariationSubmitted],
+  ['variation.decided', onVariationDecided],
+  ['schedule.assigned', onScheduleAssigned],
+  ['schedule.changed', onScheduleChanged],
   /*
    * `sustainability.calculations_superseded` is deliberately absent, and the absence
    * is the design (packet §6). It is the most frequent event in the domain and the

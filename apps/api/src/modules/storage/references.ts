@@ -6,6 +6,11 @@ import {
   reportGrantsFileAccess,
 } from '../reports/repo';
 import { signoffGrantsFileAccess } from '../reports/signoff';
+import {
+  variationFileDisclosedToClient,
+  variationGrantsFileAccess,
+} from '../variations/repo';
+import { complianceFileGrantsAccess } from '../compliance/repo';
 
 /**
  * Which records may grant a company access to a file, as a **registry**.
@@ -53,6 +58,16 @@ export const FILE_ACCESS_GRANTS: readonly FileAccessCheck[] = [
   reportGrantsFileAccess,
   signoffGrantsFileAccess,
   brandingGrantsFileAccess,
+  /*
+   * Phase 11. §30.1's `approval_evidence_file_id` is the photograph of the signed
+   * docket, and it takes `on delete restrict` for the reason a signature does — it
+   * is the one file whose loss makes the record worthless. This grant is the
+   * ordinary two-hop one: the company that raised the variation and the company
+   * that owns the project.
+   */
+  variationGrantsFileAccess,
+  // Phase 12: self-filed company compliance crosses only a direct hiring edge.
+  complianceFileGrantsAccess,
 ];
 
 /** Deliberate disclosures to the client on the project's engagement. */
@@ -72,6 +87,14 @@ export const FILE_CLIENT_DISCLOSURES: readonly FileAccessCheck[] = [
    * because the document does not expire.
    */
   reportFileDisclosedToClient,
+  /*
+   * And Phase 11's, on the same narrow shape: *"a variation you approved cites
+   * this."* `APPROVED` and later only, and only on a project whose client is this
+   * company — so a client may open the docket they signed without that photograph
+   * being published to them generally. `DRAFT` and `SUBMITTED` never cross, because
+   * a price the contractor is still thinking about is not a disclosure.
+   */
+  variationFileDisclosedToClient,
 ];
 
 /**

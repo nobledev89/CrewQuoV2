@@ -12,6 +12,8 @@ import {
   type ProjectSummary,
   type ProjectView,
   type ProviderView,
+  type MemberView,
+  type RoleCatalogView,
   type TimeLogView,
 } from '@crewquo/shared';
 import {
@@ -47,6 +49,10 @@ import { DiaryPanel } from './DiaryPanel';
 import { AssetsPanel } from './AssetsPanel';
 import { SustainabilityPanel } from './SustainabilityPanel';
 import { ReportsPanel } from './ReportsPanel';
+import { VariationsPanel } from './VariationsPanel';
+import { BudgetPanel } from './BudgetPanel';
+import { SchedulePanel } from './SchedulePanel';
+import { TimelinePanel } from './TimelinePanel';
 import { ProjectStatusBadge, WorkStatusBadge } from '@/components/Status';
 import { formatCents, formatDate, formatPct, titleCase, totalHours } from '@/lib/format';
 
@@ -123,6 +129,44 @@ function ProjectDetail() {
   );
 
   /*
+   * The role catalog and the member list, loaded here rather than inside the two
+   * Phase 11 panels that need pickers.
+   *
+   * Both are small company reference data and both are already readable by anybody
+   * with `project.read`; fetching them per panel would be two requests for one list
+   * and two chances for the pickers to disagree about what exists — which is the
+   * same reasoning locations are loaded here (see above).
+   *
+   * A variation's LABOUR line and a schedule assignment's role both resolve against
+   * the **project owner's** catalog, which is `assertRoleInCompany`'s rule from the
+   * work module: a subcontractor logs time against a role in the hiring company's
+   * catalog, because that is whose rate cards price it. This page is the owner's
+   * view, so its own catalog is the right one to offer.
+   */
+  const roles = useAsyncList<RoleCatalogView>(
+    ctx ? () => api.listRoles(ctx.accessToken, ctx.companyId).then((r) => r.data) : null,
+    [ctx?.companyId]
+  );
+
+  /*
+   * The company's own people, for §31's USER assignments.
+   *
+   * Loaded only when the reader may actually schedule — `crew.manage` is what the
+   * members list is gated on elsewhere, and a picker nobody can submit is a request
+   * made for nothing. Left as an empty array on the first draft, which produced a
+   * "Book someone" drawer whose Person picker had no options at all: the browser
+   * suite caught it by timing out on a `selectOption` that could never succeed,
+   * which is precisely the class of defect a rendered-page test exists for and a
+   * type-check cannot see.
+   */
+  const members = useAsyncList<MemberView>(
+    ctx && caps.can('schedule.manage')
+      ? () => api.listMembers(ctx.accessToken, ctx.companyId).then((r) => r.data)
+      : null,
+    [ctx?.companyId, caps.loading]
+  );
+
+  /*
    * The counts the rail renders, and they are **unfiltered totals** — which is why
    * they are loaded here rather than reported up by the panels.
    *
@@ -144,10 +188,12 @@ function ProjectDetail() {
     documents: number;
     diary: number;
     assets: number;
+    variations: number;
+    schedule: number;
   }>(
     ctx
       ? async () => {
-          const [evidence, documents, diary, assets] = await Promise.all([
+          const [evidence, documents, diary, assets, variations, schedule] = await Promise.all([
             ent.has('project_evidence')
               ? api
                   .listEvidence(ctx.accessToken, ctx.companyId, id)
@@ -196,8 +242,29 @@ function ProjectDetail() {
                   .listAssets(ctx.accessToken, ctx.companyId, id)
                   .then((r) => r.assets.length)
                   .catch(() => -1),
+            /*
+             * Phase 11's two counts. Both features are the PROJECT OWNER'S, so a
+             * subcontractor reading somebody else's job cannot decide them from
+             * `ent.has` — but unlike the assets count these two do not need the -1
+             * sentinel, because both rails are already `ent.has`-gated for the owner
+             * case and a refusal for a counterparty simply reads as zero. A section
+             * that shows "0" to somebody who cannot use it is a smaller lie than a
+             * section that 403s when they click it.
+             */
+            ent.has('variations')
+              ? api
+                  .listVariations(ctx.accessToken, ctx.companyId, id)
+                  .then((r) => r.variations.length)
+                  .catch(() => 0)
+              : Promise.resolve(0),
+            ent.has('scheduling')
+              ? api
+                  .listProjectSchedule(ctx.accessToken, ctx.companyId, id)
+                  .then((r) => r.assignments.length)
+                  .catch(() => 0)
+              : Promise.resolve(0),
           ]);
-          return { evidence, documents, diary, assets };
+          return { evidence, documents, diary, assets, variations, schedule };
         }
       : null,
     // `ent.loading` rather than the feature flags themselves: the first render has
@@ -338,7 +405,47 @@ function ProjectDetail() {
           } satisfies RailSection,
         ]
       : []),
+    /*
+     * Phase 11's four. Variations, Budget and Schedule are listed on the same rule
+     * the Phase 7–9 sections are — §20's progressive disclosure, and a section whose
+     * feature the project owner has not bought is not advertised, because a section
+     * that answers 403 is worse than one that is not offered.
+     *
+     * **Budget is additionally gated on a capability rather than only a feature**,
+     * and it is the first rail entry that is. A budget is margin by subtraction, and
+     * `commercial.read` is the key §37 created to keep margin away from a
+     * supervisor; the Schedule beside it deliberately is *not* gated that way,
+     * because Femi needs to know he is on Marina Bay on Tuesday without being told
+     * what the job is worth. Both sides of that distinction, in one rail.
+     */
+    ...(ent.has('variations')
+      ? [
+          {
+            id: 'variations',
+            label: 'Variations',
+            count: counts?.variations ?? null,
+            populated: (counts?.variations ?? 0) > 0,
+          } satisfies RailSection,
+        ]
+      : []),
+    ...(ent.has('variations') && caps.can('commercial.read') && isProjectOwner
+      ? [{ id: 'budget', label: 'Budget vs actual' } satisfies RailSection]
+      : []),
+    ...(ent.has('scheduling')
+      ? [
+          {
+            id: 'schedule',
+            label: 'Schedule',
+            count: counts?.schedule ?? null,
+            populated: (counts?.schedule ?? 0) > 0,
+          } satisfies RailSection,
+        ]
+      : []),
     { id: 'reports', label: 'Reports' },
+    // §35 needs no feature key and is listed unconditionally: it is structure rather
+    // than content, and each of its ten sources is gated by the key that governs its
+    // own records.
+    { id: 'timeline', label: 'Timeline' },
     ...(canManage ? [{ id: 'settings', label: 'Settings' } satisfies RailSection] : []),
   ];
   const active = sections.some((x) => x.id === section) ? section : 'overview';
@@ -488,6 +595,53 @@ function ProjectDetail() {
               onChanged={bumpCount}
             />
           ) : null}
+
+          {active === 'variations' ? (
+            <VariationsPanel
+              projectId={p.id}
+              currency={currency}
+              roles={roles.items.map((r) => ({ id: r.id, name: r.name }))}
+              canCreate={caps.can('variation.create')}
+              canApprove={caps.can('variation.approve')}
+              /*
+               * The money gate, separate from the create gate. A supervisor captures
+               * the price the client asked for and does not read the margin on it —
+               * two capability keys, checked independently, which is the whole reason
+               * §37's layer exists.
+               */
+              canReadCommercial={caps.can('commercial.read')}
+              onCountChanged={bumpCount}
+            />
+          ) : null}
+
+          {active === 'budget' ? (
+            <BudgetPanel
+              projectId={p.id}
+              currency={currency}
+              canManage={caps.can('commercial.manage')}
+            />
+          ) : null}
+
+          {active === 'schedule' ? (
+            <SchedulePanel
+              projectId={p.id}
+              currency={currency}
+              roles={roles.items.map((r) => ({ id: r.id, name: r.name }))}
+              providers={assignments.items.map((a) => ({
+                id: a.providerCompanyId,
+                name: a.providerCompanyName,
+              }))}
+              members={members.items
+                // ACTIVE only: booking somebody whose membership was removed would
+                // put a person on a site they can no longer sign in to see.
+                .filter((m) => m.status === 'ACTIVE')
+                .map((m) => ({ userId: m.userId, name: m.name }))}
+              canManage={caps.can('schedule.manage')}
+              isOwner={p.ownerCompanyId === ctx?.companyId}
+            />
+          ) : null}
+
+          {active === 'timeline' ? <TimelinePanel projectId={p.id} /> : null}
 
           {active === 'reports' ? (
             <>

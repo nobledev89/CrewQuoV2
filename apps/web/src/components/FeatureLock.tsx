@@ -41,6 +41,12 @@ const FEATURE_COPY: Record<FeatureKey, string> = {
     'Client sign-off captures a signature on site against what was being signed for, and keeps both the signature and that snapshot. A later amendment is a new sign-off; neither is ever edited.',
   client_reporting:
     'Client-level reporting rolls every project you ran for one client into a single period report, following a client through a name change or a placeholder that later signed up.',
+  variations:
+    'Variations price extra works off your rate cards, record who on the client side asked for them, and feed approved ones into project revenue and the invoice.',
+  scheduling:
+    'Scheduling puts named people, subcontractor crews and vehicles on a day, a week or a month, and names the clash at the moment you create it rather than on Monday.',
+  compliance_tracking:
+    'Compliance tracking keeps subcontractor requirements and certificates current with a 90/60/30/14/7 renewal ladder and optional enforcement.',
   invoicing: 'Invoicing turns approved work into an invoice you can issue.',
   audit_visibility: 'Audit visibility lets a client see the trail of activity you publish.',
   api_access: 'API access issues keys for your own integrations.',
@@ -76,6 +82,7 @@ const LIMIT_COPY: Record<LimitKey, string> = {
   storage_gb: 'gigabytes of file storage',
   evidence_uploads_per_month: 'evidence uploads this month',
   factor_sets: 'imported factor sets',
+  artifact_retention_days: 'completed-project artifact retention',
 };
 
 /** The "23 / 23" state: the action is real, the allowance is spent. */

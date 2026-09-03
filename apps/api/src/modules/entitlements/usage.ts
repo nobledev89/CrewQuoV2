@@ -56,6 +56,7 @@ export async function getUsage(companyId: string, key: LimitKey): Promise<number
       return countFactorSets(companyId);
     // audit_retention_days is a config value, not a meter.
     case 'audit_retention_days':
+    case 'artifact_retention_days':
       return 0;
   }
 }

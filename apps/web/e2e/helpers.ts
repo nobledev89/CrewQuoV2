@@ -828,3 +828,32 @@ export async function setRegistrationIdentity(
     await db.end();
   }
 }
+
+/**
+ * Click a save button and **wait for the write to land** before doing anything else.
+ *
+ * ── WHY THIS EXISTS (found 2026-09-03, in Phase 11's verification) ──────────
+ *
+ * Four places in `parity.spec.ts` did `click()` then `reload()` back to back, and
+ * the reload can outrun the save's round trip. When it does, the reloaded page shows
+ * the OLD value — and `toHaveValue(...)`'s retry cannot recover, because nothing
+ * will change it without a second reload. So the assertion fails on a value that
+ * saved perfectly a moment later.
+ *
+ * It is a genuine race rather than a slow machine: it failed on the time-zone test
+ * in one run and the digest test in the next, on the same commit, with the other
+ * passing each time. That non-determinism is the signature, and it is expensive —
+ * every one of those tests sits in a **serial** file, so a flake there stops
+ * everything after it and reads as a regression in whatever was changed most
+ * recently.
+ *
+ * `waitForResponse` on any successful non-GET is deliberately endpoint-agnostic:
+ * coupling this to `/v1/companies/:id` and `/v1/notification-preferences` would make
+ * it one more thing to keep in step with the routes.
+ */
+export async function saveAndSettle(page: Page, buttonName: string): Promise<void> {
+  await Promise.all([
+    page.waitForResponse((r) => r.request().method() !== 'GET' && r.status() < 400),
+    page.getByRole('button', { name: buttonName }).click(),
+  ]);
+}

@@ -40,6 +40,15 @@ function summary(overrides: Partial<ProjectSummary> = {}): ProjectSummary {
     expenseCostCents: 0,
     totalCostCents: 40000,
     billCents: 64000,
+    /*
+     * Phase 11's four fields, at the values a project with no variations has. Zero
+     * is the right figure here — a project genuinely has no approved variations —
+     * and `revenueCents` equals `billCents` because there is nothing to add to it.
+     */
+    approvedVariations: 0,
+    variationSellCents: 0,
+    variationCostCents: 0,
+    revenueCents: 64000,
     marginCents: 24000,
     marginPct: 37.5,
     byProvider: [

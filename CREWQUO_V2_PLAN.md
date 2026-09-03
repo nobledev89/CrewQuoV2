@@ -1935,6 +1935,34 @@ create table variation_lines (
 
 The status machine mirrors the work workflow (§3.4) deliberately — same shape, same guards, plus `COMPLETED`/`INVOICED`. Labour lines resolve their default cost and sell from the existing rate engine, so a variation is priced the same way everything else is. **Approved variations feed project revenue and profitability** through `computeProjectSummary`, not through a second calculator. Every status change and price edit is audited (§36).
 
+> **Built 2026-09-03 (`0045`), with four stated departures from the DDL above** —
+> full reasoning in `docs/operating-model/commercial-operations.md`:
+>
+> 1. **The sell is folded into the summary and the cost never is.** The hours worked
+>    on extra works are approved time logs like any other and are already in
+>    `laborCostCents` through their frozen PAY snapshots; `cost_total_cents` is what
+>    the contractor *expected* the works to cost when it quoted them. Adding it
+>    counts the same labour twice and deflates margin — the one direction of error
+>    nobody catches, because it is pessimistic. Revenue is asymmetric because nothing
+>    else records it.
+> 2. **Lines and prices are editable in `DRAFT` and `REJECTED` only.**
+>    `client_approved_by` records that a named person outside the tenancy agreed a
+>    figure; a line editable past that turns their agreement into a signature on a
+>    blank cheque. A correction is a new variation.
+> 3. **`cost_cents`/`sell_cents` carry CHECK constraints** binding them to
+>    `quantity × unit_*`. And `lineTotalCents` computes that in integer hundredths,
+>    because `Math.round(quantity * unitCents)` disagrees with Postgres at the
+>    half-cent boundary — a latent defect `invoice_items` had carried since `0008`,
+>    fixed on the same day.
+> 4. **`created_by_user_id` is nullable**, for the fourth time (`0030`, `0034`,
+>    `0040`): the closure promise of 2026-08-20 anonymises a person and preserves the
+>    record.
+>
+> **Approval without `client_approved_by` is permitted** — the client says yes on the
+> phone on Tuesday and the paperwork arrives on Friday, and the crew works on
+> Wednesday — and is never silent: every response carries `clientApprovalRecorded`,
+> the panel badges it, and §29.2's pack section prints it beside the row.
+
 ### 30.2 Planned vs actual
 
 ```sql
@@ -1962,6 +1990,37 @@ create table project_budgets (
 ```
 
 **Actuals are computed, never stored** — from approved time logs (labour, via the frozen PAY snapshots), approved expenses, asset movements and activities (vehicles, mileage, waste), and approved variations (revenue). Storing them would create two sources of truth that drift.
+
+> **The clause about asset movements and activities is not implementable, and the
+> reason is one query** (`commercial-operations.md` finding 2, built 2026-09-03).
+> `asset_movements` and `project_activities` between them carry `quantity`,
+> `mass_kg`, `distance_km`, `litres`, `kwh`, `tonne_km` and `journeys` — and **not
+> one money column.** Nothing anywhere in this schema prices a skip, a tonne, a
+> kilometre or a litre; Phases 8 and 9 were built to answer *how much material* and
+> *how much carbon*, and neither was ever asked what it cost.
+>
+> So **four of the ten categories compute completely** — `revenue` (BILL-priced
+> approved work plus approved variation sell), `labour` (the owner's own approved
+> logs), `subcontractor` (every other company's, same frozen snapshots) and
+> `expenses` — and **six have no source at all**: `vehicle`, `mileage`, `waste`,
+> `materials`, `purchases`, `other`.
+>
+> Those six report `actualCents: null`, a null variance, and a sentence naming what
+> would have to exist. They do **not** report zero. *"Vehicles · Budget £3,000 ·
+> Actual £0 · Variance −£3,000 / −100%"* is an absence with a percentage attached, on
+> a screen a contractor reads immediately before a client meeting — §41.1's rule
+> (*"no factor, no number — say so instead"*) applied to money.
+>
+> The rejected alternative is recorded because it is tempting: mapping an approved
+> variation's cost lines onto the categories, whose kinds line up almost exactly. It
+> fails because a variation's cost total is a **forecast** made when the works were
+> quoted, and a forecast in the *Actual* column is worse than an empty cell.
+>
+> Beside the table, the approved expense spend is grouped by its own free-text
+> `category` — the one breakdown the data does support, and the answer to the
+> question the six null rows raise.
+>
+> **`currency` is not created.** See §42's Phase 11 note.
 
 Variance is shown per category, absolute and percentage, with direction:
 
@@ -2411,18 +2470,37 @@ Create the new product experience described in §9 and §20. The existing API ca
 - `CLIENT_PERIOD` report kind + the aggregation query shipped now, UI later (§38.2).
 - *Milestone: a client-ready PDF generated from real project data, regenerable byte-identical a year later.*
 
-### Phase 11 — Commercial & operations
-- Variations with pricing, approval and revenue feed-through (§30.1).
-- `project_budgets` + computed actuals + variance (§30.2).
-- Scheduling with day/week/month, drag-and-drop assignment, conflicts and requirements (§31).
-- Project timeline (§35).
-- *Milestone: budget vs actual with approved variations included, and a week's crew scheduled with conflicts surfaced.*
+### Phase 11 — Commercial & operations — **DONE (2026-09-03)**
+- Variations with pricing, approval and revenue feed-through (§30.1). ✅
+- `project_budgets` + computed actuals + variance (§30.2). ✅ **Four of the ten
+  categories compute; six have no source of money anywhere in this schema and say
+  so** — see `docs/operating-model/commercial-operations.md` finding 2.
+- Scheduling with day/week/month, drag-and-drop assignment, conflicts and requirements (§31). ✅
+- Project timeline (§35). ✅
+- *Milestone: budget vs actual with approved variations included, and a week's crew
+  scheduled with conflicts surfaced.* ✅
+- **Two corrections to this section's own DDL, recorded here so a later reader does
+  not take it literally.** §30.2 declares `currency text not null` on
+  `project_budgets`; migration `0017` deleted exactly that column from three other
+  tables and it is **not created** — a budget's unit is its project's
+  `reporting_currency`, which is itself the pin (decision #5). And §31 gives a
+  `schedule_assignment` two instants while asking for a planned cost through the rate
+  engine, which is keyed on a `ShiftType` — so the table carries an explicit nullable
+  `shift_type` and a planned figure is **withheld with a reason** when it is unset,
+  rather than derived from a clock. Deriving one would put a rate rule back into code
+  eleven phases after the owner had `FRI_SAT_NIGHT` removed from the engine.
+- **And two tables §31 names in prose only** are declared: `resource_availability`
+  (one table for a person, a vehicle and a subcontractor's stated crew count — §31's
+  headcount rule needs a company's availability, which a per-user table cannot hold)
+  and `project_role_requirements`.
 
 ### Phase 12 — Compliance & analytics
 - Subcontractor compliance documents, statuses and the 90/60/30/14/7 alert ladder (§33).
 - Client aggregated reporting UI, quarterly and annual (§38.2).
 - Advanced analytics and cross-project comparison.
 - *Milestone: a year of PwC projects aggregated into one client sustainability report.*
+
+**Implemented 2026-09-03:** the adopted [compliance and analytics operating model](docs/operating-model/compliance-analytics.md), append-only reusable company compliance, date-derived states and duplicate-proof escalation, optional schedule/submission enforcement, quarterly/annual `CLIENT_PERIOD` workflows, client/date portfolio filters and explicit cross-project deltas. The artifact-class retention sweep deferred by Phase 7 also ships here with plan periods, immutable-report/sign-off holds and durable object deletion.
 
 ### Phase 13 — Complete mobile field experience
 
@@ -2456,6 +2534,23 @@ Build and validate the complete purpose-designed mobile workspace against the fi
 New keys for the existing engine (§5B) — the mechanism is unchanged, these are rows.
 
 **Features:** `project_evidence` · `site_diary` · `project_documents` · `asset_tracking` · `sustainability` · `carbon_engine` · `sustainability_reports` · `evidence_pack` · `client_signoff` · `variations` · `scheduling` · `compliance_tracking` · `client_reporting` · `custom_factors` (import your own factor sets)
+
+> **`variations` and `scheduling` shipped 2026-09-03, placed exactly as the table
+> below proposes — Starter and up, with no departure.** The first of the four §43
+> passes with nothing to explain: both are operating features rather than publishing
+> ones, both cost nothing marginal to serve, and Starter is described as *"run your
+> own subcontractors"*, which is exactly who has extra works and a week to plan.
+>
+> Both are checked against the **project owner** (the 2026-09-01 rule, for the fifth
+> and sixth time), with one exception: `/v1/vehicles` asks the **acting** company,
+> because a fleet is company reference data with no project to find an owner of —
+> the same exception `custom_factors` is, and the third time in three phases that
+> transferring the rule by analogy would have been wrong.
+>
+> **§35's timeline gets no key at all**, and could not honestly have one: it is a
+> union over ten record classes whose features differ, so each source is gated by the
+> key that governs its own records. A company without `site_diary` still has time
+> logs and photographs.
 
 **Limits:** `storage_gb` · `evidence_uploads_per_month` · `active_projects` · `factor_sets`
 

@@ -24,6 +24,30 @@ import type {
   AdminUserSummary,
   AssetTypeView,
   AssetView,
+  ApproveVariation,
+  AvailabilityInput,
+  AvailabilityWindow,
+  BudgetCategorySpec,
+  CreateSchedule,
+  CreateVariation,
+  CreateVehicle,
+  PortalVariationView,
+  ProjectBudgetView,
+  RequirementShortfall,
+  RoleRequirement,
+  ScheduleAssignmentView,
+  ScheduleView,
+  ScheduleWriteResult,
+  SetProjectBudget,
+  SetRoleRequirements,
+  TimelineEventType,
+  TimelineResponse,
+  UpdateScheduleAssignment,
+  UpdateVariation,
+  UpdateVehicle,
+  VariationStatus,
+  VariationView,
+  VehicleView,
   AvoidedClaimView,
   AssignmentView,
   AuditLogsResponse,
@@ -33,6 +57,10 @@ import type {
   CompleteUpload,
   ContinueMovement,
   CarbonCalculationView,
+  ComplianceDocumentView,
+  ComplianceSummaryView,
+  CreateComplianceDocument,
+  UpdateComplianceDocument,
   GeneratedReportDetail,
   GeneratedReportView,
   ReportAudience,
@@ -1693,6 +1721,42 @@ export const api = {
       companyId: c,
       query: { from: q.from, to: q.to, clientCompanyId: q.clientCompanyId },
     }),
+
+  // ── Subcontractor compliance (§33) ────────────────────────────────────────
+  listComplianceDocuments: (
+    t: string,
+    c: string,
+    q: { subjectCompanyId?: string; status?: string; expiringWithinDays?: number; includeHistory?: boolean } = {}
+  ) =>
+    request<{ documents: ComplianceDocumentView[] }>('GET', '/v1/compliance-documents', {
+      accessToken: t,
+      companyId: c,
+      query: {
+        subjectCompanyId: q.subjectCompanyId,
+        status: q.status,
+        expiringWithinDays: q.expiringWithinDays === undefined ? undefined : String(q.expiringWithinDays),
+        includeHistory: q.includeHistory ? 'true' : undefined,
+      },
+    }),
+  complianceSummary: (t: string, c: string) =>
+    request<{ summary: ComplianceSummaryView }>('GET', '/v1/compliance/summary', {
+      accessToken: t,
+      companyId: c,
+    }),
+  createComplianceDocument: (t: string, c: string, body: CreateComplianceDocument) =>
+    request<{ document: ComplianceDocumentView }>('POST', '/v1/compliance-documents', {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+  updateComplianceDocument: (t: string, c: string, id: string, body: UpdateComplianceDocument) =>
+    request<{ document: ComplianceDocumentView }>('PATCH', `/v1/compliance-documents/${id}`, {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+  deleteComplianceDocument: (t: string, c: string, id: string) =>
+    request<void>('DELETE', `/v1/compliance-documents/${id}`, { accessToken: t, companyId: c }),
   // ── Reporting & sign-off (§29, §34, §38.2) ─────────────────────────────────
   //
   // `reportDetail` returns the frozen snapshot **and** `staleNotes`, which is the
@@ -1716,6 +1780,30 @@ export const api = {
       accessToken: t,
       companyId: c,
       query: { includeSuperseded: includeSuperseded ? 'true' : undefined },
+    }),
+
+  listClientPeriodReports: (t: string, c: string) =>
+    request<{ reports: GeneratedReportView[] }>('GET', '/v1/reports', {
+      accessToken: t,
+      companyId: c,
+    }),
+
+  generateClientPeriodReport: (
+    t: string,
+    c: string,
+    body: {
+      audience: 'CLIENT';
+      clientCompanyId: string;
+      periodStart: string;
+      periodEnd: string;
+      title?: string;
+      sections?: ReportSectionKey[];
+    }
+  ) =>
+    request<{ report: GeneratedReportView; reused: boolean }>('POST', '/v1/reports/client-period', {
+      accessToken: t,
+      companyId: c,
+      body,
     }),
 
   generateReport: (
@@ -1782,4 +1870,239 @@ export const api = {
     }),
   downloadPortalReport: (t: string, c: string, id: string) =>
     download(`/v1/portal/reports/${id}/download.pdf`, { accessToken: t, companyId: c }),
+  // ── Variations & extra works (§30.1) ───────────────────────────────────────
+  //
+  // `notices` travels beside the variation on every write, and the panel renders
+  // it: a LABOUR line the rate engine could not price is saved with `PARTIAL` on
+  // the row rather than refused, and the notice is the sentence saying what to do
+  // about it. §41.1's rule — report the absence, never print a zero as if it were
+  // agreed.
+
+  listVariations: (t: string, c: string, projectId: string, status?: VariationStatus) =>
+    request<{ variations: VariationView[] }>('GET', `/v1/projects/${projectId}/variations`, {
+      accessToken: t,
+      companyId: c,
+      query: { status },
+    }),
+
+  createVariation: (t: string, c: string, projectId: string, body: CreateVariation) =>
+    request<{ variation: VariationView; notices: string[] }>(
+      'POST',
+      `/v1/projects/${projectId}/variations`,
+      { accessToken: t, companyId: c, body }
+    ),
+
+  getVariation: (t: string, c: string, id: string) =>
+    request<{ variation: VariationView; billingNotice: string | null }>(
+      'GET',
+      `/v1/variations/${id}`,
+      { accessToken: t, companyId: c }
+    ),
+
+  updateVariation: (t: string, c: string, id: string, body: UpdateVariation) =>
+    request<{ variation: VariationView; notices: string[] }>('PATCH', `/v1/variations/${id}`, {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+
+  deleteVariation: (t: string, c: string, id: string) =>
+    request<void>('DELETE', `/v1/variations/${id}`, { accessToken: t, companyId: c }),
+
+  /**
+   * The five transitions a caller may drive. `INVOICED` is deliberately absent:
+   * it is set inside the transaction that creates the invoice line, and there is
+   * no route to it (`VARIATION_TRANSITIONS` gives both its edges the actor
+   * `SYSTEM`).
+   */
+  variationAction: (
+    t: string,
+    c: string,
+    id: string,
+    action: 'submit' | 'withdraw' | 'approve' | 'reject' | 'complete' | 'client-approval',
+    body?: ApproveVariation | { reason: string }
+  ) =>
+    request<{ variation: VariationView; billingNotice: string | null }>(
+      'POST',
+      `/v1/variations/${id}/${action}`,
+      { accessToken: t, companyId: c, body: body ?? {} }
+    ),
+
+  // ── Budget vs actual (§30.2) ───────────────────────────────────────────────
+  //
+  // `categories` comes back with the answer so a "not tracked" row has its
+  // explanation without a second request and without a copy of the reasoning in
+  // the client's own code. Six of the ten have no source anywhere in the schema,
+  // and the sentence saying what would have to exist is a fact about the server.
+
+  getProjectBudget: (t: string, c: string, projectId: string) =>
+    request<{ budget: ProjectBudgetView; categories: BudgetCategorySpec[] }>(
+      'GET',
+      `/v1/projects/${projectId}/budget`,
+      { accessToken: t, companyId: c }
+    ),
+
+  setProjectBudget: (t: string, c: string, projectId: string, body: SetProjectBudget) =>
+    request<{ budget: ProjectBudgetView; categories: BudgetCategorySpec[] }>(
+      'PUT',
+      `/v1/projects/${projectId}/budget`,
+      { accessToken: t, companyId: c, body }
+    ),
+
+  // ── Crew scheduling (§31) ──────────────────────────────────────────────────
+  //
+  // Every write returns `warnings` and never a refusal: §31 makes a conflict a
+  // warning, because the double-booking is sometimes the plan.
+
+  listVehicles: (t: string, c: string, includeRetired = false) =>
+    request<{ vehicles: VehicleView[] }>('GET', '/v1/vehicles', {
+      accessToken: t,
+      companyId: c,
+      query: { includeRetired: includeRetired ? 'true' : undefined },
+    }),
+  createVehicle: (t: string, c: string, body: CreateVehicle) =>
+    request<{ vehicle: VehicleView }>('POST', '/v1/vehicles', {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+  updateVehicle: (t: string, c: string, id: string, body: UpdateVehicle) =>
+    request<{ vehicle: VehicleView }>('PATCH', `/v1/vehicles/${id}`, {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+  deleteVehicle: (t: string, c: string, id: string) =>
+    request<void>('DELETE', `/v1/vehicles/${id}`, { accessToken: t, companyId: c }),
+
+  listProjectSchedule: (
+    t: string,
+    c: string,
+    projectId: string,
+    q: { from?: string; to?: string; includeCancelled?: boolean } = {}
+  ) =>
+    request<{
+      assignments: ScheduleAssignmentView[];
+      requirements: RoleRequirement[];
+      shortfalls: RequirementShortfall[];
+    }>('GET', `/v1/projects/${projectId}/schedule`, {
+      accessToken: t,
+      companyId: c,
+      query: {
+        from: q.from,
+        to: q.to,
+        includeCancelled: q.includeCancelled ? 'true' : undefined,
+      },
+    }),
+
+  createSchedule: (t: string, c: string, projectId: string, body: CreateSchedule) =>
+    request<ScheduleWriteResult>('POST', `/v1/projects/${projectId}/schedule`, {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+
+  updateAssignment: (t: string, c: string, id: string, body: UpdateScheduleAssignment) =>
+    request<ScheduleWriteResult>('PATCH', `/v1/schedule/${id}`, {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+
+  confirmAssignment: (t: string, c: string, id: string) =>
+    request<ScheduleWriteResult>('POST', `/v1/schedule/${id}/confirm`, {
+      accessToken: t,
+      companyId: c,
+    }),
+
+  /** A dry run, so the planner can warn before it writes. */
+  checkSchedule: (t: string, c: string, body: CreateSchedule) =>
+    request<{ warnings: ScheduleWriteResult['warnings'] }>('POST', '/v1/schedule/check', {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+
+  companySchedule: (
+    t: string,
+    c: string,
+    q: { view: ScheduleView; date: string; projectId?: string; includeCancelled?: boolean }
+  ) =>
+    request<{
+      window: { fromDate: string; toDate: string };
+      assignments: ScheduleAssignmentView[];
+      vehicles: VehicleView[];
+      availability: AvailabilityWindow[];
+    }>('GET', '/v1/schedule', {
+      accessToken: t,
+      companyId: c,
+      query: {
+        view: q.view,
+        date: q.date,
+        projectId: q.projectId,
+        includeCancelled: q.includeCancelled ? 'true' : undefined,
+      },
+    }),
+
+  getRoleRequirements: (t: string, c: string, projectId: string) =>
+    request<{ requirements: RoleRequirement[]; shortfalls: RequirementShortfall[] }>(
+      'GET',
+      `/v1/projects/${projectId}/role-requirements`,
+      { accessToken: t, companyId: c }
+    ),
+  setRoleRequirements: (t: string, c: string, projectId: string, body: SetRoleRequirements) =>
+    request<{ requirements: RoleRequirement[]; shortfalls: RequirementShortfall[] }>(
+      'PUT',
+      `/v1/projects/${projectId}/role-requirements`,
+      { accessToken: t, companyId: c, body }
+    ),
+
+  listAvailability: (t: string, c: string) =>
+    request<{ availability: AvailabilityWindow[] }>('GET', '/v1/availability', {
+      accessToken: t,
+      companyId: c,
+    }),
+  createAvailability: (t: string, c: string, body: AvailabilityInput) =>
+    request<{ availability: AvailabilityWindow[] }>('POST', '/v1/availability', {
+      accessToken: t,
+      companyId: c,
+      body,
+    }),
+  deleteAvailability: (t: string, c: string, id: string) =>
+    request<void>('DELETE', `/v1/availability/${id}`, { accessToken: t, companyId: c }),
+
+  // ── Project timeline (§35) ─────────────────────────────────────────────────
+  //
+  // `sources` says which classes contributed and which were skipped and why, so a
+  // client rendering an empty filter can explain it rather than looking broken.
+
+  projectTimeline: (
+    t: string,
+    c: string,
+    projectId: string,
+    q: { types?: TimelineEventType[]; cursor?: string; limit?: number } = {}
+  ) =>
+    request<TimelineResponse>('GET', `/v1/projects/${projectId}/timeline`, {
+      accessToken: t,
+      companyId: c,
+      query: {
+        types: q.types && q.types.length > 0 ? q.types.join(',') : undefined,
+        cursor: q.cursor,
+        limit: q.limit === undefined ? undefined : String(q.limit),
+      },
+    }),
+
+  // The client's side of both.
+  portalTimeline: (t: string, c: string, projectId: string, cursor?: string) =>
+    request<TimelineResponse>('GET', `/v1/portal/projects/${projectId}/timeline`, {
+      accessToken: t,
+      companyId: c,
+      query: { cursor },
+    }),
+  portalVariations: (t: string, c: string, projectId: string) =>
+    request<{ variations: PortalVariationView[] }>(
+      'GET',
+      `/v1/portal/projects/${projectId}/variations`,
+      { accessToken: t, companyId: c }
+    ),
 };

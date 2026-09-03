@@ -7,6 +7,7 @@ import {
   formatCompleteness,
   formatMassKg,
   formatRate,
+  type ClientView,
   type OrgSustainabilityView,
 } from '@crewquo/shared';
 import {
@@ -19,6 +20,7 @@ import {
   PageHeader,
   Row,
   Section,
+  Select,
   Stack,
   Table,
 } from '@crewquo/ui';
@@ -67,6 +69,13 @@ function Dashboard() {
   const ent = useEntitlements();
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
+  const [clientCompanyId, setClientCompanyId] = useState('');
+  const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
+
+  const clients = useAsyncData<ClientView[]>(
+    ctx ? () => api.listClients(ctx.accessToken, ctx.companyId).then((r) => r.data) : null,
+    [ctx?.companyId]
+  );
 
   const data = useAsyncData<OrgSustainabilityView>(
     ctx
@@ -75,10 +84,11 @@ function Dashboard() {
             .sustainabilityDashboard(ctx.accessToken, ctx.companyId, {
               from: from === '' ? undefined : from,
               to: to === '' ? undefined : to,
+              clientCompanyId: clientCompanyId === '' ? undefined : clientCompanyId,
             })
             .then((r) => r.dashboard)
       : null,
-    [ctx?.companyId, from, to]
+    [ctx?.companyId, from, to, clientCompanyId]
   );
 
   if (!ent.loading && !ent.has('sustainability')) {
@@ -115,6 +125,14 @@ function Dashboard() {
           </Field>
           <Field label="To">
             <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+          </Field>
+          <Field label="Client">
+            <Select value={clientCompanyId} onChange={(e) => { setClientCompanyId(e.target.value); setSelectedProjects([]); }}>
+              <option value="">All clients</option>
+              {clients.data?.map((client) => (
+                <option key={client.clientCompanyId} value={client.clientCompanyId}>{client.name}</option>
+              ))}
+            </Select>
           </Field>
         </Row>
       </Section>
@@ -263,12 +281,42 @@ function Dashboard() {
           </Section>
 
           <Section
+            title="Compare projects"
+            description="Select projects in the table below. Differences are against the first selected project; unknown carbon stays unknown."
+          >
+            {selectedProjects.length < 2 ? (
+              <p className="cq-muted">Select at least two projects to compare them side by side.</p>
+            ) : (
+              <Table label="Cross-project comparison">
+                <thead><tr><th scope="col">Project</th><th scope="col" className="cq-numeric">Handled</th><th scope="col" className="cq-numeric">Diversion</th><th scope="col" className="cq-numeric">Emissions</th><th scope="col" className="cq-numeric">Completeness</th><th scope="col" className="cq-numeric">Handled vs first</th></tr></thead>
+                <tbody>
+                  {selectedProjects.map((id, index) => {
+                    const project = d.projects.find((row) => row.projectId === id);
+                    const baseline = d.projects.find((row) => row.projectId === selectedProjects[0]);
+                    if (!project || !baseline) return null;
+                    const delta = project.handledKg - baseline.handledKg;
+                    return <tr key={id}>
+                      <td className="cq-table__primary"><Link href={`/projects/${id}?section=sustainability`}>{project.projectName}</Link>{index === 0 ? <span className="cq-table__note">Baseline</span> : null}</td>
+                      <td className="cq-numeric">{formatMassKg(project.handledKg, d.display.massUnit)}</td>
+                      <td className="cq-numeric">{project.allocatedKg === 0 ? '—' : formatRate(project.divertedKg / project.allocatedKg)}</td>
+                      <td className="cq-numeric">{project.projectEmissionsKgCo2e === null ? '—' : formatCarbonKg(project.projectEmissionsKgCo2e, d.display.carbonUnit)}</td>
+                      <td className="cq-numeric">{formatCompleteness(project.completenessPct)}</td>
+                      <td className="cq-numeric">{index === 0 ? '—' : `${delta > 0 ? '+' : ''}${formatMassKg(delta, d.display.massUnit)}`}</td>
+                    </tr>;
+                  })}
+                </tbody>
+              </Table>
+            )}
+          </Section>
+
+          <Section
             title="By project"
             description="Every figure here clicks through to the records behind it."
           >
             <Table label="Sustainability by project">
               <thead>
                 <tr>
+                  <th scope="col">Compare</th>
                   <th scope="col">Project</th>
                   <th scope="col" className="cq-numeric">
                     Handled
@@ -290,6 +338,14 @@ function Dashboard() {
               <tbody>
                 {d.projects.map((p) => (
                   <tr key={p.projectId}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        aria-label={`Compare ${p.projectName}`}
+                        checked={selectedProjects.includes(p.projectId)}
+                        onChange={(event) => setSelectedProjects((current) => event.target.checked ? [...current, p.projectId] : current.filter((id) => id !== p.projectId))}
+                      />
+                    </td>
                     <td className="cq-table__primary">
                       <Link href={`/projects/${p.projectId}?section=sustainability`}>
                         {p.projectName}

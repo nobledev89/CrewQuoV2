@@ -8,6 +8,8 @@ import { BILLING_INBOX_HANDLERS } from '../modules/billing/reconcile';
 import { runStorageBatch } from '../modules/storage/worker';
 import { runDocumentExpiryBatch } from '../modules/documents/expiry';
 import { runStorageAgeingBatch } from '../modules/assets/storageAgeing';
+import { runComplianceExpiryBatch } from '../modules/compliance/expiry';
+import { runArtifactRetentionBatch } from '../modules/storage/artifactRetention';
 
 /**
  * The process that actually drains the durable substrate.
@@ -103,6 +105,22 @@ async function pass(): Promise<{ claimed: number; succeeded: number; failed: num
   const ageing = await runStorageAgeingBatch();
   if (ageing.ageing > 0) {
     console.log(`[workers] storage scanned=${ageing.scanned} ageing=${ageing.ageing}`);
+  }
+
+  const compliance = await runComplianceExpiryBatch();
+  if (compliance.statusChanged > 0 || compliance.alerted > 0) {
+    console.log(
+      `[workers] compliance scanned=${compliance.scanned} ` +
+        `statusChanged=${compliance.statusChanged} alerted=${compliance.alerted}`
+    );
+  }
+
+  const retention = await runArtifactRetentionBatch();
+  if (retention.reclaimed > 0 || retention.objectsDeleted > 0 || retention.objectFailures > 0) {
+    console.log(
+      `[workers] artifacts scanned=${retention.scanned} reclaimed=${retention.reclaimed} ` +
+        `objectsDeleted=${retention.objectsDeleted} objectFailures=${retention.objectFailures}`
+    );
   }
 
   const outbox = await runOutboxBatch({ workerId: WORKER_ID, handlers: NOTIFICATION_HANDLERS });

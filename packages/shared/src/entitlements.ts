@@ -107,6 +107,40 @@ export const FEATURE_KEYS = [
   'evidence_pack',
   'client_signoff',
   'client_reporting',
+  /**
+   * Phase 11 (§43). Both read over a **project**, so both are checked against
+   * `projects.owner_company_id` exactly as the eight keys above them are — the
+   * 2026-09-01 rule for the fifth and sixth time. A Crew-plan subcontractor raising
+   * a variation on a paying customer's job consumes that customer's entitlement,
+   * because the customer is who invoices it and answers for it; Femi capturing the
+   * extra doors on the day the client asked for them is the whole point of the free
+   * tier existing.
+   *
+   * **`/v1/vehicles` is the exception, and it is the same exception
+   * `custom_factors` is** (`commercial-operations.md` §4). A fleet is company
+   * reference data with no project to find an owner of, so it is checked against
+   * the acting company's own plan — the third time in three phases that
+   * transferring the project-owner rule by analogy would have been wrong.
+   *
+   * `scheduling` also gates the §31 half of the diary prefill: a company without it
+   * gets the timesheet suggestions it has always had, and
+   * `DiaryPrefillResponse.sources.schedule` says which of the two happened rather
+   * than leaving a shorter list to be interpreted.
+   *
+   * **§35's timeline gets no key of its own**, and could not honestly have one: it
+   * is a union over ten record classes whose features differ, so each source is
+   * gated by the key that governs its records. A company without `site_diary` still
+   * has time logs and photographs.
+   */
+  'variations',
+  'scheduling',
+  /**
+   * Phase 12 (§33). Company-level reference data: the tracking company owns the
+   * requirement and the alert ladder, so there is no project owner to borrow an
+   * entitlement from. Self-filed rows may cross a direct hiring edge only after
+   * this key has admitted the tracking surface.
+   */
+  'compliance_tracking',
   'invoicing',
   'audit_visibility',
   'api_access',
@@ -153,6 +187,8 @@ export const LIMIT_KEYS = [
    * so choosing one here would be a pricing judgement made by a code change.
    */
   'factor_sets',
+  /** Phase 12: completed-project artifacts; null/unset is indefinite. */
+  'artifact_retention_days',
 ] as const;
 export const limitKeySchema = z.enum(LIMIT_KEYS);
 export type LimitKey = z.infer<typeof limitKeySchema>;

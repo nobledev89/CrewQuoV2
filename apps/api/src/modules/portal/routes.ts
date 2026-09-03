@@ -20,6 +20,9 @@ import { renderStoredReport, reportFilename } from '../reports/generate';
 import { findDisclosedReport, listDisclosedReports, toReportView } from '../reports/repo';
 import { sendPdf, withSealCheck } from '../reports/routes';
 import { currentSignoffs, toSignoffView } from '../reports/signoff';
+import { buildTimeline } from '../timeline/routes';
+import { listPortalVariations } from '../variations/repo';
+import { timelineQuerySchema, type TimelineEventType } from '@crewquo/shared';
 
 /**
  * Client portal (CREWQUO_V2_PLAN.md §3.6, §7). The active company here is always
@@ -372,5 +375,109 @@ portalRouter.get(
 
     const rows = await currentSignoffs(found.id);
     res.json({ signoffs: rows.map(toSignoffView) });
+  })
+);
+
+/**
+ * GET /v1/portal/projects/:id/variations — §30.1's client-facing half.
+ *
+ * **`APPROVED` and later, sell only** (`commercial-operations.md` §13.6). A client
+ * who agreed to pay for extra works is entitled to see what they agreed to, and it
+ * reaches them through `PortalVariationView` — a type with **no field a cost
+ * figure, a margin or a provider name could occupy**, which is the mechanism
+ * `reporting-signoff.md` finding 3 established rather than a filter a later edit
+ * forgets.
+ *
+ * `DRAFT` and `SUBMITTED` never cross: a price the contractor is still thinking
+ * about is not a disclosure. Neither does `REJECTED` — a client seeing a variation
+ * their own contractor's team refused internally is a conversation the product
+ * should not start.
+ */
+portalRouter.get(
+  '/projects/:id/variations',
+  asyncHandler(async (req, res) => {
+    const ctx = getCompanyCtx(req);
+    const found = await getPortalProject(ctx.companyId, param(req, 'id'));
+    if (!found) throw new AppError('NOT_FOUND', 'Project not found');
+
+    const allowed = canReadPortal({
+      companyId: ctx.companyId,
+      edge: { clientCompanyId: ctx.companyId, providerCompanyId: found.ownerCompanyId },
+      providerHasClientPortal: await hasFeature(found.ownerCompanyId, 'client_portal'),
+    });
+    if (!allowed) throw new AppError('NOT_FOUND', 'Project not found');
+    /*
+     * An empty list rather than a refusal when the owner's plan lacks the feature —
+     * the shape the sign-off route above uses, and for the same reason: the client
+     * has done nothing wrong and cannot fix somebody else's plan.
+     */
+    if (!(await hasFeature(found.ownerCompanyId, 'variations'))) {
+      res.json({ variations: [] });
+      return;
+    }
+
+    res.json({ variations: await listPortalVariations(found.id) });
+  })
+);
+
+/**
+ * GET /v1/portal/projects/:id/timeline — §35's *"client-portal variant"*.
+ *
+ * A separate route rather than a parameter on the owner's one, because the client
+ * is not on `project_assignments` and `projectAccess` would 404 them — which is
+ * correct, and is the reason the portal has its own access check at all. Same
+ * `buildTimeline`, `audience: 'CLIENT'`, so the exclusions are the ones
+ * `TIMELINE_SOURCES` declares: a source marked `NEVER` has no code path into this
+ * response.
+ */
+portalRouter.get(
+  '/projects/:id/timeline',
+  asyncHandler(async (req, res) => {
+    const ctx = getCompanyCtx(req);
+    const found = await getPortalProject(ctx.companyId, param(req, 'id'));
+    if (!found) throw new AppError('NOT_FOUND', 'Project not found');
+
+    const allowed = canReadPortal({
+      companyId: ctx.companyId,
+      edge: { clientCompanyId: ctx.companyId, providerCompanyId: found.ownerCompanyId },
+      providerHasClientPortal: await hasFeature(found.ownerCompanyId, 'client_portal'),
+    });
+    if (!allowed) throw new AppError('NOT_FOUND', 'Project not found');
+
+    const q = req.query as Record<string, unknown>;
+    const parsed = timelineQuerySchema.parse({
+      from: typeof q.from === 'string' ? q.from : undefined,
+      to: typeof q.to === 'string' ? q.to : undefined,
+      types:
+        typeof q.types === 'string'
+          ? q.types.split(',').filter((t) => t !== '')
+          : undefined,
+      cursor: typeof q.cursor === 'string' ? q.cursor : undefined,
+      limit: typeof q.limit === 'string' ? Number(q.limit) : undefined,
+    });
+
+    res.json(
+      await buildTimeline({
+        projectId: found.id,
+        /*
+         * `ownerScope: true` looks alarming and is right: the flag decides whether a
+         * *recording company* filter is applied inside each clause, and a client is
+         * not one of the recording companies — filtering on `company_id = <client>`
+         * would return nothing at all rather than less. What keeps the client's view
+         * narrow is `audience: 'CLIENT'`, which decides **which clauses exist**, plus
+         * each clause's own `client_visible` condition. Two different mechanisms for
+         * two different questions.
+         */
+        companyId: ctx.companyId,
+        ownerCompanyId: found.ownerCompanyId,
+        ownerScope: true,
+        audience: 'CLIENT',
+        from: parsed.from,
+        to: parsed.to,
+        types: parsed.types as TimelineEventType[] | undefined,
+        cursor: parsed.cursor,
+        limit: parsed.limit ?? 50,
+      })
+    );
   })
 );

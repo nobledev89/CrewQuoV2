@@ -40,6 +40,11 @@ const MODEL: ProjectExportModel = {
     expenseCostCents: 5000,
     totalCostCents: 45000,
     billCents: 65550,
+    // Phase 11's four, at the values a project with no variations has.
+    approvedVariations: 0,
+    variationSellCents: 0,
+    variationCostCents: 0,
+    revenueCents: 65550,
     marginCents: 20550,
     marginPct: 31.35,
     byProvider: [

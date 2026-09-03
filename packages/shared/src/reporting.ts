@@ -228,8 +228,15 @@ export const KIND_AUDIENCES: Readonly<Record<ReportKind, readonly ReportAudience
  * the plan's DDL. A completion pack that asserts *no variations* about a feature
  * that does not exist is §41.1's invented number wearing a different hat, and it is
  * the most quotable sentence in the document during a dispute.
+ *
+ * **Moved from 10 to 11 on 2026-09-03, and the move was the entire edit.**
+ * `PACK_VARIATIONS` carries `availableFrom: 11` and needed no change at all: the
+ * section appeared in the toggle list and in the document the moment this number
+ * did, and every report generated before it keeps its own stored `sections` array.
+ * That is why §29.2 stores the chosen set rather than recomputing it, and it is the
+ * one place in this repository where a later phase's arrival is a one-token diff.
  */
-export const CURRENT_BUILD_PHASE = 10;
+export const CURRENT_BUILD_PHASE = 12;
 
 export const REPORT_SECTION_KEYS = [
   // §29.1 — the Sustainability & Completion report, in its stated order.
@@ -792,6 +799,16 @@ export interface SustainabilitySnapshot {
 export interface EvidencePackSnapshot {
   kind: 'EVIDENCE_PACK';
   project: SnapshotProject;
+  /**
+   * The project's reporting currency, added with §29.2's variations in Phase 11.
+   *
+   * The pack had no money in it until then and so needed no unit. It has one now,
+   * and a money figure in a **frozen** document cannot borrow its label from a live
+   * company row: `projects.reporting_currency` is itself the pin (decision #5), and
+   * freezing it here is what stops a company that changes its label next year from
+   * relabelling a pack issued this year.
+   */
+  currency: string;
   workforce: WorkforceBlock;
   workCompleted: string[];
   diary: {
@@ -826,6 +843,29 @@ export interface EvidencePackSnapshot {
   wasteTransferNotes: SnapshotDocumentRow[];
   recyclingDocuments: SnapshotDocumentRow[];
   donationEvidence: SnapshotDocumentRow[];
+  /**
+   * §29.2's variations, from Phase 11.
+   *
+   * **Approved and later only, and `clientApprovalRecorded` travels with each row.**
+   * A completion pack listing a variation the contractor approved without the
+   * client's own agreement on file, *without saying so*, would be the document
+   * asserting an agreement that is not evidenced — which is the reader most likely
+   * to be quoting it back during a dispute. The badge exists on the screen for the
+   * same reason; here it is a field, because a frozen document cannot be re-read.
+   *
+   * No cost figure and no margin. The pack has both audiences (§29.2), and a shape
+   * that could hold a cost is a shape a client copy could disclose one from.
+   */
+  variations: {
+    reference: string | null;
+    description: string;
+    requestedOn: string;
+    requestedBy: string | null;
+    status: string;
+    sellTotalCents: number;
+    clientApprovedBy: string | null;
+    clientApprovalRecorded: boolean;
+  }[];
   signoff: SustainabilitySnapshot['completion']['signoff'];
 }
 

@@ -63,6 +63,19 @@ import {
 import { projectCarbonRouter } from './modules/sustainability/projectCarbon';
 import { orgSustainabilityRouter } from './modules/sustainability/dashboard';
 import { projectReportsRouter, reportsRouter } from './modules/reports/routes';
+import {
+  projectVariationsRouter,
+  variationsRouter,
+} from './modules/variations/routes';
+import { projectBudgetRouter } from './modules/budgets/routes';
+import {
+  availabilityRouter,
+  projectScheduleRouter,
+  scheduleRouter,
+  vehiclesRouter,
+} from './modules/scheduling/routes';
+import { projectTimelineRouter } from './modules/timeline/routes';
+import { complianceDocumentsRouter, complianceRouter } from './modules/compliance/routes';
 import { invitesRouter } from './modules/invites/routes';
 import { projectsRouter } from './modules/projects/routes';
 import {
@@ -313,6 +326,15 @@ export function buildApp(): Express {
   // Phase 10's project router, before `projectsRouter` for the reason every other
   // one here is: `/:id/reports` would otherwise fall through to the project handler.
   app.use('/v1/projects', requireAuth, projectReportsRouter);
+  /*
+   * Phase 11's four project routers, all before `projectsRouter` for the reason
+   * every one above them is: `/:id/variations` would otherwise fall through to the
+   * project handler and 404 on a path that exists.
+   */
+  app.use('/v1/projects', requireAuth, projectVariationsRouter);
+  app.use('/v1/projects', requireAuth, projectBudgetRouter);
+  app.use('/v1/projects', requireAuth, projectScheduleRouter);
+  app.use('/v1/projects', requireAuth, projectTimelineRouter);
   app.use('/v1/projects', requireAuth, projectAssetsRouter);
   app.use('/v1/projects', requireAuth, projectsRouter);
   app.use('/v1/locations', requireAuth, locationsRouter);
@@ -337,6 +359,15 @@ export function buildApp(): Express {
   // Reporting & sign-off (§29, §34, §38.2). The project-scoped half is mounted on
   // /v1/projects above; this is one report, and §38.2's client-period roll-up.
   app.use('/v1/reports', requireAuth, reportsRouter);
+  // Commercial & operations (§30, §31, §35). The project-scoped halves are mounted
+  // on /v1/projects above; these are one variation, one assignment, the company
+  // fleet, the company-wide planner and its availability windows.
+  app.use('/v1/variations', requireAuth, variationsRouter);
+  app.use('/v1/vehicles', requireAuth, vehiclesRouter);
+  app.use('/v1/schedule', requireAuth, scheduleRouter);
+  app.use('/v1/availability', requireAuth, availabilityRouter);
+  app.use('/v1/compliance-documents', requireAuth, complianceDocumentsRouter);
+  app.use('/v1/compliance', requireAuth, complianceRouter);
   app.use('/v1/work-context', requireAuth, workContextRouter);
   app.use('/v1/time-logs', requireAuth, timeLogsRouter);
   app.use('/v1/expenses', requireAuth, expensesRouter);

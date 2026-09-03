@@ -33,6 +33,9 @@ import { hasFeature } from '../entitlements/guards';
 import { enqueueOutboxEvent } from '../delivery/repo';
 import { recordAudit } from '../audit/record';
 import { listRevisions, recordRevision } from '../revisions/record';
+// §31's second prefill source, and the project row that says whose day it is.
+import { listScheduledForDay } from '../scheduling/repo';
+import { getProject } from '../projects/repo';
 import {
   DIARY_REVISION_ENTITY,
   closeDiaryEntry,
@@ -457,9 +460,15 @@ projectDiaryRouter.post(
  * construction and prove nothing. What a confirmed line gives a hiring company is
  * a second, independent assertion that the person was there.
  *
- * §31's schedule is the plan's other source and it is **Phase 11**; the response
- * labels every suggestion with where it came from, so the schedule joins the list
- * later without changing what a caller has to understand.
+ * §31's schedule is the plan's other source, and **it joined in Phase 11** — the
+ * response has always labelled every suggestion with where it came from, so
+ * nothing a caller understands changed. `sources.schedule` flipped from `false` to
+ * `true` and the new rows carry `source: 'SCHEDULE'`.
+ *
+ * A scheduled person who has also recorded time is offered **once, from the
+ * timesheet** (`suggestAttendance`): the timesheet is a record of what happened
+ * and the booking is a record of what was planned, and confirming the same person
+ * twice would make the second confirmation the weaker of the two assertions.
  */
 projectDiaryRouter.get(
   '/:projectId/diary/prefill',
@@ -479,7 +488,8 @@ projectDiaryRouter.get(
       companyId: ctx.companyId,
       entryDate: date,
     });
-    const [logs, already, drafts] = await Promise.all([
+    const project = await getProject(ctx.companyId, access.projectId);
+    const [logs, already, drafts, scheduled] = await Promise.all([
       findPrefillTimeLogs({
         projectId: access.projectId,
         companyId: ctx.companyId,
@@ -491,6 +501,25 @@ projectDiaryRouter.get(
         companyId: ctx.companyId,
         entryDate: date,
       }),
+      /*
+       * §31's second source. Gated on the project owner's `scheduling` feature —
+       * the same key the schedule itself is read under — so a company without it
+       * gets the timesheet prefill it has always had rather than an error, and
+       * `sources.schedule` says which of the two happened.
+       *
+       * The day boundary is computed in the **project's** effective zone, not the
+       * server's (`time.md`): an assignment starting at 19:00 in Auckland is on a
+       * different calendar day in UTC, and a prefill offering it under the wrong
+       * date would put a person on site the day before they were there.
+       */
+      (await hasFeature(access.ownerCompanyId, 'scheduling'))
+        ? listScheduledForDay({
+            projectId: access.projectId,
+            companyId: ctx.companyId,
+            entryDate: date,
+            timeZone: project?.effectiveTimeZone ?? 'UTC',
+          })
+        : Promise.resolve(null),
     ]);
 
     const body: DiaryPrefillResponse = {
@@ -506,6 +535,7 @@ projectDiaryRouter.get(
           roleName: log.role_name,
           hours: Number(log.hours),
         })),
+        scheduled: scheduled ?? undefined,
         existingTimeLogIds: already,
         authoringCompanyId: ctx.companyId,
       }),
@@ -514,10 +544,12 @@ projectDiaryRouter.get(
       // the same one Close Day will prompt about.
       unsubmittedTimeLogs: drafts,
       /**
-       * §31's schedule, said out loud rather than left as an empty array somebody
-       * has to guess the meaning of.
+       * Said out loud rather than left as an empty array somebody has to guess the
+       * meaning of — and now that Phase 11 has shipped, `schedule` is `false` for a
+       * real reason rather than a structural one: the project owner's plan does not
+       * include `scheduling`.
        */
-      sources: { timeLogs: true, schedule: false },
+      sources: { timeLogs: true, schedule: scheduled !== null },
     };
     res.json(body);
   })

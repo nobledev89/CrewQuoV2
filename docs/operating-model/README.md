@@ -25,6 +25,8 @@ heading is an unasked question, which is the failure mode §19.5 exists to preve
 | Assets & materials — asset types and lines, weight provenance, destination types and organisations, the movement ledger and the mass roll-up | [assets-materials.md](./assets-materials.md) | Phase 8 — `draft` |
 | Sustainability & the carbon engine — emission factor sets and their importer, product carbon factors, project activities, the calculation ledger with its buckets and supersession, avoided-emissions claims and the §39 settings | [sustainability.md](./sustainability.md) | Phase 9 — `draft` |
 | Reporting & client sign-off — `generated_reports` and its frozen snapshot, the twelve-section completion report, the evidence pack, the client-facing export, the disclaimer and its claim guards, `client_signoffs`, and the `CLIENT_PERIOD` aggregation | [reporting-signoff.md](./reporting-signoff.md) | Phase 10 — `adopted` |
+| Commercial & operations — variations with their pricing and approval, `project_budgets` with computed actuals and per-category variance, `vehicles`, `schedule_assignments` with conflicts, availability and role requirements, and the §35 timeline read model | [commercial-operations.md](./commercial-operations.md) | Phase 11 — `adopted` |
+| Compliance & analytics — reusable company certificates, date-derived status and alert ladder, optional work enforcement, client-period reporting UI, portfolio comparison and artifact retention | [compliance-analytics.md](./compliance-analytics.md) | Phase 12 — `adopted` |
 
 Earlier domains (identity, rates, the delivery loop, portal/audit, invoices) were
 built before the §19.5 decision was adopted on 2026-08-18 and have no packet. They
@@ -271,3 +273,60 @@ departure — `client_signoff` on Starter rather than Pro, because a sign-off is
 a small contractor proves a job is finished and costs nothing to serve, and
 putting the proof of completion two tiers above the work would stop the
 free-to-Starter path one step short of the thing the customer is selling.
+
+`commercial-operations.md` is the fifth packet written before its phase started, and
+the first about a domain the product had **already been handling for nine phases**.
+Money is not new here. What is new is narrower and sharper: Phase 11 is the first
+phase to add a **second writer to a number that is already published.**
+
+`computeProjectSummary` is the most reused function in the repository — the owner's
+project screen, the XLSX export's own cell assertions, the client portal, the Phase 4
+PDF, and a §29.5 snapshot sealed into a document a client keeps. It has had one
+source since Phase 3 and one withholding rule. §30.1 says, in eleven words, that
+approved variations feed it *"not through a second calculator"*, and that sentence is
+right and is the reason the packet exists: a second writer into a shared derivation
+is where the double count and the silently-changed figure both live.
+
+Its largest finding is entirely about what gets printed. §30.2 declares ten budget
+categories and says actuals come from *"asset movements and activities (vehicles,
+mileage, waste)"* — and those two tables carry mass, distance, fuel and energy and
+**not one money column between them.** Nothing in the schema prices a skip, a tonne
+or a litre; Phases 8 and 9 were built to answer how much material and how much
+carbon, and neither was ever asked what it cost. So six of the ten have a budget and
+nothing to compare it against, and the row a literal implementation renders is
+*"Vehicles · Budget £3,000 · Actual £0 · Variance −£3,000 / −100%"* — an absence with
+a percentage attached, on a screen a contractor reads immediately before a client
+meeting. §41.1 forbids exactly that for carbon (*"no factor, no number — say so
+instead"*); the resolution is the same rule applied to money, and the browser suite
+now asserts it row by row.
+
+Three more findings are the plan disagreeing with a decision that followed it, and
+one of them is a column: §30.2 declares `currency text not null` on `project_budgets`,
+and migration `0017` deleted exactly that column from three other tables on the
+reasoning that *"a copy that can drift is worse than no copy."* A budget's unit can
+only ever be its project's own pin. And §31 asks for a planned labour cost through
+the rate engine while giving an assignment two instants — so a literal implementation
+derives `NIGHT` from `starts_at.getHours()`, putting a rate rule back into code
+eleven phases after the owner had the `FRI_SAT_NIGHT` branch removed for precisely
+that reason.
+
+**Two of its findings were added by the build rather than by the packet**, and both
+came from a test failing on its first run. `Math.round(quantity * unitCents)` — the
+obvious body for a line total — disagrees with Postgres at the half-cent boundary
+(`0.29 × 50` is exactly `14.50`, which IEEE 754 evaluates as `14.499999999999998`),
+and `0045` turns that identity into a check constraint, so the divergence surfaces as
+a `23514` refusing a write on a line somebody typed perfectly. **`invoice_items` has
+carried the same constraint since `0008` and the same latent defect with it**, which
+made the Phase 6 defect a live one rather than a hypothetical. And the first draft of
+`0045` dropped `invoice_items_check` intending to replace the source pairing — that
+name is the *amount identity*, and nothing would have failed: the migration would
+have applied cleanly and the loss would have surfaced years later as one invoice that
+did not add up.
+
+Its §13 has **one** genuinely open decision, and it is commercial rather than
+technical: whether a variation's lump sum should exclude the hours behind it from the
+invoice. CrewQuo bills from approved time logs at BILL rates, so a variation quoted
+*as* the price of those hours would be billed twice — and the product cannot tell
+from the data which basis was agreed. It is built on the conservative arm, with the
+ambiguity put in front of the only person who knows, at the moment they create the
+invoice.

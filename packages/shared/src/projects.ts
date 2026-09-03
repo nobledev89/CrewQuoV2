@@ -145,6 +145,44 @@ export const projectSummarySchema = z.object({
   expenseCostCents: z.number().int(),
   totalCostCents: z.number().int(),
   billCents: z.number().int().nullable(),
+  /**
+   * ── PHASE 11 (§30.1), AND THE ASYMMETRY IS THE POINT ──────────────────────
+   *
+   * §30.1: *"Approved variations feed project revenue and profitability through
+   * `computeProjectSummary`, not through a second calculator."*
+   *
+   * **The sell is folded in and the cost never is**, and to anybody who finds
+   * that later without the reasoning it reads exactly like a missing line of code
+   * (`commercial-operations.md` finding 3). The hours worked on extra works are
+   * logged as time logs like any other hours — that is how the crew gets paid, and
+   * the PAY figure is frozen onto each log at submit — so they are **already** in
+   * `laborCostCents`. `costTotalCents` on a variation is what the contractor
+   * expected the works to cost at the moment it quoted them: a different fact
+   * about a different instant. Adding it would count the same labour twice and
+   * deflate margin, which is the one direction of error a contractor does not
+   * catch because it is pessimistic.
+   *
+   * Revenue is asymmetric because nothing else records it. There is no BILL card
+   * for *"the client agreed another £4,000 for the extra doors"*; the variation
+   * row is the only place that number exists.
+   *
+   * `APPROVED`, `COMPLETED` and `INVOICED` all count — the later two are
+   * *approved and then something else*, and counting only the literal `APPROVED`
+   * state would make a project's revenue **fall** the moment somebody marked the
+   * works complete.
+   */
+  approvedVariations: z.number().int(),
+  variationSellCents: z.number().int(),
+  /** Reported beside the cost total and deliberately never summed into it. */
+  variationCostCents: z.number().int(),
+  /**
+   * `billCents + variationSellCents`, and **null whenever `billCents` is** — the
+   * withholding rule §41.1 gave the bill total propagates rather than being
+   * quietly repaired by a variation that happens to have a figure. A project with
+   * one unpriced hour has an unknown revenue, not a revenue of "just the
+   * variations".
+   */
+  revenueCents: z.number().int().nullable(),
   marginCents: z.number().int().nullable(),
   marginPct: z.number().nullable(),
   byProvider: z.array(providerRollupSchema),

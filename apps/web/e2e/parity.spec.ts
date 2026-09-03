@@ -2,16 +2,17 @@ import { readFile } from 'node:fs/promises';
 import JSZip from 'jszip';
 import { expect, test, type Page } from '@playwright/test';
 import {
-  PARITY_PASSWORD,
-  RUN,
   acceptInviteAsNewUser,
   emailFor,
   freshPage,
   makeSuperAdmin,
+  PARITY_PASSWORD,
   provisionCompany,
   readInviteUrl,
   registerHeadless,
   registerViaUi,
+  RUN,
+  saveAndSettle,
   setRegistrationIdentity,
   signIn,
   totpCodeForSecret,
@@ -962,7 +963,7 @@ test.describe('Web core workflows', () => {
     // The promise that matters: a zone change is presentation and future
     // bucketing, never a migration of what is already recorded.
     await expect(contractor.getByText(/Nothing already recorded moves/)).toBeVisible();
-    await contractor.getByRole('button', { name: 'Save changes' }).click();
+    await saveAndSettle(contractor, 'Save changes');
 
     // Asserted after a reload rather than on a transient badge: what the user
     // needs is that the choice survived, not that a toast appeared.
@@ -971,7 +972,7 @@ test.describe('Web core workflows', () => {
 
     // Leave it on UTC so nothing later in the file depends on this test's order.
     await zone().fill('UTC');
-    await contractor.getByRole('button', { name: 'Save changes' }).click();
+    await saveAndSettle(contractor, 'Save changes');
     await contractor.reload();
     await expect(zone()).toHaveValue('UTC');
   });
@@ -1010,7 +1011,7 @@ test.describe('Web core workflows', () => {
     const digest = contractor.getByLabel(/^Email digest/);
 
     await digest.selectOption('DAILY');
-    await contractor.getByRole('button', { name: 'Save preferences' }).click();
+    await saveAndSettle(contractor, 'Save preferences');
     await contractor.reload();
     await expect(digest).toHaveValue('DAILY');
 
@@ -1020,7 +1021,7 @@ test.describe('Web core workflows', () => {
 
     // Back to immediate, so nothing later in the file inherits a held channel.
     await digest.selectOption('IMMEDIATE');
-    await contractor.getByRole('button', { name: 'Save preferences' }).click();
+    await saveAndSettle(contractor, 'Save preferences');
     await contractor.reload();
     await expect(digest).toHaveValue('IMMEDIATE');
   });
@@ -1263,7 +1264,7 @@ test.describe('Web core workflows', () => {
     // loose match picks up the hint text beside it.
     const zone = page.getByLabel(/^Time zone/);
     await zone.fill(COMPANY_ZONE);
-    await page.getByRole('button', { name: 'Save changes' }).click();
+    await saveAndSettle(page, 'Save changes');
     await page.reload();
     // Asserted after a reload: what matters is that the company really is in Manila
     // before the agreement payload is read, not that a badge appeared.

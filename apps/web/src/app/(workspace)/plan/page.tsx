@@ -39,6 +39,7 @@ const LIMIT_LABELS: Record<LimitKey, string> = {
   storage_gb: 'File storage (GB)',
   evidence_uploads_per_month: 'Evidence uploads per month',
   factor_sets: 'Imported factor sets',
+  artifact_retention_days: 'Completed-project artifact retention',
 };
 
 const FEATURE_LABELS: Record<FeatureKey, string> = {
@@ -58,6 +59,9 @@ const FEATURE_LABELS: Record<FeatureKey, string> = {
   evidence_pack: 'Evidence & completion pack',
   client_signoff: 'Client sign-off',
   client_reporting: 'Client-level reporting',
+  variations: 'Variations & extra works',
+  scheduling: 'Crew scheduling',
+  compliance_tracking: 'Compliance tracking',
   invoicing: 'Invoicing',
   audit_visibility: 'Client-visible audit trail',
   api_access: 'API access',

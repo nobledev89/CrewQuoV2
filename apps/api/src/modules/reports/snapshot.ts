@@ -20,6 +20,7 @@ import {
   type SustainabilitySnapshot,
   type WorkforceBlock,
 } from '@crewquo/shared';
+import { query } from '../../db';
 import { AppError } from '../../http/errors';
 import { destinationNames, loadForBalance } from '../assets/massBalance';
 import { loadProjectCarbonView } from '../sustainability/projectCarbon';
@@ -402,6 +403,45 @@ export async function buildSustainabilitySnapshot(args: BuildArgs): Promise<Snap
 
 // ── §29.2: the evidence / completion pack ────────────────────────────────────
 
+/**
+ * §29.2's variations (Phase 11), for the pack.
+ *
+ * `APPROVED` and later, which is the same set `computeProjectSummary` counts as
+ * revenue — a completion pack listing a rejected variation would be reporting a
+ * price nobody agreed as part of the record of what happened.
+ *
+ * **No cost column and no margin in the select list**, because the pack has both
+ * audiences (§29.2) and a query that fetched a cost is a query a client copy could
+ * disclose one from. `reporting-signoff.md` finding 3's mechanism: the exclusion
+ * lives in the shape rather than in a filter applied later.
+ *
+ * Not scoped by recording company: a pack is the project owner's document about the
+ * whole project, and a variation a subcontractor raised on it is part of what
+ * happened. The `AUDIENCE` scoping the other pack loaders take is about *published*
+ * versus *internal* records, and a variation has no such flag — its `APPROVED`
+ * state is the disclosure.
+ */
+async function loadPackVariations(projectId: string) {
+  return query<{
+    reference: string | null;
+    description: string;
+    requested_on: string;
+    requested_by: string | null;
+    status: string;
+    sell_total_cents: number;
+    client_approved_by: string | null;
+  }>(
+    `select v.reference, v.description,
+            to_char(v.requested_on, 'YYYY-MM-DD') as requested_on,
+            v.requested_by, v.status, v.sell_total_cents, v.client_approved_by
+       from variations v
+      where v.project_id = $1 and v.deleted_at is null
+        and v.status in ('APPROVED','COMPLETED','INVOICED')
+      order by v.requested_on, v.created_at`,
+    [projectId]
+  );
+}
+
 export async function buildEvidencePackSnapshot(args: BuildArgs): Promise<SnapshotResult> {
   const header = await loadProjectHeader(args.projectId);
   if (!header) throw new AppError('NOT_FOUND', 'Project not found');
@@ -419,6 +459,7 @@ export async function buildEvidencePackSnapshot(args: BuildArgs): Promise<Snapsh
     revisions,
     signoff,
     carbon,
+    packVariations,
   ] = await Promise.all([
     loadWorkforce(args.projectId),
     loadDiary(args.projectId, scope),
@@ -431,6 +472,7 @@ export async function buildEvidencePackSnapshot(args: BuildArgs): Promise<Snapsh
     loadSourceRevisions(args.projectId),
     currentSignoffBlock(args.projectId),
     loadProjectCarbonView(args.projectId, header.owner_company_id),
+    loadPackVariations(args.projectId),
   ]);
 
   const body: EvidencePackSnapshot = {
@@ -473,9 +515,32 @@ export async function buildEvidencePackSnapshot(args: BuildArgs): Promise<Snapsh
       massKg: m.weight_kg === null ? null : Number(m.weight_kg),
       reference: m.document_reference,
     })),
+    currency: header.reporting_currency,
     wasteTransferNotes: documentRows(wasteDocs),
     recyclingDocuments: documentRows(recyclingDocs),
     donationEvidence: documentRows(donationDocs),
+    /*
+     * §29.2's variations (Phase 11). `APPROVED` and later, which is the same set
+     * `computeProjectSummary` counts as revenue — a pack that listed a rejected
+     * variation would be reporting a price nobody agreed as part of the completion
+     * record.
+     *
+     * `clientApprovalRecorded` is derived rather than joined, and it is carried into
+     * the frozen document deliberately: a completion pack that listed an approved
+     * variation without saying whether the client's own agreement was on file would
+     * be asserting an agreement it cannot evidence, to the reader most likely to be
+     * quoting it back during a dispute.
+     */
+    variations: packVariations.map((v) => ({
+      reference: v.reference,
+      description: v.description,
+      requestedOn: v.requested_on,
+      requestedBy: v.requested_by,
+      status: v.status,
+      sellTotalCents: v.sell_total_cents,
+      clientApprovedBy: v.client_approved_by,
+      clientApprovalRecorded: v.client_approved_by !== null,
+    })),
     signoff,
   };
 

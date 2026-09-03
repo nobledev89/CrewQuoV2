@@ -39,6 +39,19 @@ const FEATURES: Array<[key: string, name: string, category: string]> = [
   ['evidence_pack', 'Evidence & completion pack', 'reporting'],
   ['client_signoff', 'Client sign-off', 'reporting'],
   ['client_reporting', 'Client-level reporting', 'reporting'],
+  /*
+   * Phase 11 (§43). Two keys, both placed **exactly as §43 proposes** — Starter and
+   * up — and this is the first phase in four with no departure to explain. Both are
+   * operating features rather than publishing ones, they cost nothing marginal to
+   * serve, and Starter is described as "run your own subcontractors", which is
+   * exactly who has extra works and a week to plan.
+   *
+   * §35's timeline gets no key at all: it is a union over ten record classes whose
+   * features differ, so each source is gated by the key that governs its records.
+   */
+  ['variations', 'Variations & extra works', 'commercial'],
+  ['scheduling', 'Crew scheduling', 'operations'],
+  ['compliance_tracking', 'Compliance tracking', 'operations'],
   ['invoicing', 'Invoicing', 'billing'],
   ['audit_visibility', 'Audit trail visibility', 'portal'],
   ['api_access', 'API access', 'platform'],
@@ -70,6 +83,7 @@ const LIMITS: Array<[key: string, name: string, unit: string]> = [
    * below and no code change anywhere.
    */
   ['factor_sets', 'Imported emission factor sets', 'count'],
+  ['artifact_retention_days', 'Completed-project artifact retention', 'days'],
 ];
 
 type PlanSeed = {
@@ -111,7 +125,8 @@ const PLANS: PlanSeed[] = [
     sortOrder: 0,
     trialDays: 0,
     features: [],
-    limits: { active_subcontractors: 0, internal_seats: 1, clients: 0, audit_retention_days: 0 },
+    limits: { active_subcontractors: 0, internal_seats: 1, clients: 0, audit_retention_days: 0,
+              artifact_retention_days: 365 },
     prices: [],
   },
   {
@@ -133,8 +148,12 @@ const PLANS: PlanSeed[] = [
       // §43 puts reports at Pro; this one is deliberately a tier lower. See the
       // FEATURES note above and reporting-signoff.md §13.6.
       'client_signoff',
+      // §43's placement, exactly.
+      'variations',
+      'scheduling',
     ],
-    limits: { active_subcontractors: 5, internal_seats: 2, clients: null, audit_retention_days: 30 },
+    limits: { active_subcontractors: 5, internal_seats: 2, clients: null, audit_retention_days: 30,
+              artifact_retention_days: 1095 },
     prices: [
       { currency: 'USD', interval: 'MONTH', amountCents: 4700 },
       { currency: 'USD', interval: 'YEAR', amountCents: 46800 },
@@ -170,8 +189,12 @@ const PLANS: PlanSeed[] = [
       'sustainability_reports',
       'evidence_pack',
       'client_signoff',
+      'variations',
+      'scheduling',
+      'compliance_tracking',
     ],
-    limits: { active_subcontractors: 30, internal_seats: 8, clients: null, audit_retention_days: 90 },
+    limits: { active_subcontractors: 30, internal_seats: 8, clients: null, audit_retention_days: 90,
+              artifact_retention_days: 2555 },
     prices: [
       { currency: 'USD', interval: 'MONTH', amountCents: 14300 },
       { currency: 'USD', interval: 'YEAR', amountCents: 142800 },
@@ -206,12 +229,16 @@ const PLANS: PlanSeed[] = [
       'evidence_pack',
       'client_signoff',
       'client_reporting',
+      'variations',
+      'scheduling',
+      'compliance_tracking',
     ],
     limits: {
       active_subcontractors: 150,
       internal_seats: 25,
       clients: null,
       audit_retention_days: 365,
+      artifact_retention_days: 2555,
     },
     prices: [
       { currency: 'USD', interval: 'MONTH', amountCents: 41900 },
@@ -231,6 +258,7 @@ const PLANS: PlanSeed[] = [
       internal_seats: null,
       clients: null,
       audit_retention_days: null,
+      artifact_retention_days: null,
     },
     prices: [], // custom / sales-led
   },

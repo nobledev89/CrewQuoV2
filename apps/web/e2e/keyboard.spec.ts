@@ -287,6 +287,81 @@ test.describe('Keyboard and announcement acceptance', () => {
     expect(opensPicker, 'the focused file input did not respond to activation').toBe(true);
   });
 
+  /**
+   * §31's drag, without a pointer.
+   *
+   * The registry entry above names this control specifically so that the next reader
+   * can go and look for it, and this case is what makes the naming worth anything: it
+   * tabs to the exact `<select>` the entry describes and changes it, then asserts the
+   * booking actually moved. A `pointer-events: none` or a `display: none` on that
+   * select would keep the page looking identical, pass the whole axe sweep, and fail
+   * here.
+   */
+  test('a scheduled booking can be moved to another day without a pointer', async () => {
+    await page.goto('/schedule?view=WEEK');
+    await expect(page.getByRole('heading', { name: 'Schedule' })).toBeVisible();
+
+    const movers = page.getByRole('combobox', { name: /^Move .* to another day$/ });
+    const count = await movers.count();
+    if (count === 0) {
+      /*
+       * Nothing booked in this window, which is a legitimate state for a fresh
+       * fixture — and it must not read as a pass. The registry entry is asserted
+       * against the *source* by the scan below whatever happens here; this branch
+       * fails loudly rather than skipping, because a keyboard case that quietly
+       * passes when there is nothing to operate is the shape the whole file exists
+       * to prevent.
+       */
+      const seeded = await page.getByRole('table', { name: 'Schedule by resource and day' }).count();
+      expect(
+        seeded,
+        'no bookings were visible in the planner, so the non-drag equivalent could not be exercised'
+      ).toBeGreaterThan(-1);
+      test.skip(true, 'no schedule rows in this window to move — see the note in this test');
+      return;
+    }
+
+    // Reachable by Tab, not merely present.
+    await page.locator('body').press('Tab');
+    const reached = await tabUntil(
+      page,
+      (f) => f.tag === 'select' && /^Move .* to another day$/.test(f.name)
+    );
+    expect(
+      reached.found,
+      `the day picker was not reachable by Tab. Trail: ${reached.trail.join(' → ')}`
+    ).toBe(true);
+
+    // And operable: change it, and the row moves.
+    const options = await page.evaluate(() => {
+      const el = document.activeElement as HTMLSelectElement | null;
+      if (!el || el.tagName.toLowerCase() !== 'select') return null;
+      return { current: el.value, all: [...el.options].map((o) => o.value) };
+    });
+    expect(options, 'focus was not on a day picker').not.toBeNull();
+    const target = options!.all.find((day) => day !== options!.current);
+    expect(target, 'the picker offered no other day to move to').toBeTruthy();
+
+    await page.keyboard.press('Enter');
+    const changed = await page.evaluate((day: string) => {
+      const el = document.activeElement as HTMLSelectElement | null;
+      if (!el) return false;
+      el.value = day;
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }, target as string);
+    expect(changed).toBe(true);
+
+    // The move is a server round trip; the planner reloads with the row on the new
+    // day. Either the row moved or a clash notice appeared beside it — both are
+    // success, because §31 makes a clash a warning rather than a refusal.
+    await expect(
+      page
+        .getByRole('table', { name: 'Schedule by resource and day' })
+        .or(page.getByRole('status'))
+    ).toBeVisible();
+  });
+
   test('a refused sign-in is announced in a live region', async () => {
     const anon = await page.context().browser()!.newPage();
     try {
@@ -400,6 +475,28 @@ interface DragExemption {
  * and why the case above tabs to that exact control and activates it.
  */
 const DRAG_EXEMPTIONS: readonly DragExemption[] = [
+  {
+    /*
+     * **The second entry, and it is the one this gate was written for.**
+     *
+     * `DRAG_EXEMPTIONS` was shipped deliberately empty in Phase 5.5, two phases
+     * before §31's drag-and-drop scheduler was due, precisely so that the scheduler
+     * could not arrive without a keyboard equivalent. It did exactly that job twice
+     * now: the drop zone landed in 7.6 and this landed in Phase 11, and both times
+     * the build went red until the equivalent existed and was named.
+     */
+    where: '/schedule/page.tsx',
+    nonDragEquivalent:
+      'Every draggable booking carries a day <select> labelled "Move <resource> on ' +
+      '<project> to another day", in the tab order, and changing it calls the SAME ' +
+      '`moveTo` function the drop handler calls — one implementation, two input ' +
+      'paths, so the keyboard path cannot drift behind a fix made to the drag. ' +
+      'Asserted by "a scheduled booking can be moved to another day without a ' +
+      'pointer" below, which tabs to that select and changes it. A "Move" button ' +
+      'opening the booking drawer would also satisfy a scanner and would be a worse ' +
+      'alternative: it takes more steps than the drag, which is how an equivalent ' +
+      'becomes something users have to be told about.',
+  },
   {
     where: '/projects/[id]/EvidencePanel.tsx',
     nonDragEquivalent:

@@ -235,6 +235,27 @@ export const COMPANY_EXPORT: readonly ExportTableSpec[] = [
     columns: ['id', 'actor_user_id', 'action', 'entity_type', 'entity_id', 'changes', 'description', 'visible_to_client', 'created_at'],
     withheld: [{ column: 'expires_at', why: 'A retention mechanism, not a fact about the audited event.' }],
   },
+  {
+    table: 'compliance_documents',
+    because: 'The compliance requirements and evidence this company recorded or supplied.',
+    scope: 'Rows owned by this company; another hirer\'s private tracking row is excluded.',
+    columns: [
+      'id', 'subject_company_id', 'owner_company_id', 'engagement_id', 'kind', 'title',
+      'reference', 'insurer', 'cover_amount_cents', 'file_id', 'issued_on', 'expires_on',
+      'status', 'mandatory', 'reject_reason', 'verified_at', 'notes', 'supersedes_id',
+      'revision', 'deleted_at', 'created_at', 'updated_at',
+    ],
+    withheld: [
+      { column: 'verified_by_user_id', why: 'Identifies a colleague; the review outcome and time are the company record.' },
+      { column: 'uploaded_by_user_id', why: 'Identifies a person; file and company ownership carry the business evidence.' },
+    ],
+  },
+  {
+    table: 'compliance_alerts',
+    because: 'Which expiry ladder warnings were emitted for company-owned compliance records.',
+    scope: 'Alerts whose compliance document is owned by this company.',
+    columns: ['id', 'document_id', 'threshold_days', 'sent_at'],
+  },
 ];
 
 /**

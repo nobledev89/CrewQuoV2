@@ -37,6 +37,18 @@ import { frozenDocumentsOnProject } from '../reports/repo';
 import { setProjectReportingCurrency } from './reportingCurrency';
 import { setProjectTimeZone } from './timeZone';
 import { computeProjectSummary } from './summary';
+import { countProjectVariations } from '../variations/repo';
+
+/**
+ * "a and b" · "a, b and c". Introduced when the refusal above grew a third clause
+ * — `parts.join(' and ')` on three items reads *"1 report and 1 sign-off and 2
+ * variations"*, which is the kind of sentence that makes a careful refusal look
+ * careless.
+ */
+function listOf(parts: readonly string[]): string {
+  if (parts.length <= 1) return parts[0] ?? '';
+  return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1] as string}`;
+}
 
 export const projectsRouter = Router();
 
@@ -184,7 +196,15 @@ projectsRouter.delete(
      * key violation reaching the caller as a 500 is not an explanation.
      */
     const frozen = await frozenDocumentsOnProject(id);
-    if (frozen.reports > 0 || frozen.signoffs > 0) {
+    /*
+     * Phase 11 joins the same refusal rather than adding a second one. `0045` gives
+     * `variations.project_id` `on delete restrict` for the same reason `0043` and
+     * `0044` chose it — a variation can be cited by an `invoice_items` row on a
+     * document a client has received — so without this the delete would reach the
+     * caller as a `23503`, which is a 500 rather than an explanation.
+     */
+    const variations = await countProjectVariations(id);
+    if (frozen.reports > 0 || frozen.signoffs > 0 || variations > 0) {
       const parts: string[] = [];
       if (frozen.reports > 0) {
         parts.push(`${String(frozen.reports)} generated report${frozen.reports === 1 ? '' : 's'}`);
@@ -192,10 +212,13 @@ projectsRouter.delete(
       if (frozen.signoffs > 0) {
         parts.push(`${String(frozen.signoffs)} client sign-off${frozen.signoffs === 1 ? '' : 's'}`);
       }
+      if (variations > 0) {
+        parts.push(`${String(variations)} variation${variations === 1 ? '' : 's'}`);
+      }
       throw new AppError(
         'CONFLICT',
-        `This project has ${parts.join(' and ')}, which are permanent records and cannot be deleted. Archive the project instead.`,
-        { reports: frozen.reports, signoffs: frozen.signoffs }
+        `This project has ${listOf(parts)}, which are permanent records and cannot be deleted. Archive the project instead.`,
+        { reports: frozen.reports, signoffs: frozen.signoffs, variations }
       );
     }
 

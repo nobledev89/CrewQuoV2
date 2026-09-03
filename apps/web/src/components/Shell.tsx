@@ -56,6 +56,15 @@ const VIEW_NAV: Record<WorkspaceView, NavGroup[]> = {
         { href: '/notifications', label: 'Needs you', icon: 'check' },
         { href: '/projects', label: 'Projects', icon: 'template' },
         { href: '/review', label: 'Approvals', icon: 'check', requiresDownstream: true },
+        /*
+         * Phase 11 (§31). The company-wide week planner — the one screen in the
+         * product with drag-and-drop, because it is the one place §31 says a drag is
+         * genuinely faster than a form. Gated on `scheduling`, which is checked
+         * against **this** company's plan for the company-wide view (a fleet and a
+         * week have no project to find an owner of); the project's own Schedule
+         * section asks the project owner instead.
+         */
+        { href: '/schedule', label: 'Schedule', icon: 'people', feature: 'scheduling' },
       ],
     },
     {
@@ -71,6 +80,7 @@ const VIEW_NAV: Record<WorkspaceView, NavGroup[]> = {
         { href: '/network/engagements', label: 'Engagements', icon: 'link' },
         { href: '/network/providers', label: 'Subcontractors', icon: 'people', requiresDownstream: true },
         { href: '/network/clients', label: 'Clients', icon: 'building', feature: 'client_portal' },
+        { href: '/compliance', label: 'Compliance', icon: 'check', feature: 'compliance_tracking' },
       ],
     },
     {
@@ -92,6 +102,7 @@ const VIEW_NAV: Record<WorkspaceView, NavGroup[]> = {
          * and a link to a screen the plan refuses is a promise the API breaks.
          */
         { href: '/sustainability', label: 'Sustainability', icon: 'gauge', feature: 'sustainability' },
+        { href: '/sustainability/clients', label: 'Client reports', icon: 'list', feature: 'client_reporting' },
         { href: '/sustainability/factors', label: 'Emission factors', icon: 'list', feature: 'sustainability' },
         { href: '/sustainability/settings', label: 'Assumptions', icon: 'settings', feature: 'sustainability' },
         { href: '/audit', label: 'Audit trail', icon: 'list', feature: 'audit_visibility' },
@@ -121,6 +132,7 @@ const VIEW_NAV: Record<WorkspaceView, NavGroup[]> = {
       items: [
         { href: '/commercial', label: 'Rate agreements', icon: 'link' },
         { href: '/network/engagements', label: 'Engagements', icon: 'building' },
+        { href: '/compliance', label: 'Compliance', icon: 'check', feature: 'compliance_tracking' },
       ],
     },
     {
@@ -217,6 +229,9 @@ const PAGE_NAMES: Record<string, string> = {
   '/network/engagements': 'Engagements',
   '/network/providers': 'Subcontractors',
   '/network/clients': 'Clients',
+  '/compliance': 'Compliance',
+  '/sustainability': 'Sustainability',
+  '/sustainability/clients': 'Client reporting',
   '/portal': 'Shared with me',
   '/commercial': 'Commercial agreements',
   '/rates/roles': 'Roles',

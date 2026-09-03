@@ -312,6 +312,11 @@ reportsRouter.get(
   '/',
   asyncHandler(async (req, res) => {
     const ctx = getCompanyCtx(req);
+    if (!(await hasFeature(ctx.companyId, 'client_reporting'))) {
+      throw new AppError('FORBIDDEN', 'Your plan does not include: client_reporting', {
+        feature: 'client_reporting',
+      });
+    }
     await assertCapability(ctx, 'report.generate');
     res.json({ reports: (await listCompanyPeriodReports(ctx.companyId)).map(toReportView) });
   })

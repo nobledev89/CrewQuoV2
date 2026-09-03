@@ -166,17 +166,27 @@ describe('the section catalog (packet finding 11)', () => {
 
   /**
    * The finding itself: a completion pack that asserts "no variations" about a
-   * feature Phase 11 has not built is an invented fact, and it is the most
-   * quotable line in the document during a dispute.
+   * feature Phase 11 has not built is an invented fact, and it is the most quotable
+   * line in the document during a dispute.
+   *
+   * **Rewritten on 2026-09-03, and the rewrite is the mechanism working.** The
+   * original read `availableSections('EVIDENCE_PACK')` — the current build — and
+   * asserted the section was absent; it failed the moment `CURRENT_BUILD_PHASE`
+   * moved to 11, which is precisely what it was for. The rule it was protecting is
+   * about the *gate*, not about Phase 10, so it is now asserted with the phase
+   * stated explicitly and the gate is checked in both directions.
    */
   it('omits a Phase 11 section from a Phase 10 build entirely', () => {
-    const keys = availableSections('EVIDENCE_PACK').map((s) => s.key);
+    const keys = availableSections('EVIDENCE_PACK', 10).map((s) => s.key);
     expect(keys).not.toContain('PACK_VARIATIONS');
-    expect(defaultSections('EVIDENCE_PACK')).not.toContain('PACK_VARIATIONS');
+    expect(defaultSections('EVIDENCE_PACK', 10)).not.toContain('PACK_VARIATIONS');
   });
 
   it('offers it once the build reaches that phase', () => {
     expect(availableSections('EVIDENCE_PACK', 11).map((s) => s.key)).toContain('PACK_VARIATIONS');
+    // And in the current build, which has.
+    expect(availableSections('EVIDENCE_PACK').map((s) => s.key)).toContain('PACK_VARIATIONS');
+    expect(defaultSections('EVIDENCE_PACK')).toContain('PACK_VARIATIONS');
   });
 
   it('never offers a section with no table anywhere in the plan', () => {
@@ -187,15 +197,30 @@ describe('the section catalog (packet finding 11)', () => {
     }
   });
 
+  /**
+   * A client that remembers a key from a newer build, or an older stored set
+   * replayed into a regeneration, should produce the best document this build can
+   * make rather than an error a person cannot act on.
+   *
+   * `PACK_VARIATIONS` is asked for at phase 10 rather than in the current build,
+   * because in the current build it is a real section — the property under test is
+   * "a key this build does not have is dropped", and after Phase 11 shipped it was
+   * the *test's example* that went stale rather than the rule.
+   */
   it('drops an unknown or future key from a request rather than refusing it', () => {
-    const resolved = resolveSections('EVIDENCE_PACK', [
-      'PACK_SITE_DIARY',
-      'PACK_VARIATIONS',
-      'NOT_A_SECTION',
-    ]);
+    const resolved = resolveSections(
+      'EVIDENCE_PACK',
+      ['PACK_SITE_DIARY', 'PACK_VARIATIONS', 'NOT_A_SECTION'],
+      10
+    );
     expect(resolved).toContain('PACK_SITE_DIARY');
     expect(resolved).not.toContain('PACK_VARIATIONS');
     expect(resolved).not.toContain('NOT_A_SECTION' as never);
+
+    // And in the current build the same request keeps it, because the section exists.
+    expect(
+      resolveSections('EVIDENCE_PACK', ['PACK_SITE_DIARY', 'PACK_VARIATIONS', 'NOT_A_SECTION'])
+    ).toContain('PACK_VARIATIONS');
   });
 
   /**
@@ -225,11 +250,29 @@ describe('the section catalog (packet finding 11)', () => {
     }
   });
 
-  it('nothing in the catalog is keyed to a phase this build has passed', () => {
+  /**
+   * The catalog's own floor. Every section that has a phase has one at or after 10,
+   * because 10 is when the catalog was written — a `9` would be a section claiming
+   * to have existed before the mechanism did.
+   *
+   * `CURRENT_BUILD_PHASE` is asserted as a **lower bound** rather than an equality.
+   * The equality version failed on the commit that shipped Phase 11, which is one
+   * phase of useful signal and then a chore forever: the property worth pinning is
+   * that no section is keyed to a phase the build has not reached, and that the
+   * constant only ever moves forward.
+   */
+  it('nothing in the catalog is keyed to a phase this build has not reached', () => {
     for (const spec of REPORT_SECTIONS) {
       if (spec.availableFrom !== null) expect(spec.availableFrom).toBeGreaterThanOrEqual(10);
     }
-    expect(CURRENT_BUILD_PHASE).toBe(10);
+    expect(CURRENT_BUILD_PHASE).toBeGreaterThanOrEqual(11);
+    // Every section the current build offers is one whose phase has arrived.
+    for (const kind of ['SUSTAINABILITY', 'EVIDENCE_PACK', 'CLIENT_EXPORT', 'CLIENT_PERIOD'] as const) {
+      for (const spec of availableSections(kind)) {
+        expect(spec.availableFrom).not.toBeNull();
+        expect(spec.availableFrom as number).toBeLessThanOrEqual(CURRENT_BUILD_PHASE);
+      }
+    }
   });
 });
 

@@ -1182,6 +1182,241 @@ async function main(): Promise<void> {
       }
     }
 
+    // ── Phase 11: variations, a budget, a fleet and a week (§30, §31) ────────
+    //
+    // What this slice is for: **six of §30.2's ten budget categories have no source
+    // of money anywhere in the schema**, and the only way to see that rendering
+    // honestly rather than as `-100%` is to have a budget with a figure in one of
+    // them. So `vehicle_cents` is deliberately non-zero here, against an actual that
+    // will always be null.
+    //
+    // The variations are three, in three different states, because the states are
+    // what the panel is about: one approved WITH the client's own agreement on file,
+    // one approved WITHOUT it (so the badge packet §3 exists for is visible on a
+    // demo account), and one rejected with a reason.
+    {
+      const van = fixtureId('e9000000', 1);
+      const truck = fixtureId('e9000000', 2);
+      for (const [id, name, registration, category, fuel, activity] of [
+        [van, 'Transit 350', 'LX21 ABC', 'Van (class III)', 'DIESEL', 'van_class_iii_diesel'],
+        [truck, 'Tipper 18t', 'HG22 XYZ', 'HGV rigid 7.5-17t', 'DIESEL', 'hgv_rigid_diesel'],
+      ] as const) {
+        await db.query(
+          `insert into vehicles (id, company_id, name, registration, category, fuel_type,
+                                 emission_factor_activity, created_at, updated_at)
+           values ($1, $2, $3, $4, $5, $6, $7, now(), now())
+           on conflict (id) do nothing`,
+          [id, FIXTURE.companies.main, name, registration, category, fuel, activity]
+        );
+      }
+
+      /*
+       * Three variations. `sell_total_cents` and `cost_total_cents` are written here
+       * from the same arithmetic the API uses, and the check constraint on
+       * `variation_lines` verifies the line halves for us — a fixture whose totals
+       * disagreed with its lines would be refused by the database rather than
+       * quietly seeding a drift, which is the whole point of finding 5.
+       */
+      const variations = [
+        {
+          id: fixtureId('ea000000', 1),
+          reference: 'VO-011',
+          description: 'Additional fire-rated doors to the level 12 core',
+          reason: 'Client changed the fire strategy after the survey',
+          requestedBy: 'Dana Whitfield',
+          requestedOn: '2026-08-04',
+          status: 'APPROVED',
+          clientApprovedBy: 'Dana Whitfield',
+          reviewedAt: '2026-08-05T09:30:00Z',
+          rejectReason: null,
+          lines: [
+            ['MATERIAL', 'Fire door sets', 4, 24000, 31000],
+            ['LABOUR', 'Rigger, 16h', 16, 3750, 5500],
+          ] as const,
+        },
+        {
+          id: fixtureId('ea000000', 2),
+          reference: 'VO-012',
+          description: 'Make good the ceiling grid after the riser works',
+          reason: null,
+          requestedBy: 'Site meeting, 11 Aug',
+          requestedOn: '2026-08-11',
+          // Approved on the phone; the paperwork has not arrived. The badge this
+          // produces is the one thing packet §3's warning is for, and a demo account
+          // with only the tidy case would never show it.
+          status: 'APPROVED',
+          clientApprovedBy: null,
+          reviewedAt: '2026-08-11T16:00:00Z',
+          rejectReason: null,
+          lines: [['MATERIAL', 'Grid tiles', 40, 450, 700]] as const,
+        },
+        {
+          id: fixtureId('ea000000', 3),
+          reference: 'VO-013',
+          description: 'Replace the ironmongery throughout',
+          reason: 'Raised on site without a price agreed',
+          requestedBy: 'Foreman',
+          requestedOn: '2026-08-18',
+          status: 'REJECTED',
+          clientApprovedBy: null,
+          reviewedAt: '2026-08-19T08:15:00Z',
+          rejectReason: 'Client wants this priced separately as a package',
+          lines: [['MATERIAL', 'Ironmongery sets', 30, 5000, 7000]] as const,
+        },
+      ];
+
+      for (const [variationIndex, variation] of variations.entries()) {
+        const totals = variation.lines.reduce(
+          (acc, [, , quantity, unitCost, unitSell]) => ({
+            cost: acc.cost + Math.round((quantity * 100 * unitCost) / 100),
+            sell: acc.sell + Math.round((quantity * 100 * unitSell) / 100),
+          }),
+          { cost: 0, sell: 0 }
+        );
+        await db.query(
+          `insert into variations
+             (id, project_id, company_id, engagement_id, reference, description, reason,
+              requested_by, requested_on, status, sell_total_cents, cost_total_cents,
+              client_approved_by, client_approved_at, reviewed_by_user_id, reviewed_at,
+              reject_reason, created_by_user_id, created_at, updated_at)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9::date, $10, $11, $12,
+                   $13, case when $13::text is null then null else $14::timestamptz end,
+                   $15, $14::timestamptz, $16, $15, $14::timestamptz, $14::timestamptz)
+           on conflict (id) do nothing`,
+          [
+            variation.id, FIXTURE.projects.marina, FIXTURE.companies.main,
+            FIXTURE.engagements.harbour, variation.reference, variation.description,
+            variation.reason, variation.requestedBy, variation.requestedOn,
+            variation.status, totals.sell, totals.cost,
+            variation.clientApprovedBy, variation.reviewedAt, userId, variation.rejectReason,
+          ]
+        );
+        for (const [index, line] of variation.lines.entries()) {
+          const [kind, description, quantity, unitCost, unitSell] = line;
+          await db.query(
+            `insert into variation_lines
+               (id, variation_id, kind, description, quantity, unit_cost_cents,
+                unit_sell_cents, cost_cents, sell_cents, priced_from, created_at)
+             -- Every parameter cast at BOTH use sites. Postgres infers one type per
+             -- placeholder, so a parameter appearing as an int column and inside a
+             -- numeric multiplication is a 42P08 ("numeric versus integer") rather
+             -- than a coercion, which is what the first run of this fixture hit.
+             --
+             -- (And no backticks in this comment, for the third time in one phase: a
+             -- backtick inside a template literal ENDS the template, so quoting a
+             -- parameter name that way breaks the query it documents -- and tsc
+             -- passes, because what is left is still valid TypeScript.)
+             values ($1, $2, $3, $4, $5::numeric, $6::int, $7::int,
+                     round($5::numeric * $6::numeric),
+                     round($5::numeric * $7::numeric), 'STATED', now())
+             on conflict (id) do nothing`,
+            [
+              /*
+               * Derived from the variation's INDEX, not from a slice of its uuid.
+               *
+               * The first version used `variation.id.slice(0, 8)`, which is the
+               * shared `ea000000` prefix — so all three variations' first lines
+               * claimed the same id and `on conflict (id) do nothing` silently
+               * dropped two of the three sets. The seed reported identical counts on
+               * a re-run and looked perfectly deterministic; what it had produced was
+               * two variation headers whose totals did not match their (missing)
+               * lines.
+               *
+               * That is exactly the drift `commercial-operations.md` finding 5 says a
+               * check constraint cannot catch — a CHECK cannot aggregate — and it is
+               * why the parity assertion at the end of this file exists.
+               */
+              fixtureId('ea100000', variationIndex * 10 + index + 1),
+              variation.id, kind, description, quantity, unitCost, unitSell,
+            ]
+          );
+        }
+      }
+
+      /*
+       * The budget. `vehicle_cents` is non-zero on purpose — see the note above.
+       * Every other figure is set near the project's real approved work so the
+       * variance table shows both readings §40 asks a colour to communicate rather
+       * than one direction repeated ten times.
+       */
+      await db.query(
+        `insert into project_budgets
+           (id, project_id, company_id, revenue_cents, labour_cents, subcontractor_cents,
+            vehicle_cents, waste_cents, materials_cents, expenses_cents, notes,
+            created_by_user_id, updated_by_user_id, created_at, updated_at)
+         values ($1, $2, $3, 4800000, 900000, 1600000, 240000, 180000, 320000, 60000,
+                 'First cut, before the fire-strategy change. Revised figures to follow.',
+                 $4, $4, now(), now())
+         on conflict on constraint project_budgets_one_per_project do nothing`,
+        [fixtureId('eb000000', 1), FIXTURE.projects.marina, FIXTURE.companies.main, userId]
+      );
+
+      // A week: two of the account's own people, a subcontractor crew and a van, on
+      // one project, so the planner has something to drag.
+      const week = [
+        ['USER', userId, null, null, ROLE_IDS.supervisor, true, 1, '2026-08-17T07:00:00Z', '2026-08-17T17:00:00Z', 'WEEKDAY_DAY'],
+        ['USER', userId, null, null, ROLE_IDS.supervisor, true, 1, '2026-08-18T07:00:00Z', '2026-08-18T17:00:00Z', 'WEEKDAY_DAY'],
+        ['PROVIDER', null, FIXTURE.companies.apex, null, ROLE_IDS.electrician, false, 3, '2026-08-17T07:00:00Z', '2026-08-17T17:00:00Z', 'WEEKDAY_DAY'],
+        ['VEHICLE', null, null, van, null, false, 1, '2026-08-17T07:00:00Z', '2026-08-17T17:00:00Z', null],
+        ['USER', userId, null, null, ROLE_IDS.supervisor, false, 1, '2026-08-19T18:00:00Z', '2026-08-20T04:00:00Z', 'NIGHT'],
+      ] as const;
+      for (const [index, row] of week.entries()) {
+        const [type, user, provider, vehicle, role, supervisor, headcount, from, to, shift] = row;
+        await db.query(
+          `insert into schedule_assignments
+             (id, company_id, project_id, resource_type, user_id, provider_company_id,
+              vehicle_id, role_id, is_supervisor, headcount, starts_at, ends_at,
+              shift_type, status, batch_client_id, created_by_user_id, created_at, updated_at)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                   $11::timestamptz, $12::timestamptz, $13,
+                   case when $4 = 'PROVIDER' then 'CONFIRMED' else 'PLANNED' end,
+                   $14, $15, now(), now())
+           on conflict (id) do nothing`,
+          [
+            fixtureId('ec000000', index + 1), FIXTURE.companies.main, FIXTURE.projects.marina,
+            type, user, provider, vehicle, role, supervisor, headcount, from, to, shift,
+            fixtureId('ed000000', 1), userId,
+          ]
+        );
+      }
+
+      /*
+       * "2 x Electrician, Mon-Wed" against three booked crew — met, so the demo does
+       * not open on a warning. The shortfall indicator is exercised by the acceptance
+       * script rather than by the fixture, because a demo that greets somebody with
+       * an unfilled requirement reads as their data being wrong.
+       */
+      await db.query(
+        `insert into project_role_requirements
+           (id, project_id, company_id, role_id, quantity, starts_on, ends_on,
+            created_by_user_id, created_at, updated_at)
+         values ($1, $2, $3, $4, 2, '2026-08-17', '2026-08-19', $5, now(), now())
+         on conflict (id) do nothing`,
+        [fixtureId('ee000000', 1), FIXTURE.projects.marina, FIXTURE.companies.main,
+         ROLE_IDS.electrician, userId]
+      );
+
+      // And the subcontractor's own stated crew count, which is what §31's headcount
+      // warning compares against. Recorded on THEIR company, because it is a
+      // statement they make about themselves.
+      await db.query(
+        `insert into resource_availability
+           (id, company_id, resource_type, provider_company_id, kind, headcount,
+            starts_at, ends_at, created_by_user_id, created_at, updated_at)
+         values ($1, $2, 'PROVIDER', $2, 'AVAILABLE', 4,
+                 '2026-08-01T00:00:00Z', '2026-09-01T00:00:00Z', $3, now(), now())
+         on conflict (id) do nothing`,
+        [fixtureId('ef000000', 1), FIXTURE.companies.apex, userId]
+      );
+
+      // The Phase 9 column that came due: the collection journey happened in the van.
+      await db.query(
+        `update project_activities set vehicle_id = $2
+          where id = $1 and vehicle_id is null`,
+        [fixtureId('e8000000', 1), van]
+      );
+    }
+
     await db.query('commit');
 
     const summary = await db.query<{
@@ -1196,6 +1431,9 @@ async function main(): Promise<void> {
       asset_lines: number;
       emission_factors: number;
       activities: number;
+      vehicles: number;
+      variations: number;
+      bookings: number;
     }>(
       `select
          (select count(*)::int from companies where settings->>'demoFixture' = 'single-login-v1') as companies,
@@ -1208,7 +1446,10 @@ async function main(): Promise<void> {
          (select count(*)::int from invoices where id::text like 'df000000-%') as invoices,
          (select count(*)::int from project_assets where id::text like 'e3000000-%') as asset_lines,
          (select count(*)::int from emission_factors where id::text like 'e6000000-%') as emission_factors,
-         (select count(*)::int from project_activities where id::text like 'e8000000-%') as activities`,
+         (select count(*)::int from project_activities where id::text like 'e8000000-%') as activities,
+         (select count(*)::int from vehicles where id::text like 'e9000000-%') as vehicles,
+         (select count(*)::int from variations where id::text like 'ea000000-%') as variations,
+         (select count(*)::int from schedule_assignments where id::text like 'ec000000-%') as bookings`,
       [FIXTURE.companies.main]
     );
     console.log(`Demo account ready: ${DEMO_EMAIL}`);
@@ -1227,6 +1468,49 @@ async function main(): Promise<void> {
     console.log(
       'Sustainability: open the Marina Bay project and press Recalculate to produce its figures.'
     );
+    /*
+     * The other thing worth pointing at, because it is the one screen in the demo
+     * whose *empty cells* are the feature. Six of §30.2's ten categories have no
+     * source of money anywhere in CrewQuo, and this fixture budgets a figure against
+     * one of them on purpose so that "Not tracked" is visible rather than theoretical.
+     */
+    console.log(
+      'Commercial: Marina Bay has three variations (one approved without the client’s ' +
+        'agreement on file), a budget, a fleet and a week of crew. Its Budget section ' +
+        'shows what CrewQuo can and cannot compute an actual for.'
+    );
+
+    /*
+     * **The fixture proves its own totals, and it earned this on its first run.**
+     *
+     * Every other writer of `variations.sell_total_cents` goes through
+     * `recalculateVariationTotals`, which derives the header from the lines inside
+     * the same transaction. This file is the one place that writes both by hand — and
+     * the first version produced two headers whose lines had been silently dropped by
+     * a colliding `on conflict` id, reporting identical counts on a re-run and looking
+     * entirely healthy.
+     *
+     * A CHECK constraint cannot catch that (`commercial-operations.md` finding 5: a
+     * check cannot aggregate), so the assertion lives here, where the hand-written
+     * total does. It throws rather than warning: a demo account whose variation totals
+     * do not add up is worse than no demo account, because somebody will read the
+     * figure off the screen.
+     */
+    const drift = await db.query<{ reference: string; header: number; lines: number }>(
+      `select v.reference, v.sell_total_cents as header,
+              coalesce(sum(l.sell_cents), 0)::int as lines
+         from variations v
+         left join variation_lines l on l.variation_id = v.id
+        where v.id::text like 'ea000000-%'
+        group by v.id, v.reference, v.sell_total_cents
+       having v.sell_total_cents <> coalesce(sum(l.sell_cents), 0)`
+    );
+    if (drift.rowCount && drift.rowCount > 0) {
+      throw new Error(
+        'Demo fixture is inconsistent: a variation header does not equal the sum of its ' +
+          `lines. ${JSON.stringify(drift.rows)}`
+      );
+    }
   } catch (error) {
     await db.query('rollback');
     throw error;

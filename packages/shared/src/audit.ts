@@ -255,6 +255,59 @@ export const AUDIT_ACTIONS = [
   'report.voided',
   'signoff.captured',
   'signoff.superseded',
+  /**
+   * Commercial & operations (§30, §31) — Phase 11.
+   *
+   * **`variation.approved` and `variation.completed` are client-visible and
+   * `variation.rejected` is not**, which is the one disclosure decision in this
+   * block (`commercial-operations.md` §13.6). An approved variation is money the
+   * client agreed to pay and they are entitled to see the decision; a client seeing
+   * a variation their own contractor's team refused internally is a conversation the
+   * product should not start.
+   *
+   * `variation.client_approval_recorded` exists as its own action rather than as a
+   * second `variation.approved` because it is a different act by a different person
+   * at a different time: approval is the contractor deciding to charge, and this is
+   * the paperwork arriving on Friday for work the crew did on Wednesday. Collapsing
+   * them would make the trail unable to answer *"was the client's agreement on file
+   * when we invoiced?"*
+   *
+   * **`schedule.assigned` is one row for a whole batch**, matching its single
+   * outbox event: Priya's Monday morning is eleven people onto three jobs, and
+   * eleven audit rows for one act is a trail nobody reads.
+   *
+   * There is deliberately no `variation.priced` and no `budget.viewed`. A price is
+   * carried by the `record_revisions` row that already records what changed, and an
+   * audit action for a *read* would be the first one in this catalog — a decision
+   * about surveillance rather than about accountability.
+   */
+  'variation.created',
+  'variation.updated',
+  'variation.deleted',
+  'variation.submitted',
+  'variation.withdrawn',
+  'variation.approved',
+  'variation.rejected',
+  'variation.completed',
+  'variation.client_approval_recorded',
+  'budget.set',
+  'budget.updated',
+  'vehicle.created',
+  'vehicle.updated',
+  'vehicle.retired',
+  'vehicle.deleted',
+  'schedule.assigned',
+  'schedule.changed',
+  'schedule.cancelled',
+  'schedule.confirmed',
+  'schedule.requirements_set',
+  /* Phase 12 (§33). Renewals are distinct from metadata corrections. */
+  'compliance.created',
+  'compliance.updated',
+  'compliance.renewed',
+  'compliance.rejected',
+  'compliance.deleted',
+  'availability.recorded',
 ] as const;
 export const auditActionSchema = z.enum(AUDIT_ACTIONS);
 export type AuditAction = z.infer<typeof auditActionSchema>;
@@ -290,6 +343,15 @@ export const AUDIT_ENTITY_TYPES = [
   'SUBSCRIPTION',
   'ENTITLEMENT_OVERRIDE',
   'FX_RATE',
+  // Phase 11 (§30, §31). `PROJECT_BUDGET`'s entity id is the **project** id, not a
+  // budget id: there is one budget per project (`project_budgets_one_per_project`),
+  // so the project is what a trail entry is about and what a reader would look up.
+  'VARIATION',
+  'PROJECT_BUDGET',
+  'VEHICLE',
+  'SCHEDULE_ASSIGNMENT',
+  'RESOURCE_AVAILABILITY',
+  'COMPLIANCE_DOCUMENT',
 ] as const;
 export const auditEntityTypeSchema = z.enum(AUDIT_ENTITY_TYPES);
 export type AuditEntityType = z.infer<typeof auditEntityTypeSchema>;

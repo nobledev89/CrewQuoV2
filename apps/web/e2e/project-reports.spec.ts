@@ -101,7 +101,25 @@ test.describe('the project Reports section', () => {
      */
     await drawer.getByRole('combobox', { name: /^Document/ }).selectOption('EVIDENCE_PACK');
     await expect(drawer.getByText('Site diary')).toBeVisible();
-    await expect(drawer.getByText('Variations')).toHaveCount(0);
+    /*
+     * **Rewritten on 2026-09-03, and the rewrite is the gate working.**
+     *
+     * This read `toHaveCount(0)` for Variations until Phase 11, and it failed on the
+     * commit that shipped §30.1 — which is exactly what `availableFrom: 11` was for.
+     * The rule being asserted is *"this drawer offers only what the build can
+     * actually produce"*, not *"Variations do not exist"*, so the two keys now sit
+     * on opposite sides of the same assertion:
+     *
+     *  - `Variations` IS offered, because Phase 11 built the records behind it.
+     *  - `Incidents` is NOT, and never will be on this evidence: §29.2 names them and
+     *    **no table for them exists anywhere in the plan's DDL**, which is why
+     *    `PACK_INCIDENTS` carries `availableFrom: null` rather than a guessed phase.
+     *
+     * The thing this protects is unchanged: a completion pack that asserts *no
+     * incidents* about a record class the product does not keep is an invented fact,
+     * and it is the most quotable line in the document during a dispute.
+     */
+    await expect(drawer.getByText('Variations')).toBeVisible();
     await expect(drawer.getByText('Incidents')).toHaveCount(0);
 
     await drawer.getByRole('button', { name: 'Cancel' }).click();

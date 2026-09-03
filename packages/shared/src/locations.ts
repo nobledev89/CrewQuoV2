@@ -323,8 +323,27 @@ export const LOCATION_REFERENCE_TABLES: readonly LocationReferenceTable[] = [
   // one record here that can never be deleted — so a location it cites is one the
   // product has promised to keep rendering.
   { table: 'site_diary_locations', column: 'location_id', label: 'diary entries' },
-  // Phase 8 adds project_assets.location_id.
-  // Phase 11 adds schedule_assignments.location_id.
+  /*
+   * Phase 8's two, added in Phase 11 — **and the delay was a defect rather than a
+   * plan.** `project_assets.origin_location_id` and `asset_movements.from_location_id`
+   * shipped in `0034` and `0035` and neither reached this array, so the failure mode
+   * was not data loss (the foreign key defaults to `no action`, so Postgres refuses)
+   * but a `23503` reaching the caller as a 500 instead of the sentence this registry
+   * exists to produce — which is exactly the defect `countLocationReferences` was
+   * written to prevent.
+   *
+   * Two lines, fixed here rather than recorded and left, because Phase 11 is
+   * editing this array anyway and leaving a known 500 in place to preserve the
+   * record-rather-than-fix convention would be choosing the convention over the
+   * product.
+   */
+  { table: 'project_assets', column: 'origin_location_id', label: 'asset lines' },
+  { table: 'asset_movements', column: 'from_location_id', label: 'material movements' },
+  // Phase 11's own, and the entry this registry's shape was written for: a
+  // condition inlined in the delete route is one each of five later authors has to
+  // remember to extend, and the one who forgets deletes a location out from under a
+  // year of records.
+  { table: 'schedule_assignments', column: 'location_id', label: 'scheduled crew' },
 ];
 
 export interface LocationReferenceCount {

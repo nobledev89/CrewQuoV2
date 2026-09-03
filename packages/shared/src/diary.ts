@@ -522,10 +522,18 @@ export function attendanceTotals(
  * What the hiring company gets from a confirmed line is a second, independent
  * assertion that the person was there.
  *
- * §31's schedule is the other source the plan names, and it is **Phase 11**. The
- * shape below takes rows from anywhere, so the schedule joins this list without
- * changing a caller — but nothing here pretends to read a table that does not
- * exist yet.
+ * §31's schedule is the other source the plan names, and it **arrived in Phase
+ * 11**. The shape was written to take rows from anywhere, and it did: `source`
+ * gained a second member, `SCHEDULE` rows carry `hours: null` and no `timeLogId`,
+ * and no caller of this function had to change. `source` being a one-member union
+ * until then is what made adding the second a compile error at every reader rather
+ * than a silent widening.
+ *
+ * **A person with both a timesheet and a booking is offered once, from the
+ * timesheet.** The timesheet is a record of what happened and the booking is a
+ * record of what was planned; offering both would ask a supervisor to confirm the
+ * same person twice, and the second confirmation would be the weaker of the two
+ * assertions.
  */
 export interface AttendanceSuggestion {
   userId: string | null;
@@ -536,8 +544,15 @@ export interface AttendanceSuggestion {
   headcount: number;
   hours: number | null;
   timeLogId: string | null;
-  /** Why this line is being offered, so a screen can say where it came from. */
-  source: 'TIME_LOG';
+  /**
+   * Why this line is being offered, so a screen can say where it came from.
+   *
+   * `TIME_LOG` — somebody recorded hours. `SCHEDULE` — somebody was *booked* and
+   * has recorded nothing, which is the case §31's prefill exists for: the person the
+   * supervisor most needs prompting about is the one whose timesheet has not
+   * arrived.
+   */
+  source: 'TIME_LOG' | 'SCHEDULE';
   /** Whether the day already carries this line, so a re-open does not re-offer it. */
   alreadyPresent: boolean;
 }
@@ -552,12 +567,24 @@ export function suggestAttendance(args: {
     roleName: string | null;
     hours: number;
   }[];
+  /**
+   * §31's second source, and it is optional so a caller with no schedule passes
+   * nothing rather than an empty array it had to construct.
+   */
+  scheduled?: readonly {
+    userId: string | null;
+    userName: string | null;
+    providerCompanyId: string | null;
+    roleId: string | null;
+    roleName: string | null;
+    headcount: number;
+  }[];
   existingTimeLogIds: readonly string[];
   /** The diary's own company: its people are workers, everybody else is a crew. */
   authoringCompanyId: string;
 }): AttendanceSuggestion[] {
   const already = new Set(args.existingTimeLogIds);
-  return args.timeLogs.map((log) => ({
+  const fromLogs: AttendanceSuggestion[] = args.timeLogs.map((log) => ({
     userId: log.userId,
     providerCompanyId:
       log.providerCompanyId === args.authoringCompanyId ? null : log.providerCompanyId,
@@ -570,6 +597,49 @@ export function suggestAttendance(args: {
     source: 'TIME_LOG',
     alreadyPresent: already.has(log.id),
   }));
+
+  /*
+   * The de-duplication key: a named person by their user id, and a subcontractor's
+   * crew by company + role. Those are the two shapes a suggestion comes in, and
+   * they need different keys — "4 crew from Pashe as riggers" is not a person and
+   * has no user id to match on.
+   */
+  const seen = new Set(
+    fromLogs.map((s) => s.userId ?? `${s.providerCompanyId ?? ''}:${s.roleId ?? ''}`)
+  );
+
+  const fromSchedule: AttendanceSuggestion[] = [];
+  for (const row of args.scheduled ?? []) {
+    const key = row.userId ?? `${
+      row.providerCompanyId === args.authoringCompanyId ? '' : (row.providerCompanyId ?? '')
+    }:${row.roleId ?? ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    fromSchedule.push({
+      userId: row.userId,
+      providerCompanyId:
+        row.providerCompanyId === args.authoringCompanyId ? null : row.providerCompanyId,
+      name: row.userName,
+      roleId: row.roleId,
+      roleName: row.roleName,
+      headcount: row.headcount,
+      /*
+       * **Null, not the length of the booking.** A booking is a plan; how long
+       * somebody was actually on site is what a timesheet says. Offering ten hours
+       * because ten were scheduled would fill in the one number the confirmation
+       * exists to establish independently.
+       */
+      hours: null,
+      timeLogId: null,
+      source: 'SCHEDULE',
+      alreadyPresent: false,
+    });
+  }
+
+  // Timesheets first: they are the stronger assertion, and a supervisor working
+  // down the list should confirm what is recorded before being prompted about what
+  // is only planned.
+  return [...fromLogs, ...fromSchedule];
 }
 
 // ── Close Day ────────────────────────────────────────────────────────────────

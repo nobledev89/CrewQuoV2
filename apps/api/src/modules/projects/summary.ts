@@ -7,6 +7,7 @@ import {
 } from '@crewquo/shared';
 import { query } from '../../db';
 import { getEffectiveTimeframeDefinitions } from '../rates/repo';
+import { approvedVariationTotals } from '../variations/repo';
 import { resolveBillCentsForLog } from './billing';
 
 /**
@@ -33,6 +34,27 @@ import { resolveBillCentsForLog } from './billing';
  * line with no covering BILL card is "not priced yet", and folding it in at zero
  * would understate the invoice — so the bill total, and the margin computed from
  * it, are withheld rather than guessed (§41.1).
+ *
+ * ── PHASE 11: THE SECOND WRITER, AND WHY IT IS ONLY HALF A WRITER ───────────
+ *
+ * §30.1 sends approved variations here rather than to a second calculator, and
+ * this is the first time in nine phases that anything but approved work has
+ * contributed to these figures. Two properties of how it does are worth stating
+ * where the code is, because both look like omissions:
+ *
+ *  1. **The variation's SELL is folded into revenue and its COST is never folded
+ *     into cost.** The hours worked on extra works are approved time logs like any
+ *     other hours and are already in `laborCostCents` through their frozen PAY
+ *     snapshots; a variation's `cost_total_cents` is what the contractor *expected*
+ *     the works to cost when it quoted them. Adding it counts the same labour twice
+ *     and deflates margin — the one direction of error nobody catches, because it
+ *     is pessimistic. It is reported as `variationCostCents` beside the total
+ *     instead (`commercial-operations.md` finding 3).
+ *
+ *  2. **`revenueCents` is null whenever `billCents` is.** The withholding rule
+ *     propagates rather than being repaired by a variation that happens to carry a
+ *     figure: a project with one unpriced hour has an unknown revenue, not a
+ *     revenue of "just the variations". Margin then goes with it, as it always has.
  */
 
 interface ApprovedLogRow {
@@ -137,12 +159,38 @@ export async function computeProjectSummary(project: {
 
   // Bill total (labour via BILL cards + expenses passed through at cost).
   let finalBill: number | null = null;
-  let marginCents: number | null = null;
-  let marginPct: number | null = null;
 
   if (billResolvable && logs.length > 0) {
     finalBill = billCents + expenseCostCents;
-    const m = calculateMargin(finalBill, totalCostCents);
+  }
+
+  /*
+   * §30.1's feed-through. Read once, and read for every project rather than only
+   * for projects with a client: a variation is agreed money whether or not the
+   * BILL cards resolve, and withholding the figure itself would hide the one
+   * revenue record the project definitely has.
+   */
+  const variations = await approvedVariationTotals(project.id);
+
+  /*
+   * Revenue = billed work + approved variation sell, and **null whenever the bill
+   * total is** — see property 2 in the header. A project whose labour is not fully
+   * priced does not have a revenue figure, and `finalBill + variations.sellCents`
+   * on a withheld bill would produce one out of nothing.
+   */
+  const revenueCents = finalBill === null ? null : finalBill + variations.sellCents;
+
+  /*
+   * Margin over **revenue**, not over the bill total. This is the one existing
+   * figure Phase 11 changes the meaning of, and it changes it in the direction
+   * §30.1 asks for: a project that made £4,000 of agreed extra works at a good
+   * price is more profitable than one that did not, and a margin computed over the
+   * bill alone would not say so. `totalCostCents` is unchanged, per property 1.
+   */
+  let marginCents: number | null = null;
+  let marginPct: number | null = null;
+  if (revenueCents !== null && logs.length > 0) {
+    const m = calculateMargin(revenueCents, totalCostCents);
     marginCents = m.marginCents;
     marginPct = m.marginPct;
   }
@@ -156,6 +204,10 @@ export async function computeProjectSummary(project: {
     expenseCostCents,
     totalCostCents,
     billCents: finalBill,
+    approvedVariations: variations.count,
+    variationSellCents: variations.sellCents,
+    variationCostCents: variations.costCents,
+    revenueCents,
     marginCents,
     marginPct,
     byProvider: [...rollups.values()],

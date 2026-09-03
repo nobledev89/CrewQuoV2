@@ -134,6 +134,16 @@ export const COMPANY_QUERIES: Readonly<Record<string, TableQuery>> = {
     orderBy: 'invoice_id, id',
   },
   audit_logs: { from: 'audit_logs', where: 'company_id = $1', orderBy: 'created_at, id' },
+  compliance_documents: {
+    from: 'compliance_documents',
+    where: 'owner_company_id = $1',
+    orderBy: 'created_at, id',
+  },
+  compliance_alerts: {
+    from: 'compliance_alerts',
+    where: 'document_id in (select id from compliance_documents where owner_company_id = $1)',
+    orderBy: 'sent_at, id',
+  },
 };
 
 /**

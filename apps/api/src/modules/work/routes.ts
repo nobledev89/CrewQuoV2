@@ -53,6 +53,7 @@ import {
   updateExpenseFields,
   updateTimeLogFields,
 } from './repo';
+import { checkProviderCompliance } from '../compliance/policy';
 
 function edgeOf(row: EngagementEdgeRow): EngagementEdge {
   return { clientCompanyId: row.client_company_id, providerCompanyId: row.provider_company_id };
@@ -204,6 +205,12 @@ timeLogsRouter.post(
     if (!canProviderSubmit(log.status)) {
       throw new AppError('CONFLICT', `Cannot submit a ${log.status} time log`);
     }
+    await checkProviderCompliance({
+      ownerCompanyId: edge.client_company_id,
+      providerCompanyId: edge.provider_company_id,
+      refuseWhenEnforced: true,
+      action: 'This time log',
+    });
 
     // Freeze the PAY rate (client pays provider) — best-effort; null if unconfigured.
     const snapshot = await resolvePaySnapshot({
@@ -498,6 +505,12 @@ expensesRouter.post(
     if (!canProviderSubmit(expense.status)) {
       throw new AppError('CONFLICT', `Cannot submit a ${expense.status} expense`);
     }
+    await checkProviderCompliance({
+      ownerCompanyId: edge.client_company_id,
+      providerCompanyId: edge.provider_company_id,
+      refuseWhenEnforced: true,
+      action: 'This expense',
+    });
     const updated = await withTransaction(async (client) => {
       const result = await transitionExpense(expense.id, 'SUBMITTED', undefined, client);
       await recordAudit({
@@ -699,6 +712,12 @@ submissionsRouter.post(
     if (!canProviderSubmit(submission.status)) {
       throw new AppError('CONFLICT', `Cannot submit a ${submission.status} submission`);
     }
+    await checkProviderCompliance({
+      ownerCompanyId: edge.client_company_id,
+      providerCompanyId: edge.provider_company_id,
+      refuseWhenEnforced: true,
+      action: 'This work submission',
+    });
     const updated = await withTransaction(async (client) => {
       const result = await transitionSubmission(submission.id, 'SUBMITTED', undefined, client);
       await recordAudit({

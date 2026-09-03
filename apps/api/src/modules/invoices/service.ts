@@ -54,13 +54,36 @@ interface ApprovedExpenseRow {
   description: string | null;
 }
 
+/**
+ * §30.1's third source, and the Phase 6 hook coming due.
+ *
+ * PROGRESS recorded it on 2026-08-17 when this file shipped: *"Phase 11 hook:
+ * approved variation lines join this same source builder when the variations domain
+ * exists; no variation table or calculation exists yet to duplicate here."*
+ *
+ * **The double bill is prevented by the mechanism that already prevents it for a
+ * timesheet, not by a second one.** `createProjectInvoice` takes
+ * `pg_advisory_xact_lock` on `invoice-project:<id>`, this query selects `for
+ * update`, and the `not exists` clause excludes anything already cited by a
+ * non-void invoice. Two invoices racing for the same variation: the second finds
+ * nothing to claim. That is the whole reason this is a third branch here rather
+ * than a route of its own.
+ */
+interface ApprovedVariationRow {
+  id: string;
+  reference: string | null;
+  description: string;
+  sell_total_cents: number;
+  requested_on: string;
+}
+
 async function loadDerivedItems(args: {
   projectId: string;
   ownerCompanyId: string;
   clientCompanyId: string;
   /** The unit this invoice is denominated in — the project's reporting currency. */
   invoiceCurrency: string;
-  only?: { sourceType: 'TIME_LOG' | 'EXPENSE'; sourceId: string };
+  only?: { sourceType: 'TIME_LOG' | 'EXPENSE' | 'VARIATION'; sourceId: string };
   runner: Queryable;
 }): Promise<DerivedItem[]> {
   const sourceType = args.only?.sourceType ?? null;
@@ -97,7 +120,34 @@ async function loadDerivedItems(args: {
     args.runner
   );
 
-  if (args.only && logs.length + expenses.length === 0) {
+  /*
+   * `APPROVED` and `COMPLETED`, never `INVOICED` — and the `not exists` guard is
+   * belt to that braces: `variations_invoiced_pairing` already makes the status and
+   * the `invoice_id` one fact, so a variation cited by a live invoice cannot be in
+   * a claimable state. Both are kept because the pairing is a constraint about the
+   * row and this is a fact about the invoice, and a voided invoice returns the
+   * variation to `APPROVED` while leaving its `invoice_items` row standing.
+   */
+  const variations = sourceType === 'TIME_LOG' || sourceType === 'EXPENSE'
+    ? []
+    : await query<ApprovedVariationRow>(
+        `select v.id, v.reference, v.description, v.sell_total_cents,
+                to_char(v.requested_on, 'YYYY-MM-DD') as requested_on
+           from variations v
+          where v.project_id = $1 and v.deleted_at is null
+            and v.status in ('APPROVED','COMPLETED')
+            and ($2::uuid is null or v.id = $2)
+            and not exists (
+              select 1 from invoice_items ii join invoices i on i.id = ii.invoice_id
+               where ii.source_type = 'VARIATION' and ii.source_id = v.id and i.status <> 'VOID'
+            )
+          order by v.requested_on, v.created_at
+          for update of v`,
+        [args.projectId, sourceType === 'VARIATION' ? sourceId : null],
+        args.runner
+      );
+
+  if (args.only && logs.length + expenses.length + variations.length === 0) {
     throw new AppError(
       'CONFLICT',
       'Source is not approved work on this project, or it is already invoiced'
@@ -150,11 +200,91 @@ async function loadDerivedItems(args: {
       sourceId: expense.id,
     });
   }
+
+  /*
+   * The variation's SELL total, at quantity 1.
+   *
+   * Not its lines. A variation is one agreed sum — §30.1's `sell_total_cents` is
+   * what the client said yes to — and exploding it into six invoice lines would
+   * show a client the internal breakdown of a price they agreed as a lump, which is
+   * both more information than they were given and more disagreement than the
+   * agreement contains. The lines are how the contractor arrived at the figure and
+   * they stay on the variation, where §36's revision trail keeps them.
+   *
+   * The description names the reference, because *"why is this invoice bigger than
+   * the quote?"* is the question this line exists to answer and a reference is what
+   * a client looks it up by.
+   */
+  for (const variation of variations) {
+    const label = variation.reference
+      ? `Variation ${variation.reference} - ${variation.description}`
+      : `Variation - ${variation.description}`;
+    items.push({
+      description: label.slice(0, 500),
+      quantity: 1,
+      unitAmountCents: variation.sell_total_cents,
+      sourceType: 'VARIATION',
+      sourceId: variation.id,
+    });
+  }
   return items;
 }
 
 async function insertDerivedItems(invoiceId: string, items: DerivedItem[], runner: Queryable) {
   for (const item of items) await insertInvoiceItem({ invoiceId, ...item }, runner);
+  await markVariationsInvoiced(invoiceId, items, runner);
+}
+
+/**
+ * `APPROVED | COMPLETED → INVOICED`, inside the transaction that created the line.
+ *
+ * **There is no route to this transition and no actor a caller could name** —
+ * `VARIATION_TRANSITIONS` gives both of its edges the actor `SYSTEM`, and this
+ * function is that actor. A `PATCH /v1/variations/:id/status` that could set
+ * `INVOICED` would let somebody mark a variation billed without an invoice
+ * existing, which `variations_invoiced_pairing` refuses at the database anyway;
+ * doing it here means the status and the `invoice_id` are one write.
+ *
+ * Conditional on the source state for the reason every other transition is: two
+ * invoices racing lose the race in the `for update` above, and this is the second
+ * lock on the same door.
+ */
+async function markVariationsInvoiced(
+  invoiceId: string,
+  items: readonly DerivedItem[],
+  runner: Queryable
+): Promise<void> {
+  const ids = items.filter((i) => i.sourceType === 'VARIATION').map((i) => i.sourceId);
+  if (ids.length === 0) return;
+  await query(
+    `update variations set status = 'INVOICED', invoice_id = $2, updated_at = now()
+      where id = any($1::uuid[]) and status in ('APPROVED','COMPLETED')`,
+    [ids, invoiceId],
+    runner
+  );
+}
+
+/**
+ * And the reverse, when an invoice is voided.
+ *
+ * §3.5's rule for a time log — *"voided sources become eligible again"* — with a
+ * variation as the noun. The `invoice_items` row is deliberately left standing: a
+ * void is a record of a document that existed, not an erasure of it, and the
+ * `not exists` guard in `loadDerivedItems` filters on `i.status <> 'VOID'` rather
+ * than on the row's absence for exactly this reason.
+ *
+ * `COMPLETED` is **not** restored, and that is not a loss: the state a variation
+ * returns to is `APPROVED`, which is the state the transition table declares
+ * (`INVOICED → APPROVED`), and whether the works were finished is a fact somebody
+ * re-asserts rather than one a void should infer.
+ */
+async function restoreVoidedVariations(invoiceId: string, runner: Queryable): Promise<void> {
+  await query(
+    `update variations set status = 'APPROVED', invoice_id = null, updated_at = now()
+      where invoice_id = $1 and status = 'INVOICED'`,
+    [invoiceId],
+    runner
+  );
 }
 
 export async function createProjectInvoice(
@@ -348,6 +478,9 @@ export async function markInvoicePaid(invoiceId: string) {
 export async function voidIssuedInvoice(invoiceId: string) {
   return withTransaction(async (runner) => {
     await transitionInvoice(invoiceId, 'ISSUED', 'VOID', runner);
+    // Same transaction as the void, so a variation is never left INVOICED against a
+    // document that no longer claims it.
+    await restoreVoidedVariations(invoiceId, runner);
     return (await getInvoice(invoiceId, runner))!;
   });
 }

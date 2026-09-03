@@ -50,6 +50,8 @@ import { COMPANY_QUERIES, PERSONAL_QUERIES } from '../src/modules/data-export/qu
 import { runStorageBatch } from '../src/modules/storage/worker';
 import { runDocumentExpiryBatch } from '../src/modules/documents/expiry';
 import { runStorageAgeingBatch } from '../src/modules/assets/storageAgeing';
+import { runComplianceExpiryBatch } from '../src/modules/compliance/expiry';
+import { runArtifactRetentionBatch } from '../src/modules/storage/artifactRetention';
 import { resolveOwnCapabilities } from '../src/modules/capabilities/resolve';
 import { storageBytesForCompany } from '../src/modules/storage/repo';
 
@@ -696,6 +698,17 @@ async function main(): Promise<void> {
   // 24000 / 65550 = 36.6133% → 36.61 at 2dp. Expenses pass through at cost, so
   // they dilute the percentage without changing the cash margin.
   eq('summary margin % is 36.61', s.marginPct, 36.61);
+  /*
+   * Phase 11's four fields on a project with no variations — the backward-
+   * compatibility half of §44, asserted here rather than in the Phase 11 section
+   * because *here* is where a regression would show. `computeProjectSummary` gained
+   * its first second writer in nine phases, and the property that has to survive
+   * is that a project with nothing agreed reads exactly as it did before.
+   */
+  eq('a project with no variations reports zero rather than null', [
+    s.approvedVariations, s.variationSellCents, s.variationCostCents,
+  ], [0, 0, 0]);
+  eq('...and revenue is exactly the bill total', s.revenueCents, 65550);
 
   // ── Export engine ─────────────────────────────────────────────────────────
   section('Export engine (Phase 4)');
@@ -8928,8 +8941,19 @@ async function main(): Promise<void> {
     dyPrefill.json.attendance[0].providerCompanyId, null);
   eq('...saying where it came from', dyPrefill.json.attendance[0].source, 'TIME_LOG');
   eq('...counting the draft nobody has submitted', dyPrefill.json.unsubmittedTimeLogs, 1);
-  eq('...and naming the schedule as a source it does not yet have',
-    dyPrefill.json.sources, { timeLogs: true, schedule: false });
+  /*
+   * **The hook coming due, and this assertion is how it came due.**
+   *
+   * It read `schedule: false` from 7.5 until Phase 11, and it failed on the run that
+   * shipped §31 — which is exactly what it was written for. The reason it is now
+   * `true` here is worth being precise about: this fixture's project belongs to a
+   * company on the Pro plan, so `scheduling` is in its entitlements and the source
+   * is consulted. It answers `false` only for an owner whose plan lacks the key,
+   * which is a fact about a subscription rather than about the build — and that is
+   * the whole difference between the flag meaning something and meaning nothing.
+   */
+  eq('...and naming the schedule as the second source it now has',
+    dyPrefill.json.sources, { timeLogs: true, schedule: true });
 
   const dyConfirmBody = {
     userId: dyPrefill.json.attendance[0].userId,
@@ -12132,6 +12156,1263 @@ async function main(): Promise<void> {
     [suProject, rpCurrentId]);
   check('every file a frozen document points at is held by a real row, not by a jsonb string',
     rpHeld.length > 0, rpHeld.map((r) => r.role));
+
+  // ══ PHASE 11 — COMMERCIAL & OPERATIONS ════════════════════════════════════
+  //
+  // `docs/operating-model/commercial-operations.md` §12, implemented step for
+  // step. Ade's contractor company is `meridian` (Pro), on the Pier 9 project the
+  // core-loop section built: a client, a subcontractor, PAY and BILL cards, one
+  // approved 8h log and one approved expense. That fixture is exactly what §30.2
+  // needs, and reusing it is also the point — the figures below have to agree with
+  // the ones asserted 11,000 lines earlier.
+
+  section('Variations — priced off the engine, agreed once, and billed once');
+
+  const coCtx = { token: owner.token, companyId: meridian };
+  const coProviderCtx = { token: providerUser.token, companyId: northgate };
+
+  // ── 1. The empty project ─────────────────────────────────────────────────
+  const coEmptyProject = (await call('POST', '/v1/projects', {
+    ...coCtx, body: { name: `Nothing Agreed ${RUN}` },
+  })).json.project.id as string;
+
+  const coEmptyVariations = await call('GET', `/v1/projects/${coEmptyProject}/variations`, { ...coCtx });
+  eq('a project with no variations answers with an empty list', coEmptyVariations.status, 200);
+  eq('...rather than a 404', coEmptyVariations.json.variations, []);
+
+  const coEmptyBudget = await call('GET', `/v1/projects/${coEmptyProject}/budget`, { ...coCtx });
+  eq('a project with no budget still answers', coEmptyBudget.status, 200);
+  eq('...saying so rather than pretending to one', coEmptyBudget.json.budget.budgetSet, false);
+  eq('...with all ten of §30.2 present', coEmptyBudget.json.budget.rows.length, 10);
+
+  /*
+   * THE ASSERTION THE WHOLE BUDGET MODULE EXISTS FOR (packet finding 2).
+   *
+   * Six of §30.2's ten categories have no source of money anywhere in the schema —
+   * asset movements and activities carry mass, distance, fuel and energy and not one
+   * money column between them. A literal implementation renders "Vehicles · Budget
+   * £3,000 · Actual £0 · Variance −£3,000 / −100%", which is an absence with a
+   * percentage attached on a screen a contractor reads before a client meeting.
+   */
+  const coEmptyRows = coEmptyBudget.json.budget.rows as any[];
+  const coNoSource = coEmptyRows.filter((r) => r.coverage === 'NO_SOURCE');
+  eq('exactly six categories declare that CrewQuo holds no source for them',
+    coNoSource.map((r) => r.key).sort(),
+    ['materials', 'mileage', 'other', 'purchases', 'vehicle', 'waste']);
+  check('...every one of them reports null rather than zero',
+    coNoSource.every((r) => r.actualCents === null && r.varianceCents === null),
+    coNoSource.map((r) => [r.key, r.actualCents, r.varianceCents]));
+  check('...and NOTHING anywhere in the response is -100',
+    !JSON.stringify(coEmptyBudget.json).includes('-100'));
+  check('...each saying what would have to exist for the figure to be real',
+    coNoSource.every((r) => typeof r.sources === 'string' && r.sources.length > 30));
+  const coEmptyRevenue = coEmptyRows.find((r) => r.key === 'revenue');
+  eq('a project with no work has no revenue figure, rather than a revenue of nothing',
+    coEmptyRevenue?.actualCents, null);
+
+  const coEmptySchedule = await call('GET', `/v1/projects/${coEmptyProject}/schedule`, { ...coCtx });
+  eq('an unscheduled project answers with no assignments and no shortfalls',
+    [coEmptySchedule.json.assignments, coEmptySchedule.json.shortfalls], [[], []]);
+
+  /*
+   * A BASELINE, read before anything Phase 11 writes.
+   *
+   * The obvious thing is to assert the core-loop constants — 41550 of cost, 65550
+   * of bill — and it is wrong, which cost one run to discover: eight sections
+   * between there and here add work to this same project, so those figures are true
+   * at line 700 and not at line 12,300. A shared fixture read 11,000 lines later has
+   * to be asserted as a **delta**, and the delta is the thing under test anyway:
+   * what Phase 11 changed, not what Phase 3 left behind.
+   */
+  const coBase = (await call('GET', `/v1/projects/${projectId}/summary`, { ...coCtx }))
+    .json.summary as {
+      totalCostCents: number; billCents: number; laborCostCents: number;
+      expenseCostCents: number; variationSellCents: number; approvedVariations: number;
+    };
+
+  // ── 2. Denied four ways ──────────────────────────────────────────────────
+  //
+  // Each refusal names a different thing, which is the point of the four checks
+  // being independent.
+
+  // (a) The plan. Crew has neither key — §43's table, and the shape of the free tier.
+  const coCrew = await register('cocrew', `CrewOnly ${RUN}`);
+  const coCrewCtx = { token: coCrew.token, companyId: coCrew.companyId! };
+  const coCrewProject = (await call('POST', '/v1/projects', {
+    ...coCrewCtx, body: { name: `Crew Own Job ${RUN}` },
+  })).json.project.id as string;
+  const coPlanRefusal = await call('POST', `/v1/projects/${coCrewProject}/variations`, {
+    ...coCrewCtx, body: { description: 'Extra doors', requestedOn: '2026-07-22' },
+  });
+  eq('a Crew-plan company cannot raise a variation on its OWN project', coPlanRefusal.status, 403);
+  eq('...naming the key', coPlanRefusal.json.error?.details?.feature, 'variations');
+
+  /*
+   * And the other half of the 2026-09-01 rule, for the fifth time: the SAME free
+   * company MAY raise one on a paying customer's project, because the feature is the
+   * project owner's. Femi with a phone and a free account, capturing the extra doors
+   * on the day the client asked for them, is the whole point of the free tier.
+   */
+  const coSubVariation = await call('POST', `/v1/projects/${projectId}/variations`, {
+    ...coProviderCtx,
+    body: {
+      description: 'Two extra risers on level 3, asked for on site',
+      requestedOn: '2026-07-22',
+      requestedBy: 'Dana Whitfield',
+      lines: [{
+        kind: 'LABOUR', description: 'Rigger, 16h', quantity: 16,
+        roleId, shiftType: 'WEEKDAY_DAY',
+      }],
+    },
+  });
+  eq('...but the same free company CAN raise one on a Pro customer’s project',
+    coSubVariation.status, 201);
+  const coSubVarId = coSubVariation.json.variation.id as string;
+  eq('...priced off the hiring company’s PAY card for THAT subcontractor',
+    coSubVariation.json.variation.lines[0]?.unitCostCents, 5000);
+  eq('...and its BILL card for the client', coSubVariation.json.variation.lines[0]?.unitSellCents, 8000);
+  eq('...with the source of the price on the row',
+    coSubVariation.json.variation.lines[0]?.pricedFrom, 'RATE_ENGINE');
+  eq('...and the line total is quantity × unit, computed once',
+    [coSubVariation.json.variation.lines[0]?.costCents,
+     coSubVariation.json.variation.lines[0]?.sellCents],
+    [80000, 128000]);
+  eq('...the header totals equal the sum of the lines',
+    [coSubVariation.json.variation.sellTotalCents, coSubVariation.json.variation.costTotalCents],
+    [128000, 80000]);
+
+  // (b) The capability — create without approve.
+  const coSupInvite = await call('POST', '/v1/members/invite', {
+    ...coCtx, body: { email: `cosup+${RUN}@verify.crewquo.test`, role: 'MANAGER' },
+  });
+  const coSup = await register('cosup', undefined, `cosup+${RUN}@verify.crewquo.test`);
+  await call('POST', `/v1/invites/${coSupInvite.json.inviteToken}/accept`, { token: coSup.token });
+  const { rows: coSupMembership } = await db.query<{ id: string }>(
+    `select id from memberships where user_id = $1 and company_id = $2`, [coSup.userId, meridian]);
+  await call('PATCH', `/v1/members/${coSupMembership[0]?.id}/capabilities`, {
+    ...coCtx, body: { bundleKey: 'supervisor' },
+  });
+  const coSupCtx = { token: coSup.token, companyId: meridian };
+
+  const coSupRaises = await call('POST', `/v1/projects/${projectId}/variations`, {
+    ...coSupCtx,
+    body: {
+      description: 'Make good the ceiling grid', requestedOn: '2026-07-23',
+      lines: [{ kind: 'MATERIAL', description: 'Grid tiles', quantity: 40,
+                unitCostCents: 450, unitSellCents: 700 }],
+    },
+  });
+  eq('a supervisor holds variation.create and may raise one', coSupRaises.status, 201);
+  const coSupVarId = coSupRaises.json.variation.id as string;
+  await call('POST', `/v1/variations/${coSupVarId}/submit`, { ...coSupCtx });
+  const coSupApproves = await call('POST', `/v1/variations/${coSupVarId}/approve`, { ...coSupCtx });
+  eq('...and may NOT approve it — the person who captures the price is not the person who agrees to charge it',
+    coSupApproves.status, 403);
+  eq('...naming the capability', coSupApproves.json.error?.details?.capability, 'variation.approve');
+
+  // (c) The capability that proves the whole §37 layer earns its existence.
+  const coSupBudget = await call('GET', `/v1/projects/${projectId}/budget`, { ...coSupCtx });
+  eq('a supervisor cannot read the budget, because a budget is margin by subtraction',
+    coSupBudget.status, 403);
+  eq('...naming commercial.read', coSupBudget.json.error?.details?.capability, 'commercial.read');
+  const coSupSchedule = await call('GET', `/v1/projects/${projectId}/schedule`, { ...coSupCtx });
+  eq('...and CAN read the schedule, which is the distinction the layer exists for',
+    coSupSchedule.status, 200);
+
+  // (d) The company edge — a subcontractor cannot decide the owner's variation.
+  const coSubDecides = await call('POST', `/v1/variations/${coSupVarId}/approve`, { ...coProviderCtx });
+  eq('a subcontractor cannot even see the owner’s variation, let alone decide it',
+    coSubDecides.status, 404);
+
+  // ── 3. Raise, price, submit ──────────────────────────────────────────────
+  const coVar = await call('POST', `/v1/projects/${projectId}/variations`, {
+    ...coCtx,
+    body: {
+      reference: 'VO-014',
+      description: 'Additional fire-rated doors to core, agreed on site',
+      reason: 'Client changed the fire strategy after the survey',
+      requestedBy: 'Dana Whitfield',
+      requestedOn: '2026-07-24',
+      lines: [
+        { kind: 'LABOUR', description: 'Rigger, 16h', quantity: 16, roleId, shiftType: 'WEEKDAY_DAY' },
+        { kind: 'MATERIAL', description: 'Fire door sets', quantity: 4,
+          unitCostCents: 24000, unitSellCents: 31000 },
+      ],
+    },
+  });
+  eq('the owner raises a two-line variation', coVar.status, 201);
+  const coVarId = coVar.json.variation.id as string;
+  const coVarLines = coVar.json.variation.lines as any[];
+
+  /*
+   * The LABOUR line has no default (uncounterpartied) PAY card in this fixture — the
+   * MON_FRI_DAY PAY card is scoped to Northgate — so the owner's own variation is
+   * PARTIAL on the cost side, with the sentence saying why. That is the withholding
+   * rule, and it is the honest answer: at quote time nobody knows which crew will do
+   * the extra works, and borrowing one subcontractor's rate would produce a cost that
+   * changes when the crew does.
+   */
+  const coLabourLine = coVarLines.find((l) => l.kind === 'LABOUR');
+  eq('the owner’s own LABOUR line resolves BILL from the client card', coLabourLine?.unitSellCents, 8000);
+  eq('...and is PARTIAL rather than zero-costed, because only a per-subcontractor PAY card exists',
+    coLabourLine?.pricedFrom, 'PARTIAL');
+  check('...with a notice naming what to do about it',
+    (coVar.json.notices as string[]).some((n) => n.includes('PAY')),
+    coVar.json.notices);
+  const coMaterialLine = coVarLines.find((l) => l.kind === 'MATERIAL');
+  eq('the stated MATERIAL line is taken as stated', coMaterialLine?.pricedFrom, 'STATED');
+  eq('...at 4 × 31000', coMaterialLine?.sellCents, 124000);
+  eq('the header is the sum of the lines and nothing else',
+    coVar.json.variation.sellTotalCents, 128000 + 124000);
+
+  const { rows: coHeaderParity } = await db.query<{ ok: boolean }>(
+    `select (v.sell_total_cents = coalesce(sum(l.sell_cents), 0)
+             and v.cost_total_cents = coalesce(sum(l.cost_cents), 0)) as ok
+       from variations v left join variation_lines l on l.variation_id = v.id
+      where v.id = $1 group by v.id, v.sell_total_cents, v.cost_total_cents`, [coVarId]);
+  check('header = Σ lines, asserted against the database (packet finding 5)',
+    coHeaderParity[0]?.ok === true, coHeaderParity);
+
+  const coSubmit = await call('POST', `/v1/variations/${coVarId}/submit`, { ...coCtx });
+  eq('it submits', coSubmit.json.variation.status, 'SUBMITTED');
+
+  // ── 4. The rejection, and the resubmit ───────────────────────────────────
+  const coRejectNoReason = await call('POST', `/v1/variations/${coVarId}/reject`, { ...coCtx, body: {} });
+  eq('a rejection with no reason is refused', coRejectNoReason.status, 422);
+  const coReject = await call('POST', `/v1/variations/${coVarId}/reject`, {
+    ...coCtx, body: { reason: 'Client wants the ironmongery priced separately' },
+  });
+  eq('a rejection with a reason lands', coReject.json.variation.status, 'REJECTED');
+  eq('...carrying the reason', coReject.json.variation.rejectReason,
+    'Client wants the ironmongery priced separately');
+
+  const coRepriced = await call('PATCH', `/v1/variations/${coVarId}`, {
+    ...coCtx,
+    body: {
+      lines: [
+        { kind: 'LABOUR', description: 'Rigger, 16h', quantity: 16, roleId, shiftType: 'WEEKDAY_DAY' },
+        { kind: 'MATERIAL', description: 'Fire door sets, leaves only', quantity: 4,
+          unitCostCents: 19000, unitSellCents: 26000 },
+      ],
+    },
+  });
+  eq('a rejected variation is editable again', coRepriced.status, 200);
+  eq('...and the header follows the lines down', coRepriced.json.variation.sellTotalCents,
+    128000 + 104000);
+
+  const { rows: coRevisions } = await db.query<{ changed_fields: string[]; action: string }>(
+    `select changed_fields, action from record_revisions
+      where entity_type = 'variation' and entity_id = $1 order by revision`, [coVarId]);
+  check('§36’s trail starts at creation rather than at the first edit',
+    coRevisions[0]?.action === 'CREATE', coRevisions.map((r) => r.action));
+  check('...and names the price that moved, computed from before/after rather than declared',
+    coRevisions.some((r) => r.changed_fields?.includes('sellTotalCents')
+                         && r.changed_fields?.includes('lines')),
+    coRevisions.map((r) => r.changed_fields));
+
+  const coResubmit = await call('POST', `/v1/variations/${coVarId}/submit`, { ...coCtx });
+  eq('it resubmits', coResubmit.json.variation.status, 'SUBMITTED');
+  eq('...and the rejection reason is cleared rather than left standing',
+    coResubmit.json.variation.rejectReason, null);
+
+  // ── 5. Approve without the client's evidence, then with it ───────────────
+  const coApprove = await call('POST', `/v1/variations/${coVarId}/approve`, { ...coCtx, body: {} });
+  eq('approval with no client evidence is PERMITTED — the crew works on Wednesday',
+    coApprove.json.variation.status, 'APPROVED');
+  eq('...and is never silent about it', coApprove.json.variation.clientApprovalRecorded, false);
+
+  const coClientApproval = await call('POST', `/v1/variations/${coVarId}/client-approval`, {
+    ...coCtx, body: { clientApprovedBy: 'Dana Whitfield' },
+  });
+  eq('recording the client’s agreement later flips the flag',
+    coClientApproval.json.variation.clientApprovalRecorded, true);
+  check('...and dates it, because a name with no date cannot be placed in the sequence',
+    coClientApproval.json.variation.clientApprovedAt !== null);
+
+  // ── 6. The summary, and the asymmetry ────────────────────────────────────
+  const coSummary = await call('GET', `/v1/projects/${projectId}/summary`, { ...coCtx });
+  const cs = coSummary.json.summary;
+  eq('the approved variation reaches the summary', cs.approvedVariations, 1);
+  eq('...at its sell total', cs.variationSellCents, 128000 + 104000);
+  eq('...with its cost reported beside, not inside', cs.variationCostCents, 76000);
+  /*
+   * THE ASYMMETRY (packet finding 3). The hours worked on extra works are approved
+   * time logs like any other and are already in laborCostCents; a variation's cost
+   * total is what the contractor EXPECTED the works to cost when it quoted them.
+   * Adding it would count the same labour twice and deflate margin, which is the one
+   * direction of error nobody catches because it is pessimistic.
+   */
+  eq('the cost total is UNCHANGED by the variation', cs.totalCostCents, coBase.totalCostCents);
+  eq('...and revenue is the bill total plus the variation sell',
+    cs.revenueCents, coBase.billCents + 232000);
+  eq('...with margin recomputed over revenue',
+    cs.marginCents, coBase.billCents + 232000 - coBase.totalCostCents);
+
+  const coExport = await call('GET', `/v1/projects/${projectId}/export.xlsx`, { ...coCtx, raw: true });
+  eq('the export still renders with variations on the project', coExport.status, 200);
+
+  const coPortal = await call('GET', `/v1/portal/projects/${projectId}`, {
+    token: clientUser.token, companyId: harbour,
+  });
+  const coPortalPayload = JSON.stringify(coPortal.json);
+  check('the client portal still carries no PAY figure', !coPortalPayload.includes('40000'));
+  check('...and no variation COST figure', !coPortalPayload.includes('76000'));
+
+  // ── 7. The edit that must be refused ─────────────────────────────────────
+  const coEditApproved = await call('PATCH', `/v1/variations/${coVarId}`, {
+    ...coCtx, body: { description: 'Quietly bigger' },
+  });
+  eq('an approved variation cannot be edited', coEditApproved.status, 409);
+  check('...and the refusal says to raise a new one',
+    String(coEditApproved.json.error?.message).includes('new variation'),
+    coEditApproved.json.error?.message);
+
+  const coForceTotal = await call('PATCH', `/v1/variations/${coSubVarId}`, {
+    ...coProviderCtx, body: { sellTotalCents: 999999, description: 'Still sixteen hours' },
+  });
+  eq('a caller-supplied header total is ignored rather than honoured', coForceTotal.status, 200);
+  eq('...the total still follows the lines', coForceTotal.json.variation.sellTotalCents, 128000);
+
+  // ── 8. Budget versus actual, including the approved variation ────────────
+  const coBudgetSet = await call('PUT', `/v1/projects/${projectId}/budget`, {
+    ...coCtx,
+    body: {
+      /*
+       * Deliberately chosen so revenue is over and the two cost lines are under —
+       * the two readings §40 asks a colour to communicate, in one response.
+       */
+      revenueCents: 300000, labourCents: 35000,
+      subcontractorCents: coBase.laborCostCents + 20000,
+      expensesCents: coBase.expenseCostCents + 500, vehicleCents: 300000,
+      notes: 'First cut, before the fire-strategy change.',
+    },
+  });
+  eq('the budget is set', coBudgetSet.status, 200);
+  const coRows = Object.fromEntries(
+    (coBudgetSet.json.budget.rows as any[]).map((r) => [r.key, r])
+  );
+  eq('revenue’s actual INCLUDES the approved variation', coRows.revenue?.actualCents,
+    coBase.billCents + 232000);
+  eq('...and reads as favourable, because revenue is the one line that does',
+    coRows.revenue?.reading, 'FAVOURABLE');
+  /*
+   * The split §30.2's two separate labour categories can be given from data this
+   * schema holds: a log recorded by the project owner is its own crew, and every
+   * other approved log on the project is somebody it hired. Both read the frozen PAY
+   * snapshot, so a rate card changed next year cannot restate what a job cost.
+   *
+   * On this fixture every log belongs to Northgate, which is what makes the
+   * assertion worth making: `labour` is genuinely zero and `subcontractor` carries
+   * the whole PAY total, and the two summing to it is the property.
+   */
+  eq('labour is the owner’s own approved logs, which is none of them here',
+    coRows.labour?.actualCents, 0);
+  eq('subcontractor labour is every other company’s, from the frozen PAY snapshots',
+    coRows.subcontractor?.actualCents, coBase.laborCostCents);
+  eq('...and the two categories sum to the project’s labour cost',
+    (coRows.labour?.actualCents ?? 0) + (coRows.subcontractor?.actualCents ?? 0),
+    coBase.laborCostCents);
+  eq('expenses pass through at cost', coRows.expenses?.actualCents, coBase.expenseCostCents);
+  eq('...and an under-spend on a cost line reads as favourable', coRows.expenses?.reading,
+    'FAVOURABLE');
+  eq('a budgeted category with no source stays null, at any budget',
+    [coRows.vehicle?.budgetCents, coRows.vehicle?.actualCents, coRows.vehicle?.variancePct],
+    [300000, null, null]);
+  check('...naming what would have to exist', String(coRows.vehicle?.sources).includes('expense'));
+  check('the untracked share is reported, so the gap is measurable rather than assumed',
+    (coBudgetSet.json.budget.untrackedShare as number) > 0,
+    coBudgetSet.json.budget.untrackedShare);
+
+  const coBreakdown = coBudgetSet.json.budget.expenseBreakdown as any[];
+  eq('the expense breakdown sums to the expenses actual',
+    coBreakdown.reduce((sum, r) => sum + r.actualCents, 0), 1550);
+  check('...grouped by the category somebody actually typed',
+    coBreakdown.some((r) => r.category === 'TRAVEL'), coBreakdown);
+
+  // ── 9. Invoice it once ───────────────────────────────────────────────────
+  const coInvoice = await call('POST', '/v1/invoices', {
+    ...coCtx, body: { projectId, includeApprovedWork: true },
+  });
+  eq('an invoice is created from approved work', coInvoice.status, 201);
+  const coInvoiceId = coInvoice.json.invoice.id as string;
+  const coVarItems = (coInvoice.json.invoice.items as any[]).filter(
+    (i) => i.sourceType === 'VARIATION'
+  );
+  eq('it carries exactly one variation line', coVarItems.length, 1);
+  eq('...at the sell total the client agreed', coVarItems[0]?.amountCents, 232000);
+  check('...naming the reference, which is how a client looks it up',
+    String(coVarItems[0]?.description).includes('VO-014'), coVarItems[0]?.description);
+
+  const coVarAfterInvoice = await call('GET', `/v1/variations/${coVarId}`, { ...coCtx });
+  eq('the variation is now INVOICED', coVarAfterInvoice.json.variation.status, 'INVOICED');
+  eq('...pointing at the invoice that claimed it', coVarAfterInvoice.json.variation.invoiceId,
+    coInvoiceId);
+
+  const coSecondInvoice = await call('POST', '/v1/invoices', {
+    ...coCtx, body: { projectId, includeApprovedWork: true },
+  });
+  const coSecondVarItems = ((coSecondInvoice.json.invoice?.items as any[]) ?? []).filter(
+    (i) => i.sourceType === 'VARIATION'
+  );
+  eq('a SECOND invoice on the same project gets no variation line at all',
+    coSecondVarItems.length, 0);
+  await call('DELETE', `/v1/invoices/${coSecondInvoice.json.invoice.id}`, { ...coCtx });
+
+  /*
+   * THE PURCHASE-ORDER CEILING APPLIES TO A VARIATION EXACTLY AS IT DOES TO WORK,
+   * and this fixture proves it by accident, which is the best kind of proof.
+   *
+   * The commercial-agreements section left Harbour Group's engagement with a $1,000
+   * ceiling, and this invoice is $2,640 — mostly the variation. The refusal is
+   * correct product behaviour and worth pinning rather than stepping around: §30.1
+   * feeds approved variations into the same invoice as approved work, so a client's
+   * PO governs both or the ceiling is decoration.
+   */
+  const coCeiling = await call('POST', `/v1/invoices/${coInvoiceId}/issue`, { ...coCtx });
+  eq('a variation cannot be issued past the client’s purchase-order ceiling',
+    coCeiling.status, 422);
+  check('...naming the ceiling and what is already committed against it',
+    String(coCeiling.json.error?.message).includes('purchase-order ceiling'),
+    coCeiling.json.error?.message);
+
+  const coRaised = await call('PATCH', `/v1/engagements/${clientRes.json.client.engagementId}/terms`, {
+    token: clientUser.token, companyId: harbour,
+    body: { purchaseOrderCeilingCents: 5000000, reason: 'PO varied for the fire-strategy change' },
+  });
+  eq('the hiring client raises the ceiling', coRaised.status, 200);
+
+  const coIssue = await call('POST', `/v1/invoices/${coInvoiceId}/issue`, { ...coCtx });
+  eq('...and the invoice issues', coIssue.status, 200);
+  const coVoid = await call('POST', `/v1/invoices/${coInvoiceId}/void`, { ...coCtx });
+  eq('the invoice is voided', coVoid.json.invoice?.status, 'VOID');
+  const coVarAfterVoid = await call('GET', `/v1/variations/${coVarId}`, { ...coCtx });
+  eq('...and the variation becomes eligible again — §3.5’s rule with a new noun',
+    coVarAfterVoid.json.variation.status, 'APPROVED');
+  eq('...with the invoice reference cleared', coVarAfterVoid.json.variation.invoiceId, null);
+
+  section('Scheduling — the week, the clash that warns, and the requirement nobody filled');
+
+  // ── 10. A week's crew, with the clash surfaced ───────────────────────────
+  const coVan = await call('POST', '/v1/vehicles', {
+    ...coCtx,
+    body: { name: 'Transit 350', registration: 'LX21 ABC', category: 'Van (class III)',
+            fuelType: 'DIESEL', emissionFactorActivity: 'van_class_iii_diesel' },
+  });
+  eq('a vehicle is added to the fleet', coVan.status, 201);
+  const coVanId = coVan.json.vehicle.id as string;
+
+  const coDupReg = await call('POST', '/v1/vehicles', {
+    ...coCtx, body: { name: 'Second Transit', registration: 'lx21 abc' },
+  });
+  check('the same registration in different case is refused as the same van',
+    coDupReg.status >= 400, coDupReg.status);
+
+  const coBatchId = randomUUID();
+  const coBatchBody = {
+    batchClientId: coBatchId,
+    assignments: [
+      { resourceType: 'USER', userId: coSup.userId, roleId, shiftType: 'WEEKDAY_DAY',
+        isSupervisor: true, startsAt: '2026-07-21T07:00:00.000Z',
+        endsAt: '2026-07-21T17:00:00.000Z' },
+      { resourceType: 'VEHICLE', vehicleId: coVanId,
+        startsAt: '2026-07-21T07:00:00.000Z', endsAt: '2026-07-21T17:00:00.000Z' },
+      { resourceType: 'PROVIDER', providerCompanyId: northgate, roleId, headcount: 3,
+        startsAt: '2026-07-21T07:00:00.000Z', endsAt: '2026-07-21T17:00:00.000Z' },
+    ],
+  };
+  const coBatch = await call('POST', `/v1/projects/${projectId}/schedule`, {
+    ...coCtx, body: coBatchBody,
+  });
+  eq('a whole planning act is one request', coBatch.status, 201);
+  eq('...writing three rows', (coBatch.json.assignments as any[]).length, 3);
+  eq('...with no clashes yet', coBatch.json.warnings, []);
+  const coUserAssignment = (coBatch.json.assignments as any[]).find((a) => a.resourceType === 'USER');
+  eq('the planned cost resolves through the rate engine when a shift type is set',
+    coUserAssignment?.plannedSellCents, 80000);
+
+  const coReplay = await call('POST', `/v1/projects/${projectId}/schedule`, {
+    ...coCtx, body: coBatchBody,
+  });
+  eq('replaying the batch returns the first answer rather than a second copy',
+    coReplay.status, 201);
+  const { rows: coBatchRows } = await db.query<{ n: string }>(
+    `select count(*)::int as n from schedule_assignments where batch_client_id = $1`, [coBatchId]);
+  eq('...and there are still three rows', coBatchRows[0]?.n, 3);
+
+  /*
+   * The clash. §31: "surfaced at save time with the clash named" — so the save
+   * SUCCEEDS and the warning comes back beside the row. Refusing would be wrong on
+   * the facts: sometimes the double-booking is the plan, because the other job
+   * finishes at noon and the schedule does not know that.
+   */
+  const coSecondProject = (await call('POST', '/v1/projects', {
+    ...coCtx, body: { name: `Marina Bay ${RUN}`, clientCompanyId: harbour,
+                      engagementId: clientRes.json.client.engagementId },
+  })).json.project.id as string;
+  /*
+   * The subcontractor is assigned to this one as well, because a PROVIDER schedule
+   * row is refused unless the company is on the project — the one-hop rule checked
+   * rather than assumed (packet §4). The first draft omitted it and the headcount
+   * case failed with an undefined `warnings`, which is a 422 wearing a disguise.
+   */
+  await call('POST', `/v1/projects/${coSecondProject}/assignments`, {
+    ...coCtx, body: { providerCompanyId: northgate },
+  });
+  const coClash = await call('POST', `/v1/projects/${coSecondProject}/schedule`, {
+    ...coCtx,
+    body: {
+      assignments: [
+        { resourceType: 'USER', userId: coSup.userId, roleId, shiftType: 'WEEKDAY_DAY',
+          startsAt: '2026-07-21T09:00:00.000Z', endsAt: '2026-07-21T14:00:00.000Z' },
+        { resourceType: 'VEHICLE', vehicleId: coVanId,
+          startsAt: '2026-07-21T09:00:00.000Z', endsAt: '2026-07-21T14:00:00.000Z' },
+      ],
+    },
+  });
+  eq('a double-booking SAVES rather than being refused', coClash.status, 201);
+  const coClashCodes = (coClash.json.warnings as any[])
+    .flatMap((w) => (w.conflicts as any[]).map((c) => c.code)).sort();
+  eq('...and both clashes are named', coClashCodes, ['USER_OVERLAP', 'VEHICLE_OVERLAP']);
+  check('...naming the other project, so somebody can go and look',
+    String((coClash.json.warnings as any[])[0].conflicts[0].message).includes('Pier 9'),
+    (coClash.json.warnings as any[])[0].conflicts[0].message);
+
+  // A back-to-back handover is not a clash: the intervals are half-open, and warning
+  // on every ordinary day-then-night shift is how a warning channel gets ignored.
+  const coHandover = await call('POST', `/v1/projects/${projectId}/schedule`, {
+    ...coCtx,
+    body: {
+      assignments: [{ resourceType: 'USER', userId: coSup.userId, roleId, shiftType: 'NIGHT',
+        startsAt: '2026-07-21T17:00:00.000Z', endsAt: '2026-07-22T03:00:00.000Z' }],
+    },
+  });
+  eq('a shift starting when another ends warns about nothing', coHandover.json.warnings, []);
+
+  /*
+   * And a CANCELLED row conflicts with nothing.
+   *
+   * On a day of its own, which the first draft of this case got wrong: cancelling
+   * one of two overlapping rows and re-booking still clashes with the *other* one,
+   * so the assertion failed on a warning that was entirely correct. The window has
+   * to be one where the cancelled row is the only thing there.
+   */
+  const coDoomed = await call('POST', `/v1/projects/${coSecondProject}/schedule`, {
+    ...coCtx,
+    body: {
+      assignments: [{ resourceType: 'USER', userId: coSup.userId, roleId, shiftType: 'WEEKDAY_DAY',
+        startsAt: '2026-08-10T07:00:00.000Z', endsAt: '2026-08-10T17:00:00.000Z' }],
+    },
+  });
+  const coCancelId = (coDoomed.json.assignments as any[])[0].id as string;
+  const coCancelled = await call('PATCH', `/v1/schedule/${coCancelId}`, {
+    ...coCtx, body: { status: 'CANCELLED' },
+  });
+  eq('an assignment is cancelled rather than deleted',
+    (coCancelled.json.assignments as any[])[0].status, 'CANCELLED');
+  const coAfterCancel = await call('POST', `/v1/projects/${projectId}/schedule`, {
+    ...coCtx,
+    body: {
+      assignments: [{ resourceType: 'USER', userId: coSup.userId, roleId, shiftType: 'WEEKDAY_DAY',
+        startsAt: '2026-08-10T09:00:00.000Z', endsAt: '2026-08-10T12:00:00.000Z' }],
+    },
+  });
+  const coAfterCancelCodes = (coAfterCancel.json.warnings as any[])
+    .flatMap((w) => (w.conflicts as any[]).map((c) => c.code));
+  check('a cancelled booking clashes with nothing', !coAfterCancelCodes.includes('USER_OVERLAP'),
+    coAfterCancelCodes);
+  const { rows: coCancelledStill } = await db.query<{ status: string }>(
+    `select status from schedule_assignments where id = $1`, [coCancelId]);
+  eq('...and is still on the record, which is why cancel is a status and not a delete',
+    coCancelledStill[0]?.status, 'CANCELLED');
+
+  // ── 11. Availability, headcount and the unfilled requirement ─────────────
+  const coUnavailable = await call('POST', '/v1/availability', {
+    ...coCtx,
+    body: { resourceType: 'USER', userId: coSup.userId, kind: 'UNAVAILABLE',
+            startsAt: '2026-07-22T00:00:00.000Z', endsAt: '2026-07-23T00:00:00.000Z',
+            note: 'Leave' },
+  });
+  eq('an unavailability window is recorded', coUnavailable.status, 201);
+  const coOnLeave = await call('POST', `/v1/projects/${projectId}/schedule`, {
+    ...coCtx,
+    body: {
+      assignments: [{ resourceType: 'USER', userId: coSup.userId, roleId, shiftType: 'WEEKDAY_DAY',
+        startsAt: '2026-07-22T07:00:00.000Z', endsAt: '2026-07-22T17:00:00.000Z' }],
+    },
+  });
+  const coLeaveCodes = (coOnLeave.json.warnings as any[])
+    .flatMap((w) => (w.conflicts as any[]).map((c) => c.code));
+  check('booking somebody on leave warns rather than refuses',
+    coLeaveCodes.includes('UNAVAILABLE_WINDOW'), coLeaveCodes);
+
+  // The subcontractor states its own crew count — the one narrow cross-company read.
+  const coStated = await call('POST', '/v1/availability', {
+    ...coProviderCtx,
+    body: { resourceType: 'PROVIDER', providerCompanyId: northgate, kind: 'AVAILABLE',
+            headcount: 4, startsAt: '2026-07-01T00:00:00.000Z',
+            endsAt: '2026-08-01T00:00:00.000Z' },
+  });
+  eq('a subcontractor states its own crew count', coStated.status, 201);
+  const coStatesForOther = await call('POST', '/v1/availability', {
+    ...coCtx,
+    body: { resourceType: 'PROVIDER', providerCompanyId: northgate, kind: 'AVAILABLE',
+            headcount: 40, startsAt: '2026-07-01T00:00:00.000Z',
+            endsAt: '2026-08-01T00:00:00.000Z' },
+  });
+  eq('...and the hiring company cannot state one on their behalf', coStatesForOther.status, 403);
+
+  const coUnderCount = await call('POST', `/v1/projects/${coSecondProject}/schedule`, {
+    ...coCtx,
+    body: {
+      assignments: [{ resourceType: 'PROVIDER', providerCompanyId: northgate, roleId, headcount: 1,
+        startsAt: '2026-07-28T07:00:00.000Z', endsAt: '2026-07-28T17:00:00.000Z' }],
+    },
+  });
+  eq('booking within the stated crew warns about nothing', coUnderCount.json.warnings, []);
+  const coOverCount = await call('POST', `/v1/projects/${projectId}/schedule`, {
+    ...coCtx,
+    body: {
+      assignments: [{ resourceType: 'PROVIDER', providerCompanyId: northgate, roleId, headcount: 6,
+        startsAt: '2026-07-28T07:00:00.000Z', endsAt: '2026-07-28T17:00:00.000Z' }],
+    },
+  });
+  const coCountWarning = (coOverCount.json.warnings as any[])
+    .flatMap((w) => w.conflicts as any[]).find((c) => c.code === 'PROVIDER_HEADCOUNT');
+  check('overlapping PROVIDER rows warn only when the headcount exceeds the stated crew',
+    coCountWarning !== undefined, coOverCount.json.warnings);
+  check('...naming both numbers', String(coCountWarning?.message).includes('4 crew'),
+    coCountWarning?.message);
+
+  const coRequirements = await call('PUT', `/v1/projects/${projectId}/role-requirements`, {
+    ...coCtx,
+    body: { requirements: [{ roleId, quantity: 6, startsOn: '2026-07-21', endsOn: '2026-07-21' }] },
+  });
+  eq('a project role requirement is set', coRequirements.status, 200);
+  const coShortfall = (coRequirements.json.shortfalls as any[])[0];
+  check('...and the shortfall counts a PROVIDER row by its headcount',
+    coShortfall !== undefined && coShortfall.filled >= 4 && coShortfall.short >= 1,
+    coRequirements.json.shortfalls);
+
+  const coRequirementsMet = await call('PUT', `/v1/projects/${projectId}/role-requirements`, {
+    ...coCtx,
+    body: { requirements: [{ roleId, quantity: 2, startsOn: '2026-07-21', endsOn: '2026-07-21' }] },
+  });
+  eq('a requirement that is met produces no row at all', coRequirementsMet.json.shortfalls, []);
+
+  const coWeek = await call('GET', '/v1/schedule?view=WEEK&date=2026-07-21', { ...coCtx });
+  eq('the company-wide week answers', coWeek.status, 200);
+  eq('...snapped to a Monday start', coWeek.json.window.fromDate, '2026-07-20');
+  check('...carrying rows from more than one project',
+    new Set((coWeek.json.assignments as any[]).map((a) => a.projectId)).size >= 2);
+
+  // A subcontractor sees only rows naming it — a schedule row names a person, a van
+  // and a registration, which is the shape of another business's operations.
+  const coSubReadsSchedule = await call('GET', `/v1/projects/${projectId}/schedule`, {
+    ...coProviderCtx,
+  });
+  eq('a subcontractor can read the schedule', coSubReadsSchedule.status, 200);
+  const coSubSeen = coSubReadsSchedule.json.assignments as any[];
+  check('...and sees only rows naming it or its people',
+    coSubSeen.every((a) => a.providerCompanyId === northgate),
+    coSubSeen.map((a) => a.resourceType));
+  check('...with no planned money on any of them, because that is the owner’s margin',
+    coSubSeen.every((a) => a.plannedSellCents === null && a.plannedCostCents === null));
+
+  // ── 12. The two places §31 says the schedule must reach ──────────────────
+  const coPrefill = await call(
+    'GET', `/v1/projects/${projectId}/diary/prefill?date=2026-07-21`, { ...coCtx });
+  eq('the diary prefill now reads the schedule as well as the timesheets',
+    coPrefill.json.sources, { timeLogs: true, schedule: true });
+  const coScheduleSuggestions = (coPrefill.json.attendance as any[])
+    .filter((a) => a.source === 'SCHEDULE');
+  check('...offering a scheduled person who has recorded nothing',
+    coScheduleSuggestions.length > 0, coPrefill.json.attendance);
+  check('...with no hours, because a booking is a plan and hours are what a timesheet says',
+    coScheduleSuggestions.every((a) => a.hours === null));
+
+  const coNoShift = await call('POST', `/v1/projects/${projectId}/schedule`, {
+    ...coCtx,
+    body: {
+      assignments: [{ resourceType: 'USER', userId: coSup.userId, roleId,
+        startsAt: '2026-07-30T07:00:00.000Z', endsAt: '2026-07-30T17:00:00.000Z' }],
+    },
+  });
+  const coNoShiftRow = (coNoShift.json.assignments as any[])[0];
+  eq('an assignment with no shift type has NO planned figure rather than a zero',
+    [coNoShiftRow.plannedCostCents, coNoShiftRow.plannedSellCents], [null, null]);
+  check('...and says why, rather than leaving a blank cell',
+    String(coNoShiftRow.plannedReason).includes('shift type'), coNoShiftRow.plannedReason);
+
+  section('Project timeline — the chronology, the two audiences, and the kind nobody has');
+
+  // ── 13. The timeline reads like a story ──────────────────────────────────
+  const coTimeline = await call('GET', `/v1/projects/${projectId}/timeline?limit=100`, { ...coCtx });
+  eq('the timeline answers', coTimeline.status, 200);
+  const coTypes = new Set((coTimeline.json.items as any[]).map((i) => i.type));
+  for (const type of ['PROJECT_CREATED', 'CREW_ASSIGNED', 'SCHEDULE_ASSIGNED', 'TIME_LOGGED',
+                      'WORK_APPROVED', 'EXPENSE_APPROVED', 'VARIATION_RAISED',
+                      'VARIATION_DECIDED']) {
+    check(`...carrying ${type}`, coTypes.has(type), [...coTypes]);
+  }
+  const coTimes = (coTimeline.json.items as any[]).map((i) => i.at);
+  check('...in event-time order, newest first',
+    coTimes.every((t, i) => i === 0 || (coTimes[i - 1] as string) >= (t as string)));
+  check('...each item carrying a one-line description and a link',
+    (coTimeline.json.items as any[]).every((i) => typeof i.description === 'string'
+      && i.description.length > 0 && typeof i.href === 'string'));
+
+  const coFiltered = await call(
+    'GET', `/v1/projects/${projectId}/timeline?types=VARIATION_RAISED`, { ...coCtx });
+  check('a type filter returns only that type',
+    (coFiltered.json.items as any[]).every((i) => i.type === 'VARIATION_RAISED'),
+    (coFiltered.json.items as any[]).map((i) => i.type));
+
+  const coPage1 = await call('GET', `/v1/projects/${projectId}/timeline?limit=3`, { ...coCtx });
+  eq('the page is the size that was asked for', (coPage1.json.items as any[]).length, 3);
+  check('...with a cursor when there is more', coPage1.json.nextCursor !== null);
+  const coPage2 = await call(
+    'GET',
+    `/v1/projects/${projectId}/timeline?limit=3&cursor=${encodeURIComponent(String(coPage1.json.nextCursor))}`,
+    { ...coCtx });
+  const coPage1Ids = new Set((coPage1.json.items as any[]).map((i) => i.id));
+  check('...and the next page repeats nothing',
+    (coPage2.json.items as any[]).every((i) => !coPage1Ids.has(i.id)));
+
+  const coBadCursor = await call(
+    'GET', `/v1/projects/${projectId}/timeline?cursor=nonsense`, { ...coCtx });
+  eq('a cursor this endpoint never issued is refused rather than guessed at',
+    coBadCursor.status, 422);
+
+  /*
+   * §35 names thirteen kinds of thing and INCIDENT has no table anywhere in the
+   * plan's DDL. Reported rather than silently omitted, because the next reader of
+   * §35 will come looking for exactly this.
+   */
+  const coSources = coTimeline.json.sources as any[];
+  const coIncident = coSources.find((s) => s.type === 'INCIDENT');
+  eq('INCIDENT is reported as having no table, rather than silently omitted',
+    [coIncident?.included, coIncident?.reason], [false, 'NO_TABLE']);
+
+  /*
+   * The client variant is a PORTAL route, not a parameter on the owner's one.
+   * `projectAccess` 404s a client — correctly, because a client is not on
+   * `project_assignments` — which is the reason the portal has its own access check
+   * at all. The first draft asked the owner's route and got a 404 that was the
+   * product being right.
+   */
+  const coOwnerRouteForClient = await call(
+    'GET', `/v1/projects/${projectId}/timeline`,
+    { token: clientUser.token, companyId: harbour });
+  eq('a client asking the owner’s timeline route is not found', coOwnerRouteForClient.status, 404);
+
+  const coClientTimeline = await call(
+    'GET', `/v1/portal/projects/${projectId}/timeline?limit=100`,
+    { token: clientUser.token, companyId: harbour });
+  eq('the client reads it through the portal instead',
+    coClientTimeline.status, 200);
+  const coClientTypes = new Set((coClientTimeline.json.items as any[]).map((i) => i.type));
+  for (const forbidden of ['SCHEDULE_ASSIGNED', 'TIME_LOGGED', 'EXPENSE_APPROVED',
+                           'VARIATION_RAISED']) {
+    check(`...and never sees ${forbidden}`, !coClientTypes.has(forbidden), [...coClientTypes]);
+  }
+  check('...but does see the variation DECISION, which is money they agreed to pay',
+    coClientTypes.has('VARIATION_DECIDED'), [...coClientTypes]);
+  const coClientPayload = JSON.stringify(coClientTimeline.json);
+  check('...and the whole payload carries no PAY figure', !coClientPayload.includes('40000'));
+
+  const coPortalVariations = await call(
+    'GET', `/v1/portal/projects/${projectId}/variations`,
+    { token: clientUser.token, companyId: harbour });
+  eq('the client sees the variations they agreed to', coPortalVariations.status, 200);
+  const coPortalVars = coPortalVariations.json.variations as any[];
+  check('...APPROVED and later only',
+    coPortalVars.length > 0
+      && coPortalVars.every((v) => ['APPROVED', 'COMPLETED', 'INVOICED'].includes(v.status)),
+    coPortalVars.map((v) => v.status));
+  check('...at the sell figure, with NO field a cost could occupy',
+    coPortalVars.every((v) => typeof v.sellTotalCents === 'number'
+      && !('costTotalCents' in v) && !('marginPct' in v) && !('lines' in v)),
+    Object.keys(coPortalVars[0] ?? {}));
+  check('...and nothing the contractor is still thinking about',
+    !JSON.stringify(coPortalVars).includes('DRAFT')
+      && !JSON.stringify(coPortalVars).includes('REJECTED'));
+
+  // ── 14. The correction path ──────────────────────────────────────────────
+  const coBeforeCorrection = (await call('GET', `/v1/projects/${projectId}/summary`, { ...coCtx }))
+    .json.summary.variationSellCents as number;
+  const coSecondVar = await call('POST', `/v1/projects/${projectId}/variations`, {
+    ...coCtx,
+    body: {
+      reference: 'VO-015', description: 'Supersedes VO-014 ironmongery',
+      requestedOn: '2026-07-26',
+      lines: [{ kind: 'MATERIAL', description: 'Ironmongery sets', quantity: 4,
+                unitCostCents: 5000, unitSellCents: 7000 }],
+    },
+  });
+  eq('a correction is a NEW variation, which is the only path there is',
+    coSecondVar.status, 201);
+  const coSecondVarId = coSecondVar.json.variation.id as string;
+  await call('POST', `/v1/variations/${coSecondVarId}/submit`, { ...coCtx });
+  await call('POST', `/v1/variations/${coSecondVarId}/approve`, { ...coCtx });
+  const coAfterCorrection = await call('GET', `/v1/projects/${projectId}/summary`, { ...coCtx });
+  eq('...and both stand, with the revenue the sum of the two',
+    coAfterCorrection.json.summary.variationSellCents, coBeforeCorrection + 28000);
+  eq('...counted as two approved variations', coAfterCorrection.json.summary.approvedVariations, 2);
+
+  // §30.1's later states still count as approved: marking the works complete must not
+  // make a project's revenue fall.
+  await call('POST', `/v1/variations/${coSecondVarId}/complete`, { ...coCtx });
+  const coAfterComplete = await call('GET', `/v1/projects/${projectId}/summary`, { ...coCtx });
+  eq('marking the works complete does not reduce the project’s revenue',
+    coAfterComplete.json.summary.variationSellCents,
+    coAfterCorrection.json.summary.variationSellCents);
+
+  // ── 15. Delete refusals ──────────────────────────────────────────────────
+  const coProjectDelete = await call('DELETE', `/v1/projects/${projectId}`, { ...coCtx });
+  eq('the project refuses to be deleted', coProjectDelete.status, 409);
+  check('...naming the variations alongside whatever else stands in the way',
+    String(coProjectDelete.json.error?.message).includes('variation'),
+    coProjectDelete.json.error?.message);
+
+  const coVehicleDelete = await call('DELETE', `/v1/vehicles/${coVanId}`, { ...coCtx });
+  eq('a vehicle with bookings refuses to be deleted', coVehicleDelete.status, 409);
+  check('...offering Retire instead, and naming the count',
+    String(coVehicleDelete.json.error?.message).includes('Retire')
+      && String(coVehicleDelete.json.error?.message).includes('schedule assignment'),
+    coVehicleDelete.json.error?.message);
+  const coRetire = await call('PATCH', `/v1/vehicles/${coVanId}`, {
+    ...coCtx, body: { active: false },
+  });
+  eq('...and retiring works', coRetire.json.vehicle.active, false);
+
+  const coLocation = await call('POST', `/v1/projects/${projectId}/locations`, {
+    ...coCtx, body: { name: 'Level 3 core', kind: 'SITE_AREA' },
+  });
+  eq('a location is created for the schedule to point at', coLocation.status, 201);
+  const coLocationId = coLocation.json.location.id as string;
+  await call('POST', `/v1/projects/${projectId}/schedule`, {
+    ...coCtx,
+    body: {
+      assignments: [{ resourceType: 'USER', userId: coSup.userId, roleId, shiftType: 'WEEKDAY_DAY',
+        locationId: coLocationId, startsAt: '2026-08-03T07:00:00.000Z',
+        endsAt: '2026-08-03T17:00:00.000Z' }],
+    },
+  });
+  const coLocationDelete = await call('DELETE', `/v1/locations/${coLocationId}`, { ...coCtx });
+  eq('a location used by a scheduled crew refuses to be deleted', coLocationDelete.status, 409);
+  check('...with the registry’s sentence, naming what is using it',
+    String(coLocationDelete.json.error?.message).includes('scheduled crew'),
+    coLocationDelete.json.error?.message);
+
+  // ── The trail, the notices, and the invariants that had to be right ─────
+  await drainWorkers();
+
+  const { rows: coAudit } = await db.query<{ action: string; visible_to_client: boolean }>(
+    `select action, visible_to_client from audit_logs
+      where company_id in ($1, $2)
+        and (action like 'variation.%' or action like 'schedule.%'
+          or action like 'vehicle.%' or action like 'budget.%')
+      order by created_at`, [meridian, northgate]);
+  const coActions = coAudit.map((r) => r.action);
+  for (const action of ['variation.created', 'variation.submitted', 'variation.rejected',
+                        'variation.approved', 'variation.client_approval_recorded',
+                        'budget.set', 'vehicle.created', 'schedule.assigned']) {
+    check(`${action} is its own audited act`, coActions.includes(action), [...new Set(coActions)]);
+  }
+  check('an approved variation is visible in the client’s trail',
+    coAudit.some((r) => r.action === 'variation.approved' && r.visible_to_client));
+  check('...and a rejection is not — a client seeing a variation their contractor refused ' +
+        'internally is a conversation the product should not start',
+    coAudit.filter((r) => r.action === 'variation.rejected').every((r) => !r.visible_to_client));
+
+  const { rows: coNotice } = await db.query<{ title: string }>(
+    `select title from notifications where kind = 'variation.submitted' and subject_id = $1`,
+    [coVarId]);
+  check('the approver is told a variation is waiting for a decision', coNotice.length > 0, coNotice);
+
+  const { rows: coLineIdentity } = await db.query<{ n: string }>(
+    `select count(*)::int as n from variation_lines
+      where cost_cents <> round(quantity * unit_cost_cents)
+         or sell_cents <> round(quantity * unit_sell_cents)`);
+  eq('no variation line in the database disagrees with its own arithmetic',
+    coLineIdentity[0]?.n, 0);
+
+  const { rows: coHeaderDrift } = await db.query<{ n: string }>(
+    `select count(*)::int as n from (
+       select v.id from variations v
+         left join variation_lines l on l.variation_id = v.id
+        group by v.id, v.sell_total_cents, v.cost_total_cents
+       having v.sell_total_cents <> coalesce(sum(l.sell_cents), 0)
+           or v.cost_total_cents <> coalesce(sum(l.cost_cents), 0)) drift`);
+  eq('and no variation header in the database disagrees with its lines',
+    coHeaderDrift[0]?.n, 0);
+
+  const { rows: coBudgetCurrency } = await db.query<{ n: string }>(
+    `select count(*)::int as n from information_schema.columns
+      where table_name = 'project_budgets' and column_name = 'currency'`);
+  eq('project_budgets has no currency column — 0017’s reasoning, held (finding 1)',
+    coBudgetCurrency[0]?.n, 0);
+
+  const { rows: coVehicleColumn } = await db.query<{ n: string }>(
+    `select count(*)::int as n from information_schema.columns
+      where table_name = 'project_activities' and column_name = 'vehicle_id'`);
+  eq('project_activities.vehicle_id exists, now that it has a reader (finding 8)',
+    coVehicleColumn[0]?.n, 1);
+
+  /*
+   * ── PHASE 10'S HOOK, PAID ────────────────────────────────────────────────
+   *
+   * `reporting-signoff.md` finding 11 gave `PACK_VARIATIONS` an `availableFrom` of
+   * 11 so that a completion pack could not assert *no variations* about a feature
+   * that did not exist. Moving `CURRENT_BUILD_PHASE` from 10 to 11 was the whole of
+   * the edit: no change to the catalog, and every report generated before it keeps
+   * its own stored `sections` array.
+   *
+   * The pack is generated on the project that now has two approved variations, so
+   * this asserts the section is offered, chosen and populated — three different
+   * things, and the middle one is what a phase gate actually controls.
+   */
+  const coSections = await call('GET', `/v1/projects/${projectId}/reports/sections`, { ...coCtx });
+  const coPackKinds = (coSections.json.kinds as any[]).find((k) => k.kind === 'EVIDENCE_PACK');
+  check('the evidence pack now offers §29.2’s variations section',
+    (coPackKinds?.sections as any[]).some((s) => s.key === 'PACK_VARIATIONS'),
+    (coPackKinds?.sections as any[])?.map((s) => s.key));
+  check('...and defaults it on', (coPackKinds?.defaults as string[]).includes('PACK_VARIATIONS'),
+    coPackKinds?.defaults);
+  check('...while incidents stay absent, because no table for them exists anywhere',
+    !(coPackKinds?.sections as any[]).some((s) => s.key === 'PACK_INCIDENTS'));
+
+  const coPack = await call('POST', `/v1/projects/${projectId}/reports`, {
+    ...coCtx, body: { kind: 'EVIDENCE_PACK', audience: 'INTERNAL' },
+  });
+  eq('an evidence pack is generated', coPack.status, 201);
+  const coPackDetail = await call('GET', `/v1/reports/${coPack.json.report.id}`, { ...coCtx });
+  const coPackBody = coPackDetail.json.snapshot.body;
+  check('...with the variations section chosen',
+    (coPackDetail.json.snapshot.meta.sections as string[]).includes('PACK_VARIATIONS'),
+    coPackDetail.json.snapshot.meta.sections);
+  check('...and the approved variations frozen into it',
+    (coPackBody.variations as any[]).length >= 2,
+    (coPackBody.variations as any[])?.map((v) => v.reference));
+  /*
+   * The one decision in that table: a pack listing a variation the contractor
+   * approved without the client's own agreement on file, and not saying so, would be
+   * asserting an agreement it cannot evidence — to the reader most likely to be
+   * quoting it back during a dispute.
+   */
+  check('...each saying whether the client’s own agreement is on file',
+    (coPackBody.variations as any[]).every(
+      (v) => typeof v.clientApprovalRecorded === 'boolean'
+    ));
+  check('...and carrying NO cost figure or margin, because the pack has two audiences',
+    (coPackBody.variations as any[]).every(
+      (v) => !('costTotalCents' in v) && !('marginPct' in v)
+    ),
+    Object.keys((coPackBody.variations as any[])[0] ?? {}));
+  eq('...with the project’s reporting currency frozen beside them, not read live',
+    coPackBody.currency, 'USD');
+
+  const coPackPdf = await call('GET', `/v1/reports/${coPack.json.report.id}/download.pdf`,
+    { ...coCtx, raw: true });
+  eq('the pack renders as a PDF with the new section in it', coPackPdf.status, 200);
+  check('...and it is a real PDF', coPackPdf.buffer?.subarray(0, 4).toString() === '%PDF');
+
+  // PHASE 12 - COMPLIANCE & ANALYTICS
+  // `docs/operating-model/compliance-analytics.md` section 12, exercised against
+  // the same live provider and project as the core loop.
+  section('Compliance - warnings, enforcement, renewals and the expiry ladder');
+
+  const cpEmpty = await call('GET', '/v1/compliance/summary', { ...coCtx });
+  eq('the compliance portfolio answers before any requirement exists', cpEmpty.status, 200);
+  const cpNorthgateEmpty = (cpEmpty.json.summary.providers as any[]).find(
+    (provider) => provider.subjectCompanyId === northgate
+  );
+  eq('...calling an unrecorded provider unknown rather than compliant',
+    cpNorthgateEmpty?.overallStatus, 'UNKNOWN');
+
+  const cpWorkerDenied = await call('GET', '/v1/compliance/summary', { ...coSupCtx });
+  eq('a supervisor without compliance.manage is denied independently', cpWorkerDenied.status, 403);
+  const cpRivalList = await call('GET', '/v1/compliance-documents', {
+    token: rival.token, companyId: rival.companyId!,
+  });
+  eq('a paying rival may open only its own empty register', cpRivalList.status, 200);
+  eq('...without learning that Northgate has documents elsewhere', cpRivalList.json.documents, []);
+
+  const cpMissing = await call('POST', '/v1/compliance-documents', {
+    ...coCtx,
+    body: {
+      subjectCompanyId: northgate,
+      kind: 'PUBLIC_LIABILITY',
+      title: 'Public liability insurance',
+      mandatory: true,
+      notes: 'Owner-only review note',
+    },
+  });
+  eq('a mandatory requirement can be recorded before a file arrives', cpMissing.status, 201);
+  eq('...and that honest absence is MISSING', cpMissing.json.document.status, 'MISSING');
+  const cpMissingId = cpMissing.json.document.id as string;
+
+  const cpPendingFile = randomUUID();
+  const cpReadyFile = randomUUID();
+  const cpSelfFile = randomUUID();
+  await db.query(
+    `insert into stored_files
+       (id, company_id, bucket_key, original_filename, content_type, byte_size,
+        kind, status, uploaded_by_user_id)
+     values
+       ($1,$2,$3,'still-scanning.pdf','application/pdf',10,'DOCUMENT','SCANNING',$4),
+       ($5,$2,$6,'public-liability.pdf','application/pdf',10,'DOCUMENT','READY',$4),
+       ($7,$8,$9,'electrical-licence.pdf','application/pdf',10,'DOCUMENT','READY',$10)`,
+    [
+      cpPendingFile, meridian, `verify/${RUN}/compliance-pending`, owner.userId,
+      cpReadyFile, `verify/${RUN}/compliance-ready`,
+      cpSelfFile, northgate, `verify/${RUN}/compliance-self`, providerUser.userId,
+    ]
+  );
+  const cpScanning = await call('POST', '/v1/compliance-documents', {
+    ...coCtx,
+    body: {
+      subjectCompanyId: northgate, kind: 'CERTIFICATE', title: 'Scanning certificate',
+      fileId: cpPendingFile,
+    },
+  });
+  eq('a file still being checked cannot become compliance evidence', cpScanning.status, 409);
+
+  const cpRejectWithoutReason = await call('PATCH', `/v1/compliance-documents/${cpMissingId}`, {
+    ...coCtx,
+    body: { expectedRevision: cpMissing.json.document.revision, review: { decision: 'REJECT' } },
+  });
+  eq('rejecting a document without a reason is refused', cpRejectWithoutReason.status, 422);
+  const cpRejected = await call('PATCH', `/v1/compliance-documents/${cpMissingId}`, {
+    ...coCtx,
+    body: {
+      expectedRevision: cpMissing.json.document.revision,
+      review: { decision: 'REJECT', reason: 'Policy schedule is absent' },
+    },
+  });
+  eq('a reasoned rejection is accepted', cpRejected.status, 200);
+  eq('...and becomes the explicit REJECTED state', cpRejected.json.document.status, 'REJECTED');
+
+  const providerBooking = (date: string) => ({
+    batchClientId: randomUUID(),
+    assignments: [{
+      resourceType: 'PROVIDER', providerCompanyId: northgate, roleId, headcount: 1,
+      startsAt: `${date}T08:00:00.000Z`, endsAt: `${date}T17:00:00.000Z`,
+    }],
+  });
+  const cpWarnBatch = await call('POST', `/v1/projects/${projectId}/schedule`, {
+    ...coCtx, body: providerBooking('2029-01-10'),
+  });
+  eq('with enforcement off, a non-compliant provider booking still saves', cpWarnBatch.status, 201);
+  eq('...and the saved row carries the named compliance state',
+    cpWarnBatch.json.assignments?.[0]?.compliance?.status, 'REJECTED');
+  check('...with a warning rather than a silent flag',
+    String(cpWarnBatch.json.assignments?.[0]?.compliance?.warning ?? '').includes('Public liability'));
+
+  await db.query(
+    `update sustainability_settings set enforce_compliance = true, updated_at = now()
+      where company_id = $1`,
+    [meridian]
+  );
+  const cpBlockedBooking = await call('POST', `/v1/projects/${projectId}/schedule`, {
+    ...coCtx, body: providerBooking('2029-01-11'),
+  });
+  eq('turning enforcement on refuses the same provider booking', cpBlockedBooking.status, 409);
+  check('...and names the record which must be fixed',
+    String(cpBlockedBooking.json.error?.message ?? '').includes('Public liability'));
+
+  const cpDraftSubmission = await call('POST', '/v1/project-submissions', {
+    ...coProviderCtx,
+    body: { projectId, periodStart: '2029-01-01', periodEnd: '2029-01-07' },
+  });
+  eq('a provider can still prepare a draft while enforcement is on', cpDraftSubmission.status, 201);
+  const cpBlockedSubmission = await call(
+    'POST',
+    `/v1/project-submissions/${cpDraftSubmission.json.submission.id}/submit`,
+    coProviderCtx
+  );
+  eq('...but cannot submit it while a mandatory record is rejected', cpBlockedSubmission.status, 409);
+
+  const cpRenewed = await call('POST', '/v1/compliance-documents', {
+    ...coCtx,
+    body: {
+      subjectCompanyId: northgate,
+      kind: 'PUBLIC_LIABILITY',
+      title: 'Public liability insurance 2029',
+      fileId: cpReadyFile,
+      issuedOn: '2028-01-01',
+      expiresOn: '2029-12-31',
+      mandatory: true,
+      supersedesId: cpMissingId,
+    },
+  });
+  eq('renewal inserts a new evidence row', cpRenewed.status, 201);
+  eq('...whose dates make it valid', cpRenewed.json.document.status, 'VALID');
+  const cpRenewedId = cpRenewed.json.document.id as string;
+
+  const cpValidBooking = await call('POST', `/v1/projects/${projectId}/schedule`, {
+    ...coCtx, body: providerBooking('2029-01-12'),
+  });
+  eq('once current, an enforced provider booking succeeds', cpValidBooking.status, 201);
+  eq('...and its compliance badge is valid',
+    cpValidBooking.json.assignments?.[0]?.compliance?.status, 'VALID');
+  const cpSubmitted = await call(
+    'POST',
+    `/v1/project-submissions/${cpDraftSubmission.json.submission.id}/submit`,
+    coProviderCtx
+  );
+  eq('the prepared provider submission now passes the same central policy', cpSubmitted.status, 200);
+
+  await subscribe(northgate, 'pro');
+  const { rows: cpExpiryDate } = await db.query<{ day: string }>(
+    `select to_char((now() at time zone coalesce(time_zone, 'UTC'))::date + 45, 'YYYY-MM-DD') as day
+       from companies where id = $1`,
+    [northgate]
+  );
+  const cpSelf = await call('POST', '/v1/compliance-documents', {
+    ...coProviderCtx,
+    body: {
+      subjectCompanyId: northgate,
+      kind: 'LICENCE',
+      title: 'Electrical contractor licence',
+      fileId: cpSelfFile,
+      expiresOn: cpExpiryDate[0]!.day,
+      mandatory: true,
+      notes: 'Northgate internal note',
+    },
+  });
+  eq('a subcontractor can file a company certificate once', cpSelf.status, 201);
+  const cpSelfId = cpSelf.json.document.id as string;
+  const cpHirerReads = await call('GET', `/v1/compliance-documents/${cpSelfId}`, coCtx);
+  eq('its direct hirer can read that self-filed certificate', cpHirerReads.status, 200);
+  eq('...but not the subcontractor\'s internal note', cpHirerReads.json.document.notes, null);
+  const cpRivalReads = await call('GET', `/v1/compliance-documents/${cpSelfId}`, {
+    token: rival.token, companyId: rival.companyId!,
+  });
+  eq('an unrelated paying company cannot discover it by id', cpRivalReads.status, 404);
+
+  await db.query(`update compliance_documents set status = 'VALID' where id = $1`, [cpSelfId]);
+  const cpExpiryPass = await runComplianceExpiryBatch();
+  check('the nightly pass reconciles a stale date-derived status', cpExpiryPass.statusChanged >= 1,
+    cpExpiryPass);
+  check('...and emits the next applicable ladder rung', cpExpiryPass.alerted >= 1, cpExpiryPass);
+  const { rows: cpOneAlert } = await db.query<{ threshold_days: number }>(
+    `select threshold_days from compliance_alerts where document_id = $1`, [cpSelfId]);
+  eq('45 days remaining lands on the 60-day rung', cpOneAlert.map((row) => row.threshold_days), [60]);
+  await runComplianceExpiryBatch();
+  const { rows: cpStillOneAlert } = await db.query<{ n: string }>(
+    `select count(*)::text as n from compliance_alerts where document_id = $1`, [cpSelfId]);
+  eq('running the nightly pass twice does not repeat a rung', cpStillOneAlert[0]?.n, '1');
+
+  await drainWorkers();
+  const { rows: cpNotifiedCompanies } = await db.query<{ company_id: string }>(
+    `select distinct company_id from notifications
+      where kind = 'compliance.expiring' and subject_id = $1 order by company_id`,
+    [cpSelfId]
+  );
+  check('a self-filed expiry reaches both the subcontractor and every direct tracking hirer',
+    [meridian, northgate].every((id) => cpNotifiedCompanies.some((row) => row.company_id === id)),
+    cpNotifiedCompanies);
+
+  const cpRaceBody = {
+    subjectCompanyId: northgate,
+    kind: 'PUBLIC_LIABILITY',
+    title: 'Public liability insurance 2030',
+    fileId: cpReadyFile,
+    issuedOn: '2029-01-01',
+    expiresOn: '2030-12-31',
+    mandatory: true,
+    supersedesId: cpRenewedId,
+  };
+  const cpRace = await Promise.all([
+    call('POST', '/v1/compliance-documents', { ...coCtx, body: cpRaceBody }),
+    call('POST', '/v1/compliance-documents', { ...coCtx, body: cpRaceBody }),
+  ]);
+  eq('two concurrent renewals produce one successor and one conflict',
+    cpRace.map((response) => response.status).sort(), [201, 409]);
+  const cpWinner = cpRace.find((response) => response.status === 201)!;
+  const { rows: cpSuccessors } = await db.query<{ n: string }>(
+    `select count(*)::text as n from compliance_documents
+      where supersedes_id = $1 and deleted_at is null`,
+    [cpRenewedId]
+  );
+  eq('the database, not timing in the route, keeps the renewal chain single',
+    cpSuccessors[0]?.n, '1');
+  const cpHistory = await call('GET',
+    `/v1/compliance-documents?subjectCompanyId=${northgate}&includeHistory=true`, coCtx);
+  check('the superseded evidence remains in explicit history',
+    (cpHistory.json.documents as any[]).some(
+      (document) => document.id === cpRenewedId && document.superseded === true
+    ));
+
+  await db.query(
+    `update compliance_documents
+        set issued_on = null, expires_on = (now() at time zone 'UTC')::date - 1, status = 'VALID'
+      where id = $1`,
+    [cpWinner.json.document.id]
+  );
+  await runComplianceExpiryBatch();
+  const cpExpiredBooking = await call('POST', `/v1/projects/${projectId}/schedule`, {
+    ...coCtx, body: providerBooking('2029-01-13'),
+  });
+  eq('the nightly EXPIRED state immediately feeds the same enforcement gate',
+    cpExpiredBooking.status, 409);
+
+  section('Client analytics - quarterly/yearly workflow and project comparison inputs');
+  const cpPeriodList = await call('GET', '/v1/reports?kind=CLIENT_PERIOD', { ...suCtx });
+  eq('the client-report workspace can load existing frozen periods', cpPeriodList.status, 200);
+  check('...including the annual aggregate Phase 10 already proved project by project',
+    (cpPeriodList.json.reports as any[]).some((report) => report.id === rpPeriod.json.report.id));
+  const cpAnnual = await call('POST', '/v1/reports/client-period', {
+    ...suCtx,
+    body: {
+      audience: 'INTERNAL', clientCompanyId: rpClientCompany,
+      periodStart: '2027-01-01', periodEnd: '2027-12-31',
+    },
+  });
+  check('a full client year is one report, whether newly inserted or content-addressed',
+    [200, 201].includes(cpAnnual.status), cpAnnual.status);
+  const cpAnnualDetail = await call('GET', `/v1/reports/${cpAnnual.json.report.id}`, { ...suCtx });
+  check('the annual report exposes every contributing project as comparison input',
+    (cpAnnualDetail.json.snapshot.body.projects as any[]).length >= 1,
+    cpAnnualDetail.json.snapshot.body.projects);
+  eq('...and keeps mixed-factor-year disclosure explicit',
+    typeof cpAnnualDetail.json.snapshot.body.mixedFactorYears, 'boolean');
+
+  const cpPurgeFile = randomUUID();
+  const cpHeldFile = randomUUID();
+  await db.query(
+    `update company_subscriptions
+        set entitlements_snapshot = jsonb_set(entitlements_snapshot, '{limits,artifact_retention_days}', '0')
+      where company_id = $1;
+     update projects set status = 'COMPLETED', updated_at = '2000-01-01' where id = $2;
+     insert into stored_files
+       (id, company_id, project_id, bucket_key, original_filename, content_type, byte_size,
+        kind, status, uploaded_by_user_id, created_at)
+     values
+       ($3,$1,$2,$4,'aged.jpg','image/jpeg',1,'IMAGE','READY',$5,'2000-01-01'),
+       ($6,$1,$2,$7,'held.jpg','image/jpeg',1,'IMAGE','READY',$5,'2000-01-01');
+     insert into report_file_references (report_id, file_id, role) values ($8,$6,'EVIDENCE')`,
+    [
+      meridian, coEmptyProject, cpPurgeFile, `verify/${RUN}/aged-artifact`, owner.userId,
+      cpHeldFile, `verify/${RUN}/held-artifact`, coPack.json.report.id,
+    ]
+  );
+  const cpRetention = await runArtifactRetentionBatch();
+  check('the artifact-class sweep reclaims completed-project bytes after the plan period',
+    cpRetention.reclaimed >= 1, cpRetention);
+  const { rows: cpRetentionRows } = await db.query<{ id: string; status: string }>(
+    `select id, status from stored_files where id = any($1::uuid[]) order by id`,
+    [[cpPurgeFile, cpHeldFile]]
+  );
+  eq('an unheld artifact becomes unavailable while its evidence row survives',
+    cpRetentionRows.find((row) => row.id === cpPurgeFile)?.status, 'DELETED');
+  eq('a file cited by a frozen report remains ready regardless of the plan period',
+    cpRetentionRows.find((row) => row.id === cpHeldFile)?.status, 'READY');
+  const { rows: cpQueuedDelete } = await db.query<{ status: string }>(
+    `select status from artifact_deletion_queue where file_id = $1`, [cpPurgeFile]);
+  eq('object deletion is durable work and reaches a terminal queue state',
+    cpQueuedDelete[0]?.status, 'DELETED');
 
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);

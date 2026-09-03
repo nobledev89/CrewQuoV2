@@ -97,6 +97,16 @@ const WORKSPACE_ROUTES = [
   '/sustainability',
   '/sustainability/factors',
   '/sustainability/settings',
+  /*
+   * Phase 11's two (§31). The week planner is the one screen in the product with
+   * drag-and-drop, so it is the one whose axe sweep matters most — a drop target
+   * that is a `<td>` with handlers and no accessible role is exactly the shape a
+   * scanner catches and a human does not. Its *keyboard* half is
+   * `keyboard.spec.ts`'s "a scheduled booking can be moved to another day without a
+   * pointer", because axe cannot press a key.
+   */
+  '/schedule',
+  '/schedule/fleet',
   '/settings',
   '/security',
   '/profile',
