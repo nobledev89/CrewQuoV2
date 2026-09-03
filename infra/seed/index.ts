@@ -23,6 +23,22 @@ const FEATURES: Array<[key: string, name: string, category: string]> = [
   ['sustainability', 'Sustainability', 'sustainability'],
   ['carbon_engine', 'Carbon engine', 'sustainability'],
   ['custom_factors', 'Custom emission factors', 'sustainability'],
+  /*
+   * Phase 10 (§43). Four keys, and one of them is a stated departure from §43's
+   * own table — `client_signoff` sits on Starter rather than Pro
+   * (`reporting-signoff.md` §13.6). A sign-off is how a small contractor proves a
+   * job is finished, it costs nothing to serve, and putting the proof of
+   * completion two tiers above the work would stop the free-to-Starter path one
+   * step short of the thing the customer is actually selling.
+   *
+   * `client_reporting` ships now even though §38.2's UI is Phase 12, because the
+   * aggregation query and the CLIENT_PERIOD report kind ship now, and an ungated
+   * route is not a smaller decision for being invisible.
+   */
+  ['sustainability_reports', 'Sustainability reports', 'reporting'],
+  ['evidence_pack', 'Evidence & completion pack', 'reporting'],
+  ['client_signoff', 'Client sign-off', 'reporting'],
+  ['client_reporting', 'Client-level reporting', 'reporting'],
   ['invoicing', 'Invoicing', 'billing'],
   ['audit_visibility', 'Audit trail visibility', 'portal'],
   ['api_access', 'API access', 'platform'],
@@ -114,6 +130,9 @@ const PLANS: PlanSeed[] = [
       'project_documents',
       'site_diary',
       'asset_tracking',
+      // §43 puts reports at Pro; this one is deliberately a tier lower. See the
+      // FEATURES note above and reporting-signoff.md §13.6.
+      'client_signoff',
     ],
     limits: { active_subcontractors: 5, internal_seats: 2, clients: null, audit_retention_days: 30 },
     prices: [
@@ -145,6 +164,12 @@ const PLANS: PlanSeed[] = [
       // reporting — a Pro company reads the shared library and does not import.
       'sustainability',
       'carbon_engine',
+      // §43's placement for the Phase 10 keys: reports and the evidence pack from
+      // Pro upward, client reporting a tier higher on the row it shares with
+      // custom factors.
+      'sustainability_reports',
+      'evidence_pack',
+      'client_signoff',
     ],
     limits: { active_subcontractors: 30, internal_seats: 8, clients: null, audit_retention_days: 90 },
     prices: [
@@ -177,6 +202,10 @@ const PLANS: PlanSeed[] = [
       'sustainability',
       'carbon_engine',
       'custom_factors',
+      'sustainability_reports',
+      'evidence_pack',
+      'client_signoff',
+      'client_reporting',
     ],
     limits: {
       active_subcontractors: 150,

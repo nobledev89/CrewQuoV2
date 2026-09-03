@@ -130,6 +130,29 @@ export const NOTIFICATION_KINDS = [
   'account.closure_completed',
   'company.closure_scheduled',
   'company.closure_cancelled',
+  /*
+   * Reporting and sign-off (§29, §34; `reporting-signoff.md` §6).
+   *
+   * **`report.generated` is deliberately absent.** Generating a report is a thing
+   * the person did on purpose two seconds ago; telling them about it is the kind
+   * of item that teaches people to ignore the Action Centre. Disclosure has a kind
+   * because that is the moment somebody *else* acquires a document.
+   *
+   * `report.superseded` fires **only when the superseded document had been
+   * disclosed**. If a client was sent a report in March and the figures behind it
+   * moved in June, they need to be told, and the body names the figures that
+   * moved. If nothing was ever disclosed, the supersession is internal bookkeeping
+   * on a document only its author has seen.
+   *
+   * There is no kind for *"a record behind this report has been amended"*. That is
+   * a banner on the document itself, seen by the person about to quote a figure;
+   * as a notification it would fire on every weight correction on every project
+   * that has ever produced a report.
+   */
+  'report.disclosed',
+  'report.superseded',
+  'signoff.captured',
+  'signoff.superseded',
 ] as const;
 export const notificationKindSchema = z.enum(NOTIFICATION_KINDS);
 export type NotificationKind = z.infer<typeof notificationKindSchema>;
@@ -325,6 +348,25 @@ export const NOTIFICATION_KIND_SPECS: Readonly<Record<NotificationKind, Notifica
   'diary.amended': {
     requiresAction: false, urgency: 'NORMAL', defaultChannels: ['EMAIL'], neverDigest: true,
   },
+
+  /*
+   * Reporting and sign-off. None `requiresAction`, and that is the whole point of
+   * the block: a completion report arriving is news, not a task, and an item that
+   * sits in the Action Centre until somebody clicks "resolve" on a document they
+   * have already read is a task with no work in it.
+   *
+   * EMAIL only. Push has had no client since Phase 6 and none of these is a thing
+   * anybody needs within the minute.
+   */
+  'report.disclosed': { requiresAction: false, urgency: 'NORMAL', defaultChannels: ['EMAIL'] },
+  'report.superseded': { requiresAction: false, urgency: 'NORMAL', defaultChannels: ['EMAIL'] },
+  /*
+   * `signoff.captured` reaches both sides, and the client's copy is the durable
+   * record that they signed — the one artefact in the product a client can point
+   * to without logging in to somebody else's system.
+   */
+  'signoff.captured': { requiresAction: false, urgency: 'NORMAL', defaultChannels: ['EMAIL'] },
+  'signoff.superseded': { requiresAction: false, urgency: 'NORMAL', defaultChannels: ['EMAIL'] },
 
   // The only URGENT kind among the *product* events, and deliberately an operator
   // one. A customer event is never urgent enough to wake somebody: their work will

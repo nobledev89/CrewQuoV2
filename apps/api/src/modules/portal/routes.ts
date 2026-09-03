@@ -15,6 +15,11 @@ import { countEvidenceByCategory, listEvidence, toEvidenceView } from '../eviden
 import { listDocuments, toDocumentView } from '../documents/repo';
 import { documentFilterSchema, evidenceFilterSchema, refuseFilter } from '@crewquo/shared';
 import { getPortalLineItems, getPortalProject, listPortalProjects } from './repo';
+import { recordAudit } from '../audit/record';
+import { renderStoredReport, reportFilename } from '../reports/generate';
+import { findDisclosedReport, listDisclosedReports, toReportView } from '../reports/repo';
+import { sendPdf, withSealCheck } from '../reports/routes';
+import { currentSignoffs, toSignoffView } from '../reports/signoff';
 
 /**
  * Client portal (CREWQUO_V2_PLAN.md §3.6, §7). The active company here is always
@@ -262,5 +267,110 @@ portalRouter.get(
       return visible;
     });
     res.json({ documents });
+  })
+);
+
+/**
+ * GET /v1/portal/projects/:id/reports — the documents the client was given (§29.4).
+ *
+ * **Three predicates, all in the `where` clause** (`repo.ts`'s
+ * `listDisclosedReports`): disclosed, current, and assembled for a client. Nothing
+ * the client may not see is ever serialised, which is the same property this
+ * router already states about evidence and documents — a boundary rather than a
+ * rendering decision.
+ *
+ * The **snapshot is not returned**. A client needs the list and the document; the
+ * snapshot is the owner's working record of how the document was assembled, and
+ * shipping it would put every internal key in front of somebody who only asked for
+ * a PDF.
+ */
+portalRouter.get(
+  '/projects/:id/reports',
+  asyncHandler(async (req, res) => {
+    const ctx = getCompanyCtx(req);
+    const found = await getPortalProject(ctx.companyId, param(req, 'id'));
+    if (!found) throw new AppError('NOT_FOUND', 'Project not found');
+
+    const allowed = canReadPortal({
+      companyId: ctx.companyId,
+      edge: { clientCompanyId: ctx.companyId, providerCompanyId: found.ownerCompanyId },
+      providerHasClientPortal: await hasFeature(found.ownerCompanyId, 'client_portal'),
+    });
+    if (!allowed) throw new AppError('NOT_FOUND', 'Project not found');
+
+    const rows = await listDisclosedReports(ctx.companyId, found.id);
+    res.json({ reports: rows.map(toReportView) });
+  })
+);
+
+/**
+ * GET /v1/portal/reports/:id/download.pdf — the client's own copy.
+ *
+ * Rendered from the snapshot, never from live data (§29.4, §29.5). A client
+ * re-opening last quarter's statement sees the numbers they were shown, not a
+ * recalculation against rate cards that have since changed — which is the whole
+ * reason this download was moved out of Phase 4.
+ *
+ * The client's **capabilities are never consulted**: a disclosure is made to a
+ * company, not to a permission held inside it.
+ */
+portalRouter.get(
+  '/reports/:id/download.pdf',
+  asyncHandler(async (req, res) => {
+    const ctx = getCompanyCtx(req);
+    const id = param(req, 'id');
+    const row = await findDisclosedReport(id, ctx.companyId);
+    // Not disclosed, not theirs, superseded or internal — all "no such report".
+    if (!row) throw new AppError('NOT_FOUND', 'Report not found');
+    if (!(await hasFeature(row.company_id, 'client_portal'))) {
+      throw new AppError('NOT_FOUND', 'Report not found');
+    }
+
+    const bytes = await withSealCheck(() => renderStoredReport(row));
+    await recordAudit({
+      // The **provider's** trail, and visible to the client: this is the client
+      // reading a document the provider published to them, which is a disclosure
+      // event on the provider's side of the edge.
+      companyId: row.company_id,
+      actorUserId: null,
+      action: 'project.exported',
+      entityType: 'GENERATED_REPORT',
+      entityId: row.id,
+      changes: { kind: row.kind, bytes: bytes.byteLength },
+      description: `Client downloaded "${row.title}"`,
+      visibleToClient: true,
+    });
+    sendPdf(res, bytes, reportFilename(row));
+  })
+);
+
+/**
+ * GET /v1/portal/projects/:id/signoffs — what this client signed.
+ *
+ * Their own signatures, on their own project. `client_signoff` is checked against
+ * the **owner**, and a client whose provider does not have it gets an empty list
+ * rather than a refusal — they have done nothing wrong and cannot fix somebody
+ * else's plan.
+ */
+portalRouter.get(
+  '/projects/:id/signoffs',
+  asyncHandler(async (req, res) => {
+    const ctx = getCompanyCtx(req);
+    const found = await getPortalProject(ctx.companyId, param(req, 'id'));
+    if (!found) throw new AppError('NOT_FOUND', 'Project not found');
+
+    const allowed = canReadPortal({
+      companyId: ctx.companyId,
+      edge: { clientCompanyId: ctx.companyId, providerCompanyId: found.ownerCompanyId },
+      providerHasClientPortal: await hasFeature(found.ownerCompanyId, 'client_portal'),
+    });
+    if (!allowed) throw new AppError('NOT_FOUND', 'Project not found');
+    if (!(await hasFeature(found.ownerCompanyId, 'client_signoff'))) {
+      res.json({ signoffs: [] });
+      return;
+    }
+
+    const rows = await currentSignoffs(found.id);
+    res.json({ signoffs: rows.map(toSignoffView) });
   })
 );

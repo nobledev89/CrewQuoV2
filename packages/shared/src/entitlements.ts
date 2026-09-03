@@ -81,6 +81,32 @@ export const FEATURE_KEYS = [
   'sustainability',
   'carbon_engine',
   'custom_factors',
+  /**
+   * Phase 10 (§43). Three of the four follow the 2026-09-01 project-owner rule and
+   * the fourth deliberately does not — `reporting-signoff.md` §4.
+   *
+   * `sustainability_reports`, `evidence_pack` and `client_signoff` are all read
+   * over a **project**, so they are checked against `projects.owner_company_id`
+   * exactly as `asset_tracking` and the three Phase 7 keys are. The project owner
+   * is who publishes the document and answers for it, and a subcontractor
+   * capturing a signature on the owner's job consumes the owner's entitlement the
+   * way it already consumes their evidence allowance.
+   *
+   * `client_reporting` is **not project-scoped at all**, and transferring the rule
+   * by analogy would have been wrong for the second time in two phases — the same
+   * shape `custom_factors` has. A client-period report spans many projects, so
+   * "which project owner's plan?" has no answer; it is checked against the
+   * **generating** company, which is who assembles and publishes the roll-up.
+   *
+   * §29.5's client-facing project export deliberately gets **no key of its own**
+   * and is sold under `exports`. It is the client's half of the same document
+   * Phase 4 already sells the owner, and a fifth key would be a second price on
+   * one feature that nobody would know to look for.
+   */
+  'sustainability_reports',
+  'evidence_pack',
+  'client_signoff',
+  'client_reporting',
   'invoicing',
   'audit_visibility',
   'api_access',

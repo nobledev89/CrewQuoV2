@@ -4,6 +4,8 @@ import {
   DEFAULT_REPORT_DISCLAIMER,
   dataQualityWeightsSchema,
   resolveDisplacementUpdate,
+  describeProhibitedClaims,
+  findProhibitedClaims,
   updateSustainabilitySettingsSchema,
   type DataQualityWeights,
   type DisplacementBasis,
@@ -234,6 +236,31 @@ sustainabilitySettingsRouter.patch(
     await assertCapability(ctx, 'sustainability.settings.manage');
 
     const input = updateSustainabilitySettingsSchema.parse(req.body);
+
+    /*
+     * §29.3's claim guard, on the way in (`reporting-signoff.md` §0 finding 7).
+     *
+     * *"**Never** describe a report as independently verified unless it is, and
+     * never claim ISO or GHG Protocol certification because the methodology
+     * references those standards."* This column is free text with §29.3's default
+     * in it, and nothing read it for claims until now — so a company could replace
+     * it with "independently verified and certified to ISO 14064-1", have it frozen
+     * into a §29.4 snapshot, rendered under a client's logo, and handed over.
+     *
+     * Refused **here** so the customer is told immediately and can fix it, and
+     * again at generation, because a disclaimer edited before this shipped or
+     * restored from a backup would otherwise be published anyway. Two checks
+     * because one of them is not enough on its own.
+     */
+    if (input.reportDisclaimer !== undefined) {
+      const claims = findProhibitedClaims(input.reportDisclaimer);
+      if (claims.length > 0) {
+        throw new AppError('VALIDATION', describeProhibitedClaims(claims), {
+          field: 'reportDisclaimer',
+          claims: claims.map((c) => ({ phrase: c.phrase, rule: c.rule, excerpt: c.excerpt })),
+        });
+      }
+    }
 
     const updated = await withTransaction(async (client) => {
       const before = await ensureSettings(ctx.companyId, client);

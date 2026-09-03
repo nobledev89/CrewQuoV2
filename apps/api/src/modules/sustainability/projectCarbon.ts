@@ -261,6 +261,28 @@ async function currentGaps(projectId: string): Promise<{ gaps: string[]; retaine
   return { gaps: describeGaps(balance), retainedKg: Number(rows[0]?.kg ?? 0) };
 }
 
+/**
+ * The whole §28 section for one project, assembled from the current ledger.
+ *
+ * Extracted from the GET route below when Phase 10's report builder needed the same
+ * figures, and shared rather than reimplemented for the reason `assembleView` is
+ * exported: two answers to *"what are this project's emissions"* is exactly the
+ * disagreement §29.4 freezes for ever. The report snapshot is a **copy of what the
+ * section said**, so it has to be the same function that said it.
+ */
+export async function loadProjectCarbonView(
+  projectId: string,
+  ownerCompanyId: string
+): Promise<ProjectCarbonView> {
+  const settings = await ensureSettings(ownerCompanyId);
+  const [calculations, claims, massGaps] = await Promise.all([
+    loadCalculations(projectId, false),
+    loadClaims(projectId),
+    currentGaps(projectId),
+  ]);
+  return assembleView({ projectId, settings, calculations, claims, massGaps });
+}
+
 // ── The routes ───────────────────────────────────────────────────────────────
 
 export const projectCarbonRouter = Router();
@@ -312,21 +334,7 @@ projectCarbonRouter.get(
       return;
     }
 
-    const settings = await ensureSettings(access.ownerCompanyId);
-    const [calculations, claims, massGaps] = await Promise.all([
-      loadCalculations(access.projectId, false),
-      loadClaims(access.projectId),
-      currentGaps(access.projectId),
-    ]);
-
-    const view = await assembleView({
-      projectId: access.projectId,
-      settings,
-      calculations,
-      claims,
-      massGaps,
-    });
-    res.json({ carbon: view });
+    res.json({ carbon: await loadProjectCarbonView(access.projectId, access.ownerCompanyId) });
   })
 );
 

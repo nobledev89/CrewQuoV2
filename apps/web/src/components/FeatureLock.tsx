@@ -33,6 +33,14 @@ const FEATURE_COPY: Record<FeatureKey, string> = {
     'The carbon engine is what calculates those figures — activity data and material masses multiplied by published emission factors, with every result naming the factor, its version and its reporting year.',
   custom_factors:
     'Custom factors let you import your own emission factor sets and maintain your own product carbon factor library, rather than working from the shared one.',
+  sustainability_reports:
+    'Sustainability reports produce the twelve-section completion document from what you recorded — frozen into a snapshot, so a client re-opening it next year sees the numbers they were shown.',
+  evidence_pack:
+    'The evidence pack is the operational handover: diary, crew, photographs, destination records and waste paperwork, with the sections you choose stored on the document so a regeneration reproduces it.',
+  client_signoff:
+    'Client sign-off captures a signature on site against what was being signed for, and keeps both the signature and that snapshot. A later amendment is a new sign-off; neither is ever edited.',
+  client_reporting:
+    'Client-level reporting rolls every project you ran for one client into a single period report, following a client through a name change or a placeholder that later signed up.',
   invoicing: 'Invoicing turns approved work into an invoice you can issue.',
   audit_visibility: 'Audit visibility lets a client see the trail of activity you publish.',
   api_access: 'API access issues keys for your own integrations.',

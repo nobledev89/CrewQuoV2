@@ -33,6 +33,7 @@ import {
   updateProject,
 } from './repo';
 import { registerExportRoutes } from '../exports/routes';
+import { frozenDocumentsOnProject } from '../reports/repo';
 import { setProjectReportingCurrency } from './reportingCurrency';
 import { setProjectTimeZone } from './timeZone';
 import { computeProjectSummary } from './summary';
@@ -167,6 +168,37 @@ projectsRouter.delete(
     assertManager(ctx.role);
     const id = param(req, 'id');
     const project = await getProject(ctx.companyId, id); // captured for the trail
+
+    /*
+     * **The refusal the frozen documents earned** (`reporting-signoff.md` §0
+     * finding 5).
+     *
+     * §34 makes a sign-off append-only — "both are retained with their signatures"
+     * — and decision #27 keeps the evidence a report cites addressable. Every table
+     * added since Phase 7 chose `on delete cascade`, so a project with photographs
+     * and no timesheets used to delete cleanly and take them all; `0043` and `0044`
+     * use `restrict` instead.
+     *
+     * The route refuses **first**, with a sentence naming what stands in the way,
+     * which is the pattern §3.3's locked rate cards already established: a foreign
+     * key violation reaching the caller as a 500 is not an explanation.
+     */
+    const frozen = await frozenDocumentsOnProject(id);
+    if (frozen.reports > 0 || frozen.signoffs > 0) {
+      const parts: string[] = [];
+      if (frozen.reports > 0) {
+        parts.push(`${String(frozen.reports)} generated report${frozen.reports === 1 ? '' : 's'}`);
+      }
+      if (frozen.signoffs > 0) {
+        parts.push(`${String(frozen.signoffs)} client sign-off${frozen.signoffs === 1 ? '' : 's'}`);
+      }
+      throw new AppError(
+        'CONFLICT',
+        `This project has ${parts.join(' and ')}, which are permanent records and cannot be deleted. Archive the project instead.`,
+        { reports: frozen.reports, signoffs: frozen.signoffs }
+      );
+    }
+
     await deleteProject(ctx.companyId, id);
     await recordAudit({
       companyId: ctx.companyId,

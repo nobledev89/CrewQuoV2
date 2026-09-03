@@ -1,5 +1,11 @@
 import { evidenceGrantsFileAccess, fileDisclosedToClient } from '../evidence/repo';
 import { documentDisclosedToClient, documentGrantsFileAccess } from '../documents/repo';
+import {
+  brandingGrantsFileAccess,
+  reportFileDisclosedToClient,
+  reportGrantsFileAccess,
+} from '../reports/repo';
+import { signoffGrantsFileAccess } from '../reports/signoff';
 
 /**
  * Which records may grant a company access to a file, as a **registry**.
@@ -38,13 +44,34 @@ export type FileAccessCheck = (fileId: string, companyId: string) => Promise<boo
 export const FILE_ACCESS_GRANTS: readonly FileAccessCheck[] = [
   evidenceGrantsFileAccess,
   documentGrantsFileAccess,
-  // 7.5 adds the diary's attachments; Phase 8 adds asset weight documents.
+  /*
+   * Phase 10. `reportGrantsFileAccess` covers the rendered PDF and everything a
+   * frozen document cites; `signoffGrantsFileAccess` covers a captured signature;
+   * `brandingGrantsFileAccess` is decision #30's one-hop read — a contractor
+   * renders its client's own logo, and the asset therefore has to cross the edge.
+   */
+  reportGrantsFileAccess,
+  signoffGrantsFileAccess,
+  brandingGrantsFileAccess,
 ];
 
 /** Deliberate disclosures to the client on the project's engagement. */
 export const FILE_CLIENT_DISCLOSURES: readonly FileAccessCheck[] = [
   fileDisclosedToClient,
   documentDisclosedToClient,
+  /*
+   * **The live caller that made the Phase 10 hold worth building now** rather than
+   * alongside a retention sweep that does not exist yet
+   * (`reporting-signoff.md` §0 finding 6).
+   *
+   * Without it, a photograph inside a signed completion report that was never
+   * individually published returns 403 to the very client holding the signed
+   * document. The grant is narrower than publishing the photograph: it says *"a
+   * document you were given cites this"*, so it covers exactly the images in that
+   * document and nothing else on the project — and it expires with nothing,
+   * because the document does not expire.
+   */
+  reportFileDisclosedToClient,
 ];
 
 /**

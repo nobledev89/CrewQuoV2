@@ -228,6 +228,33 @@ export const AUDIT_ACTIONS = [
   'activity.updated',
   'activity.removed',
   'sustainability_settings.updated',
+  /*
+   * Reporting and sign-off (§29, §34). Six actions, and the shape of the list is
+   * decided by which of them a client can observe.
+   *
+   * `report.generated` is internal: which documents a company produced for itself
+   * is nobody else's business. `report.disclosed` and `report.undisclosed` are two
+   * actions rather than one with a boolean, for the reason `evidence.published`
+   * and `evidence.unpublished` are — "who stopped sharing this, and when" is a
+   * question somebody asks, and collapsing them makes it answerable only by
+   * reading every row's payload.
+   *
+   * `report.voided` is separate from a supersession, which has no action at all:
+   * superseding is a side effect of generating a successor and is recorded on the
+   * successor's own `report.generated` row, so a second action would double-count
+   * one act. Voiding is its own decision, with its own required reason.
+   *
+   * `signoff.captured` is client-visible, and it is the one row in this block that
+   * is. The client is a party to it — they signed it — and a trail that recorded
+   * somebody else's signature as invisible to the signer would be the wrong way
+   * round.
+   */
+  'report.generated',
+  'report.disclosed',
+  'report.undisclosed',
+  'report.voided',
+  'signoff.captured',
+  'signoff.superseded',
 ] as const;
 export const auditActionSchema = z.enum(AUDIT_ACTIONS);
 export type AuditAction = z.infer<typeof auditActionSchema>;
@@ -244,6 +271,8 @@ export const AUDIT_ENTITY_TYPES = [
   'PRODUCT_CARBON_FACTOR',
   'PROJECT_ACTIVITY',
   'SUSTAINABILITY_SETTINGS',
+  'GENERATED_REPORT',
+  'CLIENT_SIGNOFF',
   'DESTINATION_ORGANISATION',
   'TIME_LOG',
   'EXPENSE',

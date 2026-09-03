@@ -1105,6 +1105,130 @@ async function onClaimBlocked(event: OutboxEvent): Promise<void> {
   });
 }
 
+
+/**
+ * A document reaching somebody outside the tenancy.
+ *
+ * The client's managers, on the client's own company — this is the moment they
+ * acquire a file, and the Action Centre row is what makes it durable when the
+ * email is filtered. `requiresAction: false`: reading a completion report is not a
+ * task, and an item that waits for somebody to click "resolve" on a document they
+ * have already read is a task with no work in it.
+ */
+async function onReportDisclosed(event: OutboxEvent): Promise<void> {
+  const clientCompanyId = required(event.payload, 'clientCompanyId');
+  const reportId = required(event.payload, 'reportId');
+  const title = optional(event.payload, 'title') ?? 'A project report';
+
+  await dispatchNotification({
+    kind: 'report.disclosed',
+    companyId: clientCompanyId,
+    recipientUserIds: await managerRecipients(clientCompanyId),
+    title: `${title} is available`,
+    body: 'Your contractor has shared a completed report with you. It is available in your portal.',
+    subjectType: 'GENERATED_REPORT',
+    subjectId: reportId,
+    actionUrl: `/portal/${optional(event.payload, 'projectId') ?? ''}?section=reports`,
+    topic: event.topic,
+    aggregateId: event.aggregateId,
+  });
+}
+
+/**
+ * A document the client already holds has been restated.
+ *
+ * The **only** supersession that notifies, and the packet says why: if nothing was
+ * ever disclosed, this is internal bookkeeping on a document only its author has
+ * seen, and notifying would train the recipient to ignore the channel — which is
+ * how the item that matters gets missed.
+ *
+ * The body names the figures that moved, computed inside the generating
+ * transaction. A client told "your report changed" learns nothing; one told "the
+ * diversion rate moved from 91.8% to 89.4%" knows what to do.
+ */
+async function onReportSuperseded(event: OutboxEvent): Promise<void> {
+  const clientCompanyId = required(event.payload, 'clientCompanyId');
+  const supersededById = required(event.payload, 'supersededById');
+  const title = optional(event.payload, 'title') ?? 'A project report';
+  const summary = optional(event.payload, 'summary');
+
+  await dispatchNotification({
+    kind: 'report.superseded',
+    companyId: clientCompanyId,
+    recipientUserIds: await managerRecipients(clientCompanyId),
+    title: `${title} has been reissued`,
+    body: summary
+      ? `The figures behind a report you were given have changed. ${summary}. The earlier document is retained.`
+      : 'A report you were given has been reissued from corrected records. The earlier document is retained.',
+    subjectType: 'GENERATED_REPORT',
+    subjectId: supersededById,
+    actionUrl: `/portal/${optional(event.payload, 'projectId') ?? ''}?section=reports`,
+    topic: event.topic,
+    aggregateId: event.aggregateId,
+  });
+}
+
+/**
+ * A signature was taken on site — told to both sides of the edge.
+ *
+ * The contractor's `report.generate` holders, because a sign-off is what closes a
+ * project and they are the people who act on that. And the client's managers,
+ * because **the client's copy is the durable record that they signed** — the one
+ * artefact in the product a client can point to without logging in to somebody
+ * else's system.
+ *
+ * The actor is excluded from the contractor's half: the supervisor who held the
+ * tablet does not need telling.
+ */
+async function onSignoffCaptured(event: OutboxEvent): Promise<void> {
+  const companyId = required(event.payload, 'companyId');
+  const signoffId = required(event.payload, 'signoffId');
+  const projectId = required(event.payload, 'projectId');
+  const signerName = optional(event.payload, 'signerName') ?? 'the client';
+  const phase = optional(event.payload, 'phase');
+  const clientCompanyId = optional(event.payload, 'clientCompanyId');
+  const superseding = event.topic === 'signoff.superseded';
+  const reason = optional(event.payload, 'reason');
+
+  const scope = phase ? `phase "${phase}"` : 'the project';
+  const title = superseding
+    ? `Client sign-off for ${scope} was captured again`
+    : `Client sign-off captured for ${scope}`;
+  const body = superseding
+    ? `${signerName} signed again${reason ? `: ${reason}` : ''}. Both signatures are retained.`
+    : `${signerName} signed for completion. The signature and what it was signed for are retained.`;
+
+  await dispatchNotification({
+    kind: superseding ? 'signoff.superseded' : 'signoff.captured',
+    companyId,
+    recipientUserIds: await capabilityRecipients(companyId, 'report.generate'),
+    title,
+    body,
+    subjectType: 'CLIENT_SIGNOFF',
+    subjectId: signoffId,
+    actionUrl: `/projects/${projectId}?section=reports`,
+    topic: event.topic,
+    aggregateId: event.aggregateId,
+  });
+
+  if (clientCompanyId) {
+    await dispatchNotification({
+      kind: superseding ? 'signoff.superseded' : 'signoff.captured',
+      companyId: clientCompanyId,
+      recipientUserIds: await managerRecipients(clientCompanyId),
+      title: superseding ? 'A sign-off was captured again' : 'Your sign-off was recorded',
+      body: superseding
+        ? `A replacement sign-off was captured${reason ? `: ${reason}` : ''}. Both are retained with their signatures.`
+        : `${signerName} signed for completion on your behalf. Your copy is in the portal.`,
+      subjectType: 'CLIENT_SIGNOFF',
+      subjectId: signoffId,
+      actionUrl: `/portal/${projectId}?section=signoff`,
+      topic: event.topic,
+      aggregateId: `${event.aggregateId}:client`,
+    });
+  }
+}
+
 /**
  * The registered consumers. A topic with no handler here is simply not claimed by
  * this worker — `claimOutboxEvents` filters on the registered topic list, so an
@@ -1137,6 +1261,15 @@ export const NOTIFICATION_HANDLERS: ReadonlyMap<string, DeliveryHandler> = new M
   ['sustainability.factor_set_imported', onFactorSetImported],
   ['sustainability.factor_set_deactivated', onFactorSetDeactivated],
   ['sustainability.claim_blocked', onClaimBlocked],
+  /*
+   * Reporting and sign-off (§29, §34). `report.generated` is deliberately absent:
+   * generating a report is a thing the person did on purpose two seconds ago, and
+   * an item telling them so is how a channel gets ignored.
+   */
+  ['report.disclosed', onReportDisclosed],
+  ['report.superseded', onReportSuperseded],
+  ['signoff.captured', onSignoffCaptured],
+  ['signoff.superseded', onSignoffCaptured],
   /*
    * `sustainability.calculations_superseded` is deliberately absent, and the absence
    * is the design (packet §6). It is the most frequent event in the domain and the

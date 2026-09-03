@@ -658,8 +658,19 @@ export interface ReportSnapshotMeta {
   kind: ReportKind;
   audience: ReportAudience;
   title: string;
-  /** The instant the numbers were true as of. Also the PDF's creation date. */
-  generatedAt: string;
+  /**
+   * **There is deliberately no `generatedAt` in here**, and the absence is what
+   * makes finding 9 work.
+   *
+   * A timestamp inside the sealed document would change the `content_hash` on
+   * every generation, so two presses of Generate a second apart would produce two
+   * "different" documents with identical figures — the unique index would never
+   * fire, and `SUPERSEDED` would stop meaning that anything moved.
+   *
+   * The split is also the honest one: the snapshot is **what was said**, and the
+   * row's `generated_at` is **when it was said**. The renderer takes the instant
+   * from the row, which is where it has always lived.
+   */
   periodStart: string | null;
   periodEnd: string | null;
   contractor: { companyId: string; name: string; logoFileId: string | null };

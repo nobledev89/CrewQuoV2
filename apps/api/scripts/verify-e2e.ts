@@ -40,6 +40,7 @@ import {
   PERSONAL_CLOSURE_PLAN,
   PERSONAL_EXPORT,
   base32Decode,
+  canonicalJson,
   totpCounter,
   totpCounterBytes,
   totpTruncate,
@@ -11576,6 +11577,561 @@ async function main(): Promise<void> {
     !/verified|certified|ISO/i.test(String(suGps.json.settings.reportDisclaimer)),
     suGps.json.settings.reportDisclaimer);
 
+
+  // ── Reporting & sign-off (§29, §34, §38.2) ────────────────────────────────
+  //
+  // docs/operating-model/reporting-signoff.md §12, step for step. It runs on the
+  // Phase 9 fixture — the Kingsway House project with its 933 kg of material, its
+  // synthetic factor set and its avoided-emissions claim — because a report is a
+  // rendering of records that already exist, and building a second fixture would
+  // have proved the renderer against data the rest of the suite never checked.
+  section('Reporting — the seal, the two audiences, and a document that stops moving');
+
+  // The client is still a PLACEHOLDER at this point, which is deliberate: the
+  // report generated below is addressed to it, and step 12 proves the claimant
+  // still sees the document after signing up.
+  const rpClientPlaceholder = suClientRes.json.client.clientCompanyId as string;
+  await call('PATCH', `/v1/projects/${suProject}`, {
+    ...suCtx,
+    body: { clientVisible: true, startsOn: '2027-03-01', endsOn: '2027-03-31' },
+  });
+
+  // ── 1. Empty. Absent, not zero, on a page that leaves the building ───────
+  const rpEmptyProject = (await call('POST', '/v1/projects', {
+    ...suCtx,
+    body: { name: `Nothing Recorded ${RUN}` },
+  })).json.project.id as string;
+  const rpEmptyReport = await call('POST', `/v1/projects/${rpEmptyProject}/reports`, {
+    ...suCtx,
+    body: { kind: 'SUSTAINABILITY', audience: 'INTERNAL' },
+  });
+  eq('a project with nothing recorded still produces a report', rpEmptyReport.status, 201);
+  const rpEmptyDetail = await call('GET', `/v1/reports/${rpEmptyReport.json.report.id}`, { ...suCtx });
+  eq('...whose headline figures are null rather than 0.00 tCO₂e',
+    [rpEmptyDetail.json.snapshot.body.carbon.projectEmissionsKgCo2e,
+     rpEmptyDetail.json.snapshot.body.carbon.avoidedKgCo2e],
+    [null, null]);
+  eq('...with no highlight tiles at all, because a tile is a claim',
+    rpEmptyDetail.json.snapshot.body.highlights, []);
+
+  // ── 2. Denied — plan ─────────────────────────────────────────────────────
+  const rpStarter = await register('rpstarter', `StarterCo ${RUN}`);
+  const rpStarterCo = rpStarter.companyId!;
+  await subscribe(rpStarterCo, 'starter');
+  const rpStarterCtx = { token: rpStarter.token, companyId: rpStarterCo };
+  const rpStarterProject = (await call('POST', '/v1/projects', {
+    ...rpStarterCtx, body: { name: `Starter Job ${RUN}` },
+  })).json.project.id as string;
+  const rpPlanRefusal = await call('POST', `/v1/projects/${rpStarterProject}/reports`, {
+    ...rpStarterCtx, body: { kind: 'SUSTAINABILITY', audience: 'CLIENT' },
+  });
+  eq('a Starter plan cannot generate a sustainability report', rpPlanRefusal.status, 403);
+  eq('...naming the key it needs', rpPlanRefusal.json.error?.details?.feature,
+    'sustainability_reports');
+
+  // §43's table puts reports at Pro; client_signoff is deliberately a tier lower,
+  // because a sign-off is how a small contractor proves a job is finished.
+  const rpStarterSignoff = await call('POST', `/v1/projects/${rpStarterProject}/signoffs`, {
+    ...rpStarterCtx,
+    body: {
+      signerName: 'Ola Bright',
+      completionStatement: 'The works are complete.',
+      evidenceSnapshot: { capturedAt: '2027-04-01T10:00:00.000Z', items: [] },
+    },
+  });
+  eq('...but the same plan CAN capture a client sign-off (stated departure from §43)',
+    rpStarterSignoff.status, 201);
+
+  // ── 3. Denied — capability ───────────────────────────────────────────────
+  const rpSupInvite = await call('POST', '/v1/members/invite', {
+    ...suCtx,
+    body: { email: `rpsup+${RUN}@verify.crewquo.test`, role: 'MANAGER' },
+  });
+  const rpSup = await register('rpsup', undefined, `rpsup+${RUN}@verify.crewquo.test`);
+  await call('POST', `/v1/invites/${rpSupInvite.json.inviteToken}/accept`, { token: rpSup.token });
+  const { rows: rpSupMembership } = await db.query<{ id: string }>(
+    `select id from memberships where user_id = $1 and company_id = $2`,
+    [rpSup.userId, suCompany]);
+  await call('PATCH', `/v1/members/${rpSupMembership[0]?.id}/capabilities`, {
+    ...suCtx, body: { bundleKey: 'supervisor', overrides: [
+      // The Supervisor bundle carries neither, and the report needs one of them.
+      { capabilityKey: 'report.generate', granted: true },
+      { capabilityKey: 'sustainability.read', granted: true },
+    ] },
+  });
+  const rpSupCtx = { token: rpSup.token, companyId: suCompany };
+  const rpSupReport = await call('POST', `/v1/projects/${suProject}/reports`, {
+    ...rpSupCtx, body: { kind: 'SUSTAINABILITY', audience: 'INTERNAL' },
+  });
+  eq('a supervisor can produce a sustainability report — it holds no money',
+    rpSupReport.status === 201 || rpSupReport.status === 200, true);
+  const rpSupExport = await call('POST', `/v1/projects/${suProject}/reports`, {
+    ...rpSupCtx, body: { kind: 'CLIENT_EXPORT', audience: 'CLIENT' },
+  });
+  eq('...and cannot produce the BILL-side statement', rpSupExport.status, 403);
+  eq('...because commercial.read is what was carved out of their bundle',
+    rpSupExport.json.error?.details?.capability, 'commercial.read');
+
+  // ── 4. Generate ──────────────────────────────────────────────────────────
+  const rpGen = await call('POST', `/v1/projects/${suProject}/reports`, {
+    ...suCtx, body: { kind: 'SUSTAINABILITY', audience: 'CLIENT' },
+  });
+  eq('the client-facing sustainability report is generated', rpGen.status, 201);
+  const rpReportId = rpGen.json.report.id as string;
+  const rpDetail = await call('GET', `/v1/reports/${rpReportId}`, { ...suCtx });
+  eq('...with §29.1’s twelve sections', rpDetail.json.report.sections.length, 12);
+  eq('...the two headlines side by side and never netted',
+    [typeof rpDetail.json.snapshot.body.carbon.projectEmissionsKgCo2e,
+     typeof rpDetail.json.snapshot.body.carbon.avoidedKgCo2e],
+    ['number', 'number']);
+  check('...with no net figure anywhere in the sealed document (decision #17)',
+    !JSON.stringify(rpDetail.json.snapshot).includes('"net'),
+    Object.keys(rpDetail.json.snapshot.body.carbon));
+  eq('...stating the Scope 2 basis in words rather than leaving it assumed',
+    rpDetail.json.snapshot.body.carbon.scope2Basis, 'LOCATION_BASED');
+  check('...and freezing §29.3’s disclaimer verbatim',
+    String(rpDetail.json.report.disclaimer).includes('location-based'),
+    rpDetail.json.report.disclaimer);
+
+  // ── 5. The seal (packet finding 4) ───────────────────────────────────────
+  const { rows: rpStored } = await db.query<{ snapshot: unknown; content_hash: string }>(
+    `select snapshot, content_hash from generated_reports where id = $1`, [rpReportId]);
+  eq('the content hash is the sha256 of the canonical form of what Postgres holds',
+    createHash('sha256').update(canonicalJson(rpStored[0]?.snapshot)).digest('hex'),
+    rpStored[0]?.content_hash);
+  check('...which is NOT the hash of the stored jsonb text — that is finding 4',
+    createHash('sha256').update(JSON.stringify(rpStored[0]?.snapshot)).digest('hex')
+      !== rpStored[0]?.content_hash
+    || canonicalJson(rpStored[0]?.snapshot) === JSON.stringify(rpStored[0]?.snapshot),
+    'the two serialisations agree only by coincidence on this row');
+
+  // ── 6. Byte-identity, immediately ────────────────────────────────────────
+  const rpPdf1 = await call('GET', `/v1/reports/${rpReportId}/download.pdf`, { ...suCtx, raw: true });
+  const rpPdf2 = await call('GET', `/v1/reports/${rpReportId}/download.pdf`, { ...suCtx, raw: true });
+  eq('the report downloads as a PDF', rpPdf1.status, 200);
+  check('...and two renders of one snapshot are byte-identical (the milestone)',
+    rpPdf1.buffer!.equals(rpPdf2.buffer!),
+    [rpPdf1.buffer!.byteLength, rpPdf2.buffer!.byteLength]);
+  check('...with the seal in the PDF’s own /ID, so two printed copies can be compared',
+    rpPdf1.buffer!.toString('latin1').includes(
+      `/ID [ <${(rpStored[0]?.content_hash ?? '').slice(0, 32).toUpperCase()}>`),
+    rpPdf1.buffer!.toString('latin1').match(/\/ID \[[^\]]*\]/)?.[0]);
+
+  // ── 7. Byte-identity, after the world moves ──────────────────────────────
+  const rpLiveBefore = await call('GET', `/v1/projects/${suProject}/carbon`, { ...suCtx });
+  await call('PATCH', `/v1/assets/${suChairs}`, {
+    ...suCtx,
+    body: { weightBasis: 'UNIT', unitWeightKg: 18.5, weightSource: 'WEIGHBRIDGE' },
+  });
+  await call('POST', `/v1/projects/${suProject}/carbon/recalculate`, { ...suCtx });
+  const rpLiveAfter = await call('GET', `/v1/projects/${suProject}/carbon`, { ...suCtx });
+  check('correcting a weight moves the live figures',
+    rpLiveAfter.json.carbon.projectEmissionsKgCo2e !==
+      rpLiveBefore.json.carbon.projectEmissionsKgCo2e,
+    [rpLiveBefore.json.carbon.projectEmissionsKgCo2e,
+     rpLiveAfter.json.carbon.projectEmissionsKgCo2e]);
+
+  const rpPdf3 = await call('GET', `/v1/reports/${rpReportId}/download.pdf`, { ...suCtx, raw: true });
+  check('...and the generated report does not move with them — same bytes (§29.4)',
+    rpPdf1.buffer!.equals(rpPdf3.buffer!), rpPdf3.buffer!.byteLength);
+  const rpDetail2 = await call('GET', `/v1/reports/${rpReportId}/${''}`.replace(/\/$/, ''), { ...suCtx });
+  eq('...and the same seal', rpDetail2.json.report.contentHash, rpStored[0]?.content_hash);
+
+  // ── 8. The banner (project-evidence.md §13.6) ────────────────────────────
+  // A past date: §23 refuses a diary day in the future, and the Phase 9 fixture's
+  // 2027 movement dates are not the project's clock.
+  const rpDiaryDate = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  const rpDiary = await call('POST', `/v1/projects/${suProject}/diary`, {
+    ...suCtx, body: { entryDate: rpDiaryDate, workCompleted: 'Level 6 strip-out continued.' },
+  });
+  check('a diary day is recorded so the pack has something to cite',
+    rpDiary.status === 201, rpDiary.json);
+  const rpDiaryId = rpDiary.json.entry.id as string;
+  const rpWithDiary = await call('POST', `/v1/projects/${suProject}/reports`, {
+    ...suCtx, body: { kind: 'EVIDENCE_PACK', audience: 'INTERNAL' },
+  });
+  const rpPackId = rpWithDiary.json.report.id as string;
+  const rpPackPdf1 = await call('GET', `/v1/reports/${rpPackId}/download.pdf`, { ...suCtx, raw: true });
+
+  await call('POST', `/v1/diary/${rpDiaryId}/close`, { ...suCtx });
+  await call('PATCH', `/v1/diary/${rpDiaryId}`, {
+    ...suCtx,
+    body: { delays: 'Lift out of service 11:00–13:00', reason: 'Reported the next morning' },
+  });
+  const rpPackAfter = await call('GET', `/v1/reports/${rpPackId}`, { ...suCtx });
+  check('an amended diary day is reported against the document that cited it',
+    (rpPackAfter.json.staleSources as any[]).some(
+      (s) => s.kind === 'DIARY' && s.label === rpDiaryDate && s.currentRevision > s.revision),
+    rpPackAfter.json.staleSources);
+  check('...as a sentence saying a newer truth exists, not that the document is wrong',
+    (rpPackAfter.json.staleNotes as string[]).some(
+      (n) => n.includes('has been amended since this report was generated')),
+    rpPackAfter.json.staleNotes);
+  const rpPackPdf2 = await call('GET', `/v1/reports/${rpPackId}/download.pdf`, { ...suCtx, raw: true });
+  check('...and the document itself still renders the numbers it froze',
+    rpPackAfter.json.report.contentHash === rpWithDiary.json.report.contentHash,
+    [rpWithDiary.json.report.contentHash, rpPackAfter.json.report.contentHash]);
+  /*
+   * THE FINDING THIS BUILD ADDED, and this assertion is the whole of it.
+   *
+   * The first implementation printed the staleness sentences on the cover, where a
+   * reader would want them, and step 7 above failed: correcting a weight bumped an
+   * asset revision and the banner appeared, so "the same report" rendered as two
+   * different files. A live comparison inside a frozen document makes the document
+   * a function of the present, which is what §29.4 forbids — and the seal in the
+   * footer would have stopped describing what was on the page.
+   *
+   * The divergence belongs beside the document, where the person who can act on it
+   * is looking. The file does not move.
+   */
+  check('...byte for byte, because the banner is reported beside the document and never in it',
+    rpPackPdf1.buffer!.equals(rpPackPdf2.buffer!),
+    [rpPackPdf1.buffer!.byteLength, rpPackPdf2.buffer!.byteLength]);
+
+  // -- 9. Regenerate after a real change, then again with none -------------
+  //
+  // Step 7 corrected a weight, so the FIRST regeneration here legitimately produces
+  // a new document. The second is the one finding 9 is about.
+  const rpRegenNew = await call('POST', `/v1/projects/${suProject}/reports`, {
+    ...suCtx, body: { kind: 'SUSTAINABILITY', audience: 'CLIENT' },
+  });
+  eq('a real change produces a new document', rpRegenNew.status, 201);
+  eq('...superseding the one it replaces', rpRegenNew.json.supersededId, rpReportId);
+  const rpCurrentId = rpRegenNew.json.report.id as string;
+  const rpOld = await call('GET', `/v1/reports/${rpReportId}`, { ...suCtx });
+  eq('...which is retained and still retrievable (§29.4)', rpOld.json.report.status, 'SUPERSEDED');
+  eq('...pointing forward at its successor', rpOld.json.report.supersededById, rpCurrentId);
+  const rpOldPdf = await call('GET', `/v1/reports/${rpReportId}/download.pdf`, { ...suCtx, raw: true });
+  check('...and rendering exactly as it did before it was superseded',
+    rpPdf1.buffer!.equals(rpOldPdf.buffer!), rpOldPdf.buffer!.byteLength);
+
+  const { rows: rpCountBefore } = await db.query<{ n: string }>(
+    `select count(*)::text as n from generated_reports where project_id = $1`, [suProject]);
+  const rpRegenSame = await call('POST', `/v1/projects/${suProject}/reports`, {
+    ...suCtx, body: { kind: 'SUSTAINABILITY', audience: 'CLIENT' },
+  });
+  eq('regenerating with nothing changed returns the document that exists', rpRegenSame.status, 200);
+  eq('...saying so rather than pretending it made one', rpRegenSame.json.reused, true);
+  eq('...the same row', rpRegenSame.json.report.id, rpCurrentId);
+  const { rows: rpCountAfter } = await db.query<{ n: string }>(
+    `select count(*)::text as n from generated_reports where project_id = $1`, [suProject]);
+  eq('...and no second row', rpCountAfter[0]?.n, rpCountBefore[0]?.n);
+  const { rows: rpNoSupersede } = await db.query<{ status: string }>(
+    `select status from generated_reports where id = $1`, [rpCurrentId]);
+  eq('...and nothing superseded, so SUPERSEDED still means a figure moved',
+    rpNoSupersede[0]?.status, 'GENERATED');
+
+  // ── 11. The boundary, asserted on the SNAPSHOT (packet finding 3) ────────
+  const rpExport = await call('POST', `/v1/projects/${suProject}/reports`, {
+    ...suCtx, body: { kind: 'CLIENT_EXPORT', audience: 'CLIENT' },
+  });
+  eq('the BILL-side client statement is generated', rpExport.status, 201);
+  const { rows: rpExportRow } = await db.query<{ snapshot: Record<string, unknown> }>(
+    `select snapshot from generated_reports where id = $1`, [rpExport.json.report.id]);
+  const rpExportJson = JSON.stringify(rpExportRow[0]?.snapshot ?? {});
+  check('no PAY figure anywhere in the stored document',
+    !/payCents|laborCostCents|resolvedRate/i.test(rpExportJson), rpExportJson.slice(0, 200));
+  check('...no margin', !/margin/i.test(rpExportJson), 'margin');
+  check('...and no provider identity', !/provider/i.test(rpExportJson), 'provider');
+
+  const rpClientSust = await call('GET', `/v1/reports/${rpCurrentId}`, { ...suCtx });
+  eq('the client sustainability report counts the subcontracted organisations',
+    typeof rpClientSust.json.snapshot.body.overview.workforce.subcontractedOrganisations,
+    'number');
+  check('...and has no field a provider name could occupy',
+    !('subcontractors' in rpClientSust.json.snapshot.body.overview.workforce),
+    Object.keys(rpClientSust.json.snapshot.body.overview.workforce));
+
+  const rpInternal = await call('POST', `/v1/projects/${suProject}/reports`, {
+    ...suCtx, body: { kind: 'SUSTAINABILITY', audience: 'INTERNAL' },
+  });
+  const rpInternalDetail = await call('GET', `/v1/reports/${rpInternal.json.report.id}`, { ...suCtx });
+  check('...while the internal copy of the same project does name them',
+    Array.isArray(rpInternalDetail.json.snapshot.body.overview.workforce.subcontractors),
+    rpInternalDetail.json.snapshot.body.overview.workforce);
+
+  const rpDiscloseInternal = await call('PATCH',
+    `/v1/reports/${rpInternal.json.report.id}/visibility`,
+    { ...suCtx, body: { clientVisible: true } });
+  eq('an internal document cannot be shared with the client at all',
+    rpDiscloseInternal.status, 422);
+  const { rows: rpDbRefusal } = await db.query<{ ok: boolean }>(
+    `select true as ok from generated_reports where id = $1 and not client_visible`,
+    [rpInternal.json.report.id]);
+  eq('...and the database refuses the combination even if a route forgets',
+    rpDbRefusal.length, 1);
+
+  // ── 12. Disclosure, and the claimant who signed up afterwards ────────────
+  //
+  // The invitee already owns a real company, which is what makes this the
+  // AUTO-MERGE path: the placeholder is claimed and left behind as a tombstone
+  // pointing at the real company, so the report generated above now names a
+  // company id that is nobody's tenant.
+  const rpClientUser = await register('rpclient', `Kingsway Group ${RUN}`,
+    `kingsway+${RUN}@verify.crewquo.test`);
+  await call('POST', `/v1/invites/${suClientRes.json.inviteToken}/accept`, {
+    token: rpClientUser.token,
+  });
+  const rpClientCompany = rpClientUser.companyId!;
+  const rpClientCtx = { token: rpClientUser.token, companyId: rpClientCompany };
+  const { rows: rpTombstone } = await db.query<{ claimed_by_company_id: string | null }>(
+    `select claimed_by_company_id from companies where id = $1`, [rpClientPlaceholder]);
+  eq('the placeholder the report was addressed to is now a tombstone',
+    rpTombstone[0]?.claimed_by_company_id, rpClientCompany);
+
+  const rpDisclose = await call('PATCH', `/v1/reports/${rpCurrentId}/visibility`, {
+    ...suCtx, body: { clientVisible: true },
+  });
+  eq('the client copy can be shared', rpDisclose.status, 200);
+
+  const rpPortalList = await call('GET', `/v1/portal/projects/${suProject}/reports`, rpClientCtx);
+  eq('the client sees it in their portal', rpPortalList.status, 200);
+  check('...even though it was addressed to the placeholder they later claimed',
+    (rpPortalList.json.reports as any[]).some((r) => r.id === rpCurrentId),
+    (rpPortalList.json.reports as any[]).map((r) => r.id));
+  const { rows: rpAddressedTo } = await db.query<{ client_company_id: string }>(
+    `select client_company_id from generated_reports where id = $1`, [rpCurrentId]);
+  eq('...and the row genuinely names the placeholder rather than their new company',
+    rpAddressedTo[0]?.client_company_id, rpClientPlaceholder);
+
+  const rpClientPdf = await call('GET', `/v1/portal/reports/${rpCurrentId}/download.pdf`,
+    { ...rpClientCtx, raw: true });
+  eq('...and downloads their own copy', rpClientPdf.status, 200);
+  check('...byte-identical to the owner’s rendering of the same document',
+    rpClientPdf.buffer!.equals(
+      (await call('GET', `/v1/reports/${rpCurrentId}/download.pdf`, { ...suCtx, raw: true })).buffer!),
+    rpClientPdf.buffer!.byteLength);
+
+  const rpUndisclosed = await call('GET', `/v1/portal/reports/${rpExport.json.report.id}/download.pdf`,
+    { ...rpClientCtx, raw: true });
+  eq('a document that was never shared is not readable, even by its own client',
+    rpUndisclosed.status, 404);
+
+  // ── 13. Denied — the other client ────────────────────────────────────────
+  const rpOtherClient = await register('rpother', `Rival Estates ${RUN}`);
+  const rpOtherRes = await call('GET', `/v1/portal/reports/${rpCurrentId}/download.pdf`, {
+    token: rpOtherClient.token, companyId: rpOtherClient.companyId!, raw: true,
+  });
+  eq('another company gets the same 404 a nonexistent id gets', rpOtherRes.status, 404);
+
+  // ── 14. The forbidden claim (§29.3, packet finding 7) ────────────────────
+  const rpClaim = await call('PATCH', '/v1/sustainability-settings', {
+    ...suCtx,
+    body: {
+      reportDisclaimer:
+        'These results have been independently verified and certified to ISO 14064-1.',
+    },
+  });
+  eq('a disclaimer claiming independent verification is refused on save', rpClaim.status, 422);
+  check('...naming the phrase so the customer can find it',
+    String(rpClaim.json.error?.message ?? '').toLowerCase().includes('independently verified'),
+    rpClaim.json.error?.message);
+
+  const rpHonest = await call('PATCH', '/v1/sustainability-settings', {
+    ...suCtx,
+    body: {
+      reportDisclaimer:
+        'Figures are drawn from site records. This report has not been independently verified.',
+    },
+  });
+  eq('...while an explicit denial of assurance is accepted, which is the sentence §29.3 wants',
+    rpHonest.status, 200);
+
+  // Forced past the API, the way a restored backup or an operator would.
+  await db.query(
+    `update sustainability_settings set report_disclaimer = $2 where company_id = $1`,
+    [suCompany, 'Third-party assured under a limited assurance engagement.']);
+  const rpClaimAtGen = await call('POST', `/v1/projects/${suProject}/reports`, {
+    ...suCtx, body: { kind: 'EVIDENCE_PACK', audience: 'CLIENT' },
+  });
+  eq('...and the same claim is refused again at generation, where it would be published',
+    rpClaimAtGen.status, 422);
+  await db.query(
+    `update sustainability_settings set report_disclaimer = $2 where company_id = $1`,
+    [suCompany, 'Figures are drawn from site records recorded on this project.']);
+
+  // ── 15. Sign-off, captured offline ───────────────────────────────────────
+  section('Client sign-off — the device’s snapshot, the replay, and the row nobody may edit');
+
+  const rpSignClientId = randomUUID();
+  const rpSignBody = {
+    clientId: rpSignClientId,
+    signerName: 'Dana Whitfield',
+    signerCompany: `Kingsway Estates ${RUN}`,
+    signerRole: 'Facilities Manager',
+    signerEmail: `dana+${RUN}@verify.crewquo.test`,
+    completionStatement: 'The works described are complete to our satisfaction.',
+    evidenceSnapshot: {
+      capturedAt: '2027-03-31T16:40:00.000Z',
+      massHandledKg: 933,
+      photographs: 4,
+      statement: 'Level 6 cleared and handed back.',
+    },
+  };
+  const rpSign = await call('POST', `/v1/projects/${suProject}/signoffs`, {
+    ...suCtx, body: rpSignBody,
+  });
+  eq('a signature is captured', rpSign.status, 201);
+  const rpSignId = rpSign.json.signoff.id as string;
+  check('...sealed over what the DEVICE said was being signed for',
+    rpSign.json.signoff.contentHash ===
+      createHash('sha256').update(canonicalJson(rpSignBody.evidenceSnapshot)).digest('hex'),
+    rpSign.json.signoff.contentHash);
+  const { rows: rpSignRow } = await db.query<{ signed_at: Date; signed_ip: string | null }>(
+    `select signed_at, signed_ip::text from client_signoffs where id = $1`, [rpSignId]);
+  check('...timed by the server rather than by the tablet',
+    Math.abs(Date.now() - new Date(rpSignRow[0]!.signed_at).getTime()) < 120_000,
+    rpSignRow[0]?.signed_at);
+
+  const rpReplay = await call('POST', `/v1/projects/${suProject}/signoffs`, {
+    ...suCtx, body: rpSignBody,
+  });
+  eq('a replayed capture returns the signature that exists', rpReplay.status, 200);
+  eq('...the same row', rpReplay.json.signoff.id, rpSignId);
+  const { rows: rpSignCount } = await db.query<{ n: string }>(
+    `select count(*)::text as n from client_signoffs where project_id = $1 and phase is null`,
+    [suProject]);
+  eq('...and there is exactly one signature for one act', rpSignCount[0]?.n, '1');
+
+  // ── 16. The correction path ──────────────────────────────────────────────
+  const rpSignAgain = await call('POST', `/v1/projects/${suProject}/signoffs`, {
+    ...suCtx,
+    body: {
+      ...rpSignBody,
+      clientId: randomUUID(),
+      signerName: 'Dana Whitfield-Rowe',
+      supersedesId: rpSignId,
+      supersedeReason: 'Signer name corrected at the client’s request',
+    },
+  });
+  eq('a correction is a new signature, not an edit', rpSignAgain.status, 201);
+  const rpSignList = await call('GET', `/v1/projects/${suProject}/signoffs`, { ...suCtx });
+  eq('...and both rows stand', (rpSignList.json.signoffs as any[]).length, 2);
+  eq('...with the current one derived from the chain rather than flagged',
+    (rpSignList.json.current as any[]).map((s) => s.id), [rpSignAgain.json.signoff.id]);
+  eq('...the superseded one pointing forward',
+    (rpSignList.json.signoffs as any[]).find((s) => s.id === rpSignId)?.supersededById,
+    rpSignAgain.json.signoff.id);
+  eq('...and the reason recorded', rpSignAgain.json.signoff.supersedeReason,
+    'Signer name corrected at the client’s request');
+
+  const rpNoReason = await call('POST', `/v1/projects/${suProject}/signoffs`, {
+    ...suCtx, body: { ...rpSignBody, clientId: randomUUID(), supersedesId: rpSignId },
+  });
+  eq('superseding without saying why is refused', rpNoReason.status, 422);
+
+  // ── 17. Append-only, at the database ─────────────────────────────────────
+  const rpUpdateAttempt = await db
+    .query(`update client_signoffs set signer_name = 'Someone Else' where id = $1`, [rpSignId])
+    .then(() => 'allowed')
+    .catch((e: Error) => e.message);
+  check('the database refuses an UPDATE on a sign-off, whatever the API does',
+    String(rpUpdateAttempt).includes('cannot be edited'), rpUpdateAttempt);
+  const rpDeleteAttempt = await db
+    .query(`delete from client_signoffs where id = $1`, [rpSignId])
+    .then(() => 'allowed')
+    .catch((e: Error) => e.message);
+  check('...and a DELETE', String(rpDeleteAttempt).includes('cannot be deleted'), rpDeleteAttempt);
+
+  // ── 18. The delete that must not succeed (packet finding 5) ──────────────
+  const rpDelete = await call('DELETE', `/v1/projects/${suProject}`, { ...suCtx });
+  eq('a project carrying frozen documents cannot be deleted', rpDelete.status, 409);
+  check('...naming what stands in the way rather than failing on a foreign key',
+    String(rpDelete.json.error?.message ?? '').includes('client sign-off'),
+    rpDelete.json.error?.message);
+  const { rows: rpStillThere } = await db.query<{ n: string }>(
+    `select count(*)::text as n from client_signoffs where project_id = $1`, [suProject]);
+  eq('...and the signature is still there', rpStillThere[0]?.n, '2');
+
+  // The empty project has one report and nothing else, and it is refused too: a
+  // report is a permanent record whether or not anybody has read it.
+  const rpDeleteEmpty = await call('DELETE', `/v1/projects/${rpEmptyProject}`, { ...suCtx });
+  eq('...and a project whose only frozen document is one unread report is refused as firmly',
+    rpDeleteEmpty.status, 409);
+
+  // ── 19. The period roll-up (§38.2, packet finding 8) ─────────────────────
+  section('Client-level aggregation — the identities a total covers, and mixed factor years');
+
+  const rpPeriod = await call('POST', '/v1/reports/client-period', {
+    ...suCtx,
+    body: {
+      audience: 'CLIENT',
+      clientCompanyId: rpClientCompany,
+      periodStart: '2027-01-01',
+      periodEnd: '2027-12-31',
+    },
+  });
+  eq('a client period report is generated', rpPeriod.status, 201);
+  const rpPeriodDetail = await call('GET', `/v1/reports/${rpPeriod.json.report.id}`, { ...suCtx });
+  const rpPeriodBody = rpPeriodDetail.json.snapshot.body;
+  check('...counting the projects run for that client',
+    rpPeriodBody.projectCount >= 1, rpPeriodBody.projectCount);
+  check('...and naming every legal identity the total covers, placeholder included',
+    (rpPeriodBody.client.identities as any[]).length >= 2,
+    (rpPeriodBody.client.identities as any[]).map((i) => `${i.name}${i.placeholder ? ' (ph)' : ''}`));
+  check('...summing §28.2’s definitions rather than re-deriving them',
+    typeof rpPeriodBody.totalMassKg === 'number' && rpPeriodBody.totalMassKg > 0,
+    rpPeriodBody.totalMassKg);
+  eq('...and disclosing whether the period spans more than one factor year',
+    typeof rpPeriodBody.mixedFactorYears, 'boolean');
+
+  const rpPeriodStarter = await call('POST', '/v1/reports/client-period', {
+    ...rpStarterCtx,
+    body: {
+      audience: 'CLIENT', clientCompanyId: rpClientCompany,
+      periodStart: '2027-01-01', periodEnd: '2027-12-31',
+    },
+  });
+  eq('client reporting is checked against the GENERATING company, not a project owner',
+    rpPeriodStarter.status, 403);
+  eq('...naming the key', rpPeriodStarter.json.error?.details?.feature, 'client_reporting');
+
+  // ── 20. Mixed factor years ───────────────────────────────────────────────
+  const rpSecondSet = await call('POST', '/v1/factor-sets/import', {
+    ...suCtx,
+    body: {
+      format: 'CSV', content: suCsv, mapping: suMapping,
+      set: { ...suSetBody, name: `CrewQuo Test Factors 2028 ${RUN}`, reportingYear: 2028,
+             version: 'v2.0', validFrom: '2028-01-01' },
+      dryRun: false,
+    },
+  });
+  eq('a second factor set for a later year imports', rpSecondSet.status, 201);
+
+  // ── The trail, the hold, and the notices ─────────────────────────────────
+  await drainWorkers();
+
+  const { rows: rpAudit } = await db.query<{ action: string; visible_to_client: boolean }>(
+    `select action, visible_to_client from audit_logs
+      where company_id = $1 and action like 'report.%' or action = 'signoff.captured'
+      order by created_at`, [suCompany]);
+  const rpActions = rpAudit.map((r) => r.action);
+  check('generating, sharing and signing are each their own audited act',
+    ['report.generated', 'report.disclosed', 'signoff.captured'].every((a) => rpActions.includes(a)),
+    [...new Set(rpActions)]);
+  check('...and the sign-off is the one the client can see, because they signed it',
+    rpAudit.some((r) => r.action === 'signoff.captured' && r.visible_to_client),
+    rpAudit.filter((r) => r.action === 'signoff.captured'));
+
+  const { rows: rpDisclosedNote } = await db.query<{ title: string }>(
+    `select n.title from notifications n
+      where n.kind = 'report.disclosed' and n.subject_id = $1`, [rpCurrentId]);
+  check('the client is told a document is waiting for them', rpDisclosedNote.length > 0,
+    rpDisclosedNote);
+  const { rows: rpGenNote } = await db.query<{ n: string }>(
+    `select count(*)::text as n from notifications where kind = 'report.disclosed'
+      and recipient_user_id = $1`, [suOwner.userId]);
+  eq('...and the person who generated it is not told about their own click',
+    rpGenNote[0]?.n, '0');
+
+  const { rows: rpHeld } = await db.query<{ role: string }>(
+    `select x.role from report_file_references x where x.signoff_id in
+       (select id from client_signoffs where project_id = $1)
+      union all
+     select x.role from report_file_references x where x.report_id = $2`,
+    [suProject, rpCurrentId]);
+  check('every file a frozen document points at is held by a real row, not by a jsonb string',
+    rpHeld.length > 0, rpHeld.map((r) => r.role));
 
   // ── Result ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(72)}`);

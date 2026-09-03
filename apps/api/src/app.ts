@@ -62,6 +62,7 @@ import {
 } from './modules/sustainability/activities';
 import { projectCarbonRouter } from './modules/sustainability/projectCarbon';
 import { orgSustainabilityRouter } from './modules/sustainability/dashboard';
+import { projectReportsRouter, reportsRouter } from './modules/reports/routes';
 import { invitesRouter } from './modules/invites/routes';
 import { projectsRouter } from './modules/projects/routes';
 import {
@@ -309,6 +310,9 @@ export function buildApp(): Express {
   // them silently.
   app.use('/v1/projects', requireAuth, projectCarbonRouter);
   app.use('/v1/projects', requireAuth, projectActivitiesRouter);
+  // Phase 10's project router, before `projectsRouter` for the reason every other
+  // one here is: `/:id/reports` would otherwise fall through to the project handler.
+  app.use('/v1/projects', requireAuth, projectReportsRouter);
   app.use('/v1/projects', requireAuth, projectAssetsRouter);
   app.use('/v1/projects', requireAuth, projectsRouter);
   app.use('/v1/locations', requireAuth, locationsRouter);
@@ -330,6 +334,9 @@ export function buildApp(): Express {
   app.use('/v1/product-factors', requireAuth, productFactorsRouter);
   app.use('/v1/activities', requireAuth, activitiesRouter);
   app.use('/v1/sustainability', requireAuth, orgSustainabilityRouter);
+  // Reporting & sign-off (§29, §34, §38.2). The project-scoped half is mounted on
+  // /v1/projects above; this is one report, and §38.2's client-period roll-up.
+  app.use('/v1/reports', requireAuth, reportsRouter);
   app.use('/v1/work-context', requireAuth, workContextRouter);
   app.use('/v1/time-logs', requireAuth, timeLogsRouter);
   app.use('/v1/expenses', requireAuth, expensesRouter);
