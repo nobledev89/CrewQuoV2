@@ -6,7 +6,10 @@ report, the toggled evidence pack, the client-facing project export moved here
 from Phase 4, the configurable disclaimer with its claim guards,
 `client_signoffs` with signature capture and append-only supersession, and the
 `CLIENT_PERIOD` aggregation §38.2 wants built now and shown in Phase 12.
-**Phase:** 10 · **Status:** draft · **Last updated:** 2026-09-03
+**Phase:** 10 · **Status:** **adopted** — §14 fully built, all eleven steps shipped,
+the §12 acceptance script implemented step for step, and its one open decision
+(§13.6, tier placement) followed as §43 proposes with one stated departure
+· **Last updated:** 2026-09-03
 **Plan refs:** §29 (the reporting engine, all six subsections), §34 (client
 sign-off), §38.2 (client-level aggregation), §41 (the ten non-negotiables,
 published rather than displayed), §43 (`sustainability_reports`, `evidence_pack`,
@@ -60,7 +63,11 @@ that supplies the caller.
 
 ### What writing it found
 
-Eleven findings. The first is the milestone.
+Eleven findings, and a twelfth the **build** added — recorded at the end of this
+section, because the acceptance script caught it by disagreeing with the code and
+that is the whole reason §12 is written before the code exists.
+
+The first is the milestone.
 
 ---
 
@@ -388,6 +395,51 @@ why §29.2 stores the chosen set in the first place.
 
 ---
 
+**12. THE FINDING THE BUILD ADDED: §13.6's banner cannot be in the file.**
+
+Not a hole in the plan — a hole in *this packet's own resolution*, and step 7 of
+§12 is what found it.
+
+Finding 10 settled that a re-render reads the snapshot and a live comparison adds
+a banner. The first implementation put the banner where a reader would want it, on
+the cover of the PDF. Then step 7 ran — *"import a new factor set, correct a
+weight, recalculate — then re-render. Same bytes"* — and failed, because
+correcting the weight bumped `project_assets.revision`, the banner appeared, and
+the same report rendered as two different files.
+
+The test was right and the design was wrong. **A live comparison inside a frozen
+document makes the document a function of the present**, which is the one thing
+§29.4 exists to forbid: two people opening "the same report" a month apart get
+different files, and the seal printed in the footer stops describing what is on the
+page. The banner is not an annotation on a snapshot; it is a second document.
+
+So the divergence is reported **beside** the document rather than inside it —
+`staleSources` and `staleNotes` on the detail response, rendered by the screen that
+offers the download, with the sentence that makes it useful rather than alarming:
+*the document is unchanged and still shows the figures it was generated with*.
+§23's *"amended N times appears wherever the entry appears"* is satisfied where a
+person can act on it, and the artefact keeps the promise that makes it worth
+having. `RenderInput` now has no field a live fact could occupy, which is the same
+kind of answer finding 3 gave one layer up.
+
+Two smaller corrections came from the same run and are worth recording because
+neither would have been found by reading:
+
+- **`brandingGrantsFileAccess` had a `LIMIT` on each arm of a `UNION ALL`**, which
+  is a Postgres syntax error. Because that function is one entry in a registry
+  every signed-URL request walks, the throw took the **whole** download
+  authorization down with it — including seven Phase 7 grants that have nothing to
+  do with branding. A registry of independent checks is only independent if every
+  entry can fail alone.
+- **A disclosure notice addressed to a claimed placeholder reaches nobody.** The
+  identity is followed *backward* for the read (a client sees documents issued to
+  the placeholder they claimed) and *forward* for the notification (the notice goes
+  to the tenant that now holds the relationship). Same tombstone, both directions,
+  and the second one fails silently: a dispatch with an empty recipient list writes
+  no rows and raises nothing.
+
+---
+
 ## 1. Persona / job
 
 | Persona | Job | Device |
@@ -576,7 +628,7 @@ notifying would train people to ignore the channel — the same judgement that l
 | `report.superseded` (was disclosed) | the client company's managers | EMAIL | normal | digest-eligible | none | **yes**, `requiresAction: false`, body names the figures that moved |
 | `signoff.captured` | the owner's `report.generate` holders, and the client's managers | EMAIL | normal | digest-eligible | none | **yes** — the client's copy is the durable record that they signed |
 | `signoff.superseded` | both sides | EMAIL | normal | digest-eligible | none | **yes**, `requiresAction: false`, carries the stated reason |
-| a report whose sources changed since generation | **nobody** | — | — | — | — | **no** |
+| a report whose sources changed since generation | **nobody** | — | — | — | — | **no** — it is a banner beside the document (finding 12) |
 
 **The last row is a decision, not an omission.** A banner on the document is the
 right place for *"the diary for 3 March has been amended since this was
@@ -772,11 +824,12 @@ Marina Bay, the Phase 8/9 demo fixture. The script the e2e implements step for s
 7. **Byte-identity, after the world moves.** Import a new factor set, correct an
    asset weight, recalculate the project — then re-render. Same bytes, same hash,
    same numbers. Assert that the live section now disagrees with the document,
-   because that is the whole point.
+   because that is the whole point. *(This step is what found finding 12.)*
 8. **The banner.** Amend a diary entry the report cites. Re-render: **still byte
-   identical.** The response carries `staleSources: [{ kind: 'DIARY', date:
-   '2026-03-03', wasRevision: 2, isRevision: 3 }]` and the screen shows the sentence.
-   §13.6, closed.
+   identical**, because the banner is reported beside the document and never in it.
+   The response carries `staleSources: [{ kind: 'DIARY', label: '2026-03-03',
+   revision: 2, currentRevision: 3 }]`, and the screen renders the sentence. §13.6,
+   closed.
 9. **Regenerate with no change.** Press Regenerate. **No new row** — the hash
    collides and the existing report is returned. Nothing is superseded.
 10. **Regenerate after a real change.** Correct a weight, regenerate. A new
@@ -933,3 +986,8 @@ repeats: the seal has to be right before anything is sealed.
 - **Milestone:** a client-ready PDF from real data, regenerable byte-identical a year
   later — asserted twice, once immediately and once after a factor set, a weight and a
   diary entry have all moved underneath it.
+
+**Shipped 2026-09-03.** `verify:e2e` is 1,770 checks (from 1,679), the browser suite
+147 (from 140), and unit tests 1,475. All eleven steps built; the milestone is
+asserted at three levels — `determinism.test.ts` on the renderer, `render.test.ts`
+on a frozen snapshot, and §12 steps 6 to 8 against live Postgres.

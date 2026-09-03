@@ -24,7 +24,7 @@ heading is an unasked question, which is the failure mode §19.5 exists to preve
 | Project evidence — locations, the storage layer, evidence, documents, the site diary, the capability model and the offline contract | [project-evidence.md](./project-evidence.md) | Phase 7 — `draft` |
 | Assets & materials — asset types and lines, weight provenance, destination types and organisations, the movement ledger and the mass roll-up | [assets-materials.md](./assets-materials.md) | Phase 8 — `draft` |
 | Sustainability & the carbon engine — emission factor sets and their importer, product carbon factors, project activities, the calculation ledger with its buckets and supersession, avoided-emissions claims and the §39 settings | [sustainability.md](./sustainability.md) | Phase 9 — `draft` |
-| Reporting & client sign-off — `generated_reports` and its frozen snapshot, the twelve-section completion report, the evidence pack, the client-facing export, the disclaimer and its claim guards, `client_signoffs`, and the `CLIENT_PERIOD` aggregation | [reporting-signoff.md](./reporting-signoff.md) | Phase 10 — `draft` |
+| Reporting & client sign-off — `generated_reports` and its frozen snapshot, the twelve-section completion report, the evidence pack, the client-facing export, the disclaimer and its claim guards, `client_signoffs`, and the `CLIENT_PERIOD` aggregation | [reporting-signoff.md](./reporting-signoff.md) | Phase 10 — `adopted` |
 
 Earlier domains (identity, rates, the delivery loop, portal/audit, invoices) were
 built before the §19.5 decision was adopted on 2026-08-18 and have no packet. They
@@ -252,6 +252,18 @@ with no caller"* — now has two callers on the day it lands: it is the retentio
 hold, and it is the disclosure grant that lets a client open a photograph inside a
 document they were given without that photograph having to be published to them
 generally.
+
+It is also the first packet whose own resolution was corrected by its acceptance
+script. Finding 10 settled that a re-render reads the snapshot and a live
+comparison adds a banner; the first implementation put that banner on the cover of
+the PDF, and §12 step 7 failed — correcting a weight bumped a revision, the banner
+appeared, and the same report rendered as two different files. A live comparison
+inside a frozen document makes the document a function of the present, which is the
+one thing §29.4 forbids. The divergence is reported beside the document instead,
+and `RenderInput` now has no field a live fact could occupy. It is recorded as
+finding 12 rather than folded into finding 10, because a packet that quietly
+rewrites what it recommended loses the only evidence that writing §12 first was
+worth anything.
 
 Its §13 has one open entry and it is packaging rather than design: §43's tier
 placement for the four new feature keys is followed as proposed, with one stated
