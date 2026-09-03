@@ -4,6 +4,8 @@ import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import type {
+  ClientSignoffView,
+  GeneratedReportView,
   LineItemEntityType,
   LineItemNoteView,
   PortalLineItem,
@@ -238,6 +240,8 @@ function PortalProject() {
         )}
       </Section>
 
+      <ClientDocuments projectId={id} providerName={d.project.providerCompanyName} />
+
       {engagementId ? (
         <NotesThread
           engagementId={engagementId}
@@ -457,6 +461,141 @@ function NotesThread({
           </Notice>
         )}
       </Stack>
+    </Section>
+  );
+}
+
+
+// ── The documents the contractor shared (§29.4, §34) ─────────────────────────
+
+/**
+ * A client's own copy of what was published to them.
+ *
+ * **Every document here renders from the snapshot it was generated with, not from
+ * live data.** That is the whole reason the client-facing download waited for
+ * Phase 10 rather than shipping with Phase 4's exports: a client re-opening last
+ * quarter's statement sees the figures they were shown, not a recalculation
+ * against rate cards that have changed since.
+ *
+ * A report that has been reissued is not listed: what a client holds is the
+ * current version, and a superseded document sitting beside it invites somebody to
+ * quote the wrong one. They are told about the reissue instead, in the Action
+ * Centre, with the figures that moved.
+ */
+function ClientDocuments({
+  projectId,
+  providerName,
+}: {
+  projectId: string;
+  providerName: string;
+}) {
+  const ctx = useSessionCtx();
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const reports = useAsyncData<{ reports: GeneratedReportView[] }>(
+    ctx ? () => api.portalReports(ctx.accessToken, ctx.companyId, projectId) : null,
+    [ctx?.companyId, projectId]
+  );
+  const signoffs = useAsyncData<{ signoffs: ClientSignoffView[] }>(
+    ctx ? () => api.portalSignoffs(ctx.accessToken, ctx.companyId, projectId) : null,
+    [ctx?.companyId, projectId]
+  );
+
+  const rows = reports.data?.reports ?? [];
+  const signed = signoffs.data?.signoffs ?? [];
+  if (rows.length === 0 && signed.length === 0) return null;
+
+  async function get(report: GeneratedReportView) {
+    if (!ctx) return;
+    setBusy(report.id);
+    setError(null);
+    try {
+      const blob = await api.downloadPortalReport(ctx.accessToken, ctx.companyId, report.id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${report.title.replace(/[^\w.-]+/g, '-').toLowerCase()}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not open the document');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <Section
+      title="Documents"
+      description={`Reports ${providerName} has shared with you. Each one shows the figures as they stood when it was produced.`}
+      className="cq-section--table"
+    >
+      <ErrorText>{error}</ErrorText>
+      {rows.length > 0 ? (
+        <Table label="Shared reports">
+          <thead>
+            <tr>
+              <th scope="col">Document</th>
+              <th scope="col">Period</th>
+              <th scope="col">Shared</th>
+              <th scope="col">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((report) => (
+              <tr key={report.id}>
+                <td className="cq-table__primary">{report.title}</td>
+                <td>
+                  {report.periodStart || report.periodEnd
+                    ? `${formatDate(report.periodStart)} to ${formatDate(report.periodEnd)}`
+                    : '—'}
+                </td>
+                <td>{formatDate(report.generatedAt.slice(0, 10))}</td>
+                <td>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={busy !== null}
+                    onClick={() => void get(report)}
+                  >
+                    {busy === report.id ? 'Preparing…' : 'Download PDF'}
+                  </Button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+      ) : null}
+
+      {signed.length > 0 ? (
+        <Stack>
+          <p className="cq-muted">What you signed for on this project.</p>
+          <Table label="Sign-offs" compact>
+            <thead>
+              <tr>
+                <th scope="col">Signed by</th>
+                <th scope="col">Scope</th>
+                <th scope="col">When</th>
+              </tr>
+            </thead>
+            <tbody>
+              {signed.map((signoff) => (
+                <tr key={signoff.id}>
+                  <td className="cq-table__primary">
+                    {signoff.signerName}
+                    <span className="cq-table__note">{signoff.completionStatement}</span>
+                  </td>
+                  <td>{signoff.phase ?? 'Whole project'}</td>
+                  <td>{formatDateTime(signoff.signedAt)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        </Stack>
+      ) : null}
     </Section>
   );
 }

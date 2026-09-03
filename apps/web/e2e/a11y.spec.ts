@@ -304,6 +304,10 @@ test.describe('WCAG 2.2 AA — automated', () => {
         // and a drawer, and its densest surface — the trace — is behind a toggle
         // that the sweep below opens.
         'Sustainability',
+        // Phase 10's, which is two tables, a `details` disclosure and two drawers.
+        // Swept empty here and with rows in the case below it: the empty state is
+        // the one a reader meets first and the one nobody remembers to check.
+        'Reports',
       ]) {
         await page
           .getByRole('navigation', { name: 'Project' })
@@ -328,6 +332,28 @@ test.describe('WCAG 2.2 AA — automated', () => {
       await page.getByRole('button', { name: 'Movements' }).first().click();
       await settled(page);
       await expectNoViolations(page, '/projects/[id] (Assets & materials)');
+
+      /*
+       * Phase 10's two drawers, which are the densest forms in the product: the
+       * generate form is a pair of selects and a fieldset of checkboxes, and the
+       * sign-off form is seven fields including two multi-line ones. A modal is
+       * also the shape most likely to be wrong about focus and about labelling,
+       * which is what makes scanning it worth the two extra clicks.
+       */
+      await page
+        .getByRole('navigation', { name: 'Project' })
+        .getByRole('button', { name: 'Reports' })
+        .click();
+      await settled(page);
+      await page.getByRole('button', { name: 'Generate a report' }).click();
+      await settled(page);
+      await expectNoViolations(page, '/projects/[id] (Reports — generate)');
+      await page.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click();
+
+      await page.getByRole('button', { name: 'Capture a sign-off' }).click();
+      await settled(page);
+      await expectNoViolations(page, '/projects/[id] (Reports — sign-off)');
+      await page.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click();
 
       /*
        * And Sustainability with its working shown, for the reason Assets is swept

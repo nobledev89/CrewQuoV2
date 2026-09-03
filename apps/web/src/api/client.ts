@@ -33,11 +33,18 @@ import type {
   CompleteUpload,
   ContinueMovement,
   CarbonCalculationView,
+  GeneratedReportDetail,
+  GeneratedReportView,
+  ReportAudience,
+  ReportKind,
+  ReportSectionKey,
   CreateActivity,
   CreateAsset,
   CreateDestinationOrg,
   CreateProductFactor,
   CreateDiaryAttendance,
+  ClientSignoffView,
+  CreateSignoff,
   CreateDiaryEntry,
   CreateDocument,
   CreateEvidenceBatch,
@@ -1686,4 +1693,93 @@ export const api = {
       companyId: c,
       query: { from: q.from, to: q.to, clientCompanyId: q.clientCompanyId },
     }),
+  // ── Reporting & sign-off (§29, §34, §38.2) ─────────────────────────────────
+  //
+  // `reportDetail` returns the frozen snapshot **and** `staleNotes`, which is the
+  // one thing the screen has to render that the PDF deliberately does not: a live
+  // comparison inside a frozen document would make the document a function of the
+  // present (see the note at the top of `apps/api/src/modules/reports/render.ts`).
+
+  reportCatalog: (t: string, c: string, projectId: string) =>
+    request<{
+      kinds: {
+        kind: ReportKind;
+        feature: string;
+        audiences: ReportAudience[];
+        defaults: ReportSectionKey[];
+        sections: { key: ReportSectionKey; label: string; defaultOn: boolean; toggleable: boolean }[];
+      }[];
+    }>('GET', `/v1/projects/${projectId}/reports/sections`, { accessToken: t, companyId: c }),
+
+  listReports: (t: string, c: string, projectId: string, includeSuperseded = false) =>
+    request<{ reports: GeneratedReportView[] }>('GET', `/v1/projects/${projectId}/reports`, {
+      accessToken: t,
+      companyId: c,
+      query: { includeSuperseded: includeSuperseded ? 'true' : undefined },
+    }),
+
+  generateReport: (
+    t: string,
+    c: string,
+    projectId: string,
+    body: {
+      kind: ReportKind;
+      audience: ReportAudience;
+      sections?: ReportSectionKey[];
+      title?: string;
+    }
+  ) =>
+    request<{ report: GeneratedReportView; reused: boolean; supersededId: string | null }>(
+      'POST',
+      `/v1/projects/${projectId}/reports`,
+      { accessToken: t, companyId: c, body }
+    ),
+
+  reportDetail: (t: string, c: string, id: string) =>
+    request<GeneratedReportDetail>('GET', `/v1/reports/${id}`, { accessToken: t, companyId: c }),
+
+  setReportVisibility: (t: string, c: string, id: string, clientVisible: boolean) =>
+    request<{ report: GeneratedReportView }>('PATCH', `/v1/reports/${id}/visibility`, {
+      accessToken: t,
+      companyId: c,
+      body: { clientVisible },
+    }),
+
+  voidReport: (t: string, c: string, id: string, reason: string) =>
+    request<{ report: GeneratedReportView }>('POST', `/v1/reports/${id}/void`, {
+      accessToken: t,
+      companyId: c,
+      body: { reason },
+    }),
+
+  downloadReport: (t: string, c: string, id: string) =>
+    download(`/v1/reports/${id}/download.pdf`, { accessToken: t, companyId: c }),
+
+  listSignoffs: (t: string, c: string, projectId: string) =>
+    request<{ signoffs: ClientSignoffView[]; current: ClientSignoffView[] }>(
+      'GET',
+      `/v1/projects/${projectId}/signoffs`,
+      { accessToken: t, companyId: c }
+    ),
+
+  captureSignoff: (t: string, c: string, projectId: string, body: CreateSignoff) =>
+    request<{ signoff: ClientSignoffView; replayed: boolean }>(
+      'POST',
+      `/v1/projects/${projectId}/signoffs`,
+      { accessToken: t, companyId: c, body }
+    ),
+
+  // The client's side of the same documents.
+  portalReports: (t: string, c: string, projectId: string) =>
+    request<{ reports: GeneratedReportView[] }>('GET', `/v1/portal/projects/${projectId}/reports`, {
+      accessToken: t,
+      companyId: c,
+    }),
+  portalSignoffs: (t: string, c: string, projectId: string) =>
+    request<{ signoffs: ClientSignoffView[] }>('GET', `/v1/portal/projects/${projectId}/signoffs`, {
+      accessToken: t,
+      companyId: c,
+    }),
+  downloadPortalReport: (t: string, c: string, id: string) =>
+    download(`/v1/portal/reports/${id}/download.pdf`, { accessToken: t, companyId: c }),
 };

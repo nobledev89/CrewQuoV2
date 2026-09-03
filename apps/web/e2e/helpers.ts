@@ -540,6 +540,42 @@ export async function runWorkPass(): Promise<void> {
 }
 
 /** A signed-out browser context — each participant in the loop needs their own. */
+/**
+ * Amend the diary day `seedProjectSections` left behind, one more time.
+ *
+ * For Phase 10: a report freezes the revision each cited record was at, so making
+ * one *stale* means moving a revision after the document exists. `seedProjectSections`
+ * already amends once, which is why this is a second amendment rather than a first.
+ *
+ * Over HTTP because the diary's own amendment path is asserted in
+ * `project-sections.spec.ts`; here it is a fixture, and a fixture that re-drives
+ * another screen fails for reasons that have nothing to do with what it sets up.
+ */
+export async function amendSeededDiaryAgain(
+  email: string,
+  projectId: string,
+  note: string
+): Promise<void> {
+  const { token, companyId } = await apiSession(email);
+  const headers = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${token}`,
+    'X-Company-Id': companyId,
+  };
+  const list = await fetch(`${API_URL}/v1/projects/${projectId}/diary`, { headers });
+  if (!list.ok) throw new Error(`diary list failed: ${list.status} ${await list.text()}`);
+  const entries = ((await list.json()) as { entries: { id: string }[] }).entries;
+  const entry = entries[0];
+  if (!entry) throw new Error('the section fixture left no diary entry to amend');
+
+  const res = await fetch(`${API_URL}/v1/diary/${entry.id}`, {
+    method: 'PATCH',
+    headers,
+    body: JSON.stringify({ delays: note, reason: 'Reported the next morning' }),
+  });
+  if (!res.ok) throw new Error(`amend failed: ${res.status} ${await res.text()}`);
+}
+
 export async function freshPage(browser: Browser): Promise<Page> {
   const context = await browser.newContext();
   return context.newPage();

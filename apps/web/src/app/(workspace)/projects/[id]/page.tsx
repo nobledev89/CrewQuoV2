@@ -46,6 +46,7 @@ import { DocumentsPanel } from './DocumentsPanel';
 import { DiaryPanel } from './DiaryPanel';
 import { AssetsPanel } from './AssetsPanel';
 import { SustainabilityPanel } from './SustainabilityPanel';
+import { ReportsPanel } from './ReportsPanel';
 import { ProjectStatusBadge, WorkStatusBadge } from '@/components/Status';
 import { formatCents, formatDate, formatPct, titleCase, totalHours } from '@/lib/format';
 
@@ -488,7 +489,16 @@ function ProjectDetail() {
             />
           ) : null}
 
-          {active === 'reports' ? <ExportPanel projectId={p.id} projectName={p.name} /> : null}
+          {active === 'reports' ? (
+            <>
+              <ReportsPanel
+                projectId={p.id}
+                projectName={p.name}
+                hasClient={p.clientCompanyId !== null}
+              />
+              <ExportPanel projectId={p.id} projectName={p.name} />
+            </>
+          ) : null}
 
           {active === 'settings' && canManage ? (
             <EditPanel
