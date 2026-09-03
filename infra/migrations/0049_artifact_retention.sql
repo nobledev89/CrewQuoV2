@@ -57,10 +57,24 @@ insert into limits (key, name, description, unit, unlimited_allowed) values
 on conflict (key) do update set
   name = excluded.name, description = excluded.description, unit = excluded.unit;
 
-insert into plan_limits (plan_id, limit_key, value) values
+-- Joined against `plans` rather than naming ids in a values list. NO MIGRATION
+-- INSERTS `plans` — only infra/seed/index.ts does — so on a genuinely fresh
+-- database the literal form violates plan_limits_plan_id_fkey and stops the whole
+-- run here, leaving every later migration unapplied. This yields no rows on an
+-- empty `plans`, which is the shape 0033, 0038 and 0043 already use for
+-- plan_features, and the seed is the authority for placement either way.
+--
+-- Forward-only-safe: schema_migrations records filenames, so an already-migrated
+-- database re-runs nothing and this edit changes behaviour only where it is
+-- currently broken.
+insert into plan_limits (plan_id, limit_key, value)
+select p.id, k.key, k.value
+from plans p
+join (values
   ('crew',       'artifact_retention_days', 365),
   ('starter',    'artifact_retention_days', 1095),
   ('pro',        'artifact_retention_days', 2555),
   ('business',   'artifact_retention_days', 2555),
-  ('enterprise', 'artifact_retention_days', null)
+  ('enterprise', 'artifact_retention_days', null::int)
+) as k(id, key, value) on k.id = p.id
 on conflict (plan_id, limit_key) do update set value = excluded.value;

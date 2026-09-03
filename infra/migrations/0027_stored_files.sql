@@ -130,17 +130,31 @@ on conflict (key) do update set
 -- exists so a subcontractor can work for nothing, and since the *hiring* company's
 -- allowance pays for work on its projects, Crew's own figure only ever bounds a
 -- free company's own projects.
-insert into plan_limits (plan_id, limit_key, value) values
+-- Joined against `plans` rather than naming ids in a values list. NO MIGRATION
+-- INSERTS `plans` — only infra/seed/index.ts does — so on a genuinely fresh
+-- database the literal form violates plan_limits_plan_id_fkey and stops the whole
+-- run here, leaving every later migration unapplied. This yields no rows on an
+-- empty `plans`, which is the shape 0033, 0038 and 0043 already use for
+-- plan_features, and the seed is the authority for placement either way.
+--
+-- Forward-only-safe: schema_migrations records filenames, so an already-migrated
+-- database re-runs nothing and this edit changes behaviour only where it is
+-- currently broken.
+insert into plan_limits (plan_id, limit_key, value)
+select p.id, k.key, k.value
+from plans p
+join (values
   ('crew',       'storage_gb', 1),
   ('starter',    'storage_gb', 25),
   ('pro',        'storage_gb', 200),
   ('business',   'storage_gb', 1000),
-  ('enterprise', 'storage_gb', null),
+  ('enterprise', 'storage_gb', null::int),
   ('crew',       'evidence_uploads_per_month', 50),
   ('starter',    'evidence_uploads_per_month', 1000),
   ('pro',        'evidence_uploads_per_month', 10000),
-  ('business',   'evidence_uploads_per_month', null),
-  ('enterprise', 'evidence_uploads_per_month', null)
+  ('business',   'evidence_uploads_per_month', null::int),
+  ('enterprise', 'evidence_uploads_per_month', null::int)
+) as k(id, key, value) on k.id = p.id
 on conflict (plan_id, limit_key) do nothing;
 
 -- ── 3. The Phase 3 receipt upload, retro-fitted ───────────────────────────────

@@ -47,13 +47,31 @@ services:
     # Build tooling is a dev dependency. Install the locked workspace and emit
     # JavaScript before startup; runtime traffic never executes source through
     # `tsx`.
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @crewquo/api build
+    #
+    # `--prod=false` IS LOAD-BEARING AND NOT A TIDY-UP. NODE_ENV is set to
+    # production below, and pnpm takes its production status from NODE_ENV unless
+    # a flag overrides it — so without this pnpm installs no devDependencies,
+    # `tsup` is absent and this build command fails on its own last clause.
+    # It is needed at RUNTIME too, not only at build: startCommand's
+    # `pnpm db:migrate` runs the migration runner through `tsx`, a root
+    # devDependency. Render's own auto-detected pnpm command carries the same
+    # flag for the same reason.
+    buildCommand: corepack enable && pnpm install --frozen-lockfile --prod=false && pnpm --filter @crewquo/api build
     # Migrations run here rather than in a preDeployCommand, which needs a paid
     # instance. They are forward-only and tracked in schema_migrations, so
     # re-running on every boot is a no-op ("No new migrations to apply"), and a
     # failed migration correctly stops the service from serving a bad schema.
     # The build step is the wrong place for them: build containers cannot reach
     # the database's internal URL.
+    #
+    # `db:seed` IS DELIBERATELY NOT HERE, AND A FRESH DATABASE NEEDS IT ONCE.
+    # The catalog seed is idempotent but it is an `on conflict do update`, so
+    # running it every boot would overwrite whatever an operator had since edited
+    # in the Platform console — and §43's tier figures are explicitly seed rows an
+    # operator may edit rather than constants in code. Migrations no longer carry
+    # plan rows either (0027, 0049), so a brand-new database has an EMPTY
+    # plans/features/limits catalog until somebody runs `pnpm db:seed` against it
+    # once, by hand. Until then every entitlement resolves to nothing.
     startCommand: pnpm db:migrate && pnpm --filter @crewquo/api start
     healthCheckPath: /healthz
     autoDeploy: true
