@@ -297,9 +297,17 @@ monorepo root for the pnpm workspace to resolve.
 
 | Field | Value |
 | --- | --- |
-| Build Command | `corepack enable && pnpm install --frozen-lockfile && pnpm --filter @crewquo/api build` |
+| Build Command | `corepack enable && pnpm install --frozen-lockfile --prod=false && pnpm --filter @crewquo/api build` |
 | Start Command | `pnpm db:migrate && pnpm --filter @crewquo/api start` |
 | Health Check Path | `/healthz` |
+
+**`--prod=false` is load-bearing and not a tidy-up.** `NODE_ENV` is `production`
+below, and pnpm takes its production status from `NODE_ENV` unless a flag
+overrides it — so without it pnpm installs no devDependencies, `tsup` is absent,
+and the build fails on its own last clause. It is needed at runtime too: the
+start command's `pnpm db:migrate` runs the migration runner through `tsx`, also a
+root devDependency. Render's own auto-detected pnpm command carries the same flag
+for the same reason.
 
 Then add the environment variables the blueprint would have set:
 
@@ -313,6 +321,12 @@ Then add the environment variables the blueprint would have set:
 | `TRUST_PROXY_HOPS` | **`1` on Render.** Left at the default `0`, every request looks like it came from Render's proxy, so one source-keyed sign-in budget is shared by the entire internet and thirty failures from anywhere lock out every user |
 | `APP_BASE_URL` | the Vercel URL below |
 | `RESEND_API_KEY`, `NOTIFICATION_FROM_EMAIL` | without both, every email records as `SKIPPED` rather than sending |
+| `STORAGE_ENDPOINT`, `STORAGE_ACCESS_KEY_ID`, `STORAGE_SECRET_ACCESS_KEY` | the R2 S3-compatible endpoint and its credentials; unset, the upload routes refuse with a configuration error rather than pretending to work |
+| `STORAGE_BUCKET` | `crewquo-production` |
+| `STORAGE_REGION` | `auto` |
+| `STORAGE_URL_TTL_MINUTES` | `10` |
+| `SENTRY_DSN`, `SENTRY_RELEASE` | optional; without a DSN the tracker is not initialised and the API says so once at boot. Without a release every event belongs to the same nameless build |
+| `SENTRY_TRACES_SAMPLE_RATE` | `0` — tracing stays off until a deliberate privacy/cost decision changes it |
 | `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET`, `PADDLE_ENVIRONMENT` | server-side Paddle transaction creation and signed webhook receipt; optional while checkout is disabled |
 
 Both secrets are mandatory in production: `apps/api/src/env.ts` only falls back to
