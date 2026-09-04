@@ -10,7 +10,6 @@ test.describe('Public surfaces', () => {
   });
 
   for (const [route, heading, current, statusLabel] of [
-    ['/pricing', 'Pricing', 'Pricing', 'Pre-launch pricing status'],
     ['/terms', 'Terms of use', 'Terms', 'Pre-launch legal status'],
     ['/privacy', 'Privacy notice', 'Privacy', 'Pre-launch legal status'],
   ] as const) {
@@ -39,6 +38,16 @@ test.describe('Public surfaces', () => {
   test('the pricing page renders the live plan catalog, not hard-coded copy', async ({ page }) => {
     await page.goto('/pricing');
 
+    await expect(
+      page.getByRole('heading', { level: 1, name: 'Choose the control your operation needs.' })
+    ).toBeVisible();
+    await expect(page.getByText(/preview/i)).toHaveCount(0);
+    await expect(
+      page
+        .getByRole('navigation', { name: 'Public site navigation' })
+        .getByRole('link', { name: 'Pricing', exact: true })
+    ).toHaveAttribute('aria-current', 'page');
+
     const plans = page.locator('#plans article');
     await expect(plans.first()).toBeVisible();
     expect(await plans.count()).toBeGreaterThan(1);
@@ -53,8 +62,8 @@ test.describe('Public surfaces', () => {
     // `null` is unlimited and `0` is none. Rendering both as a bare number would
     // invert the meaning of the most expensive tier, so both words must appear.
     await expect(allowances.getByText('Unlimited').first()).toBeVisible();
-    await expect(allowances.getByText('Not included').first()).toBeVisible();
-    await expect(features.getByText('Not included').first()).toBeVisible();
+    await expect(allowances.getByRole('img', { name: 'Not included' }).first()).toBeVisible();
+    await expect(features.getByRole('img', { name: 'Not included' }).first()).toBeVisible();
 
     // Structural, not a pinned figure: one plan priced at nothing renders as free,
     // and at least one renders a real monthly amount. Asserting "$47" would pin
@@ -63,7 +72,11 @@ test.describe('Public surfaces', () => {
     await expect(plans.filter({ hasText: 'Free' }).first()).toBeVisible();
     await expect(plans.filter({ hasText: /\$\d/ }).first()).toBeVisible();
 
+    await page.getByRole('button', { name: 'Yearly' }).click();
+    await expect(page.getByText(/Billed \$[\d,]+ yearly/).first()).toBeVisible();
+
     // One currency, so none of the machinery a multi-currency page would need.
+    await page.getByText('What currency will I be charged in?', { exact: true }).click();
     await expect(page.getByText('Subscriptions are charged in US dollars.')).toBeVisible();
     await expect(page.getByRole('combobox', { name: /currency/i })).toHaveCount(0);
 
